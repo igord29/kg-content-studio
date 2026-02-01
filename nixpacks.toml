@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["...", "bash"]
+
+[phases.build]
+cmds = ["bash create-stubs.sh", "bun run build", "bash fix-imports.sh"]
+
+[start]
+cmd = "bun run start"

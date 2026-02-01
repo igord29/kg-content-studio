@@ -20,8 +20,12 @@ RUN bun run build
 # Fix imports after build
 RUN bash fix-imports.sh
 
-# Expose port (Railway will inject PORT env var)
+# Set environment variables for production
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+
+# Expose port
 EXPOSE 3500
 
 # Start the application
-CMD ["bun", "run", "start"]
+CMD ["bun", ".agentuity/app.js"]

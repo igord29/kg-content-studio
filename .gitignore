@@ -41,3 +41,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]\*.json
 # Agentuity build files
 
 .agentuity
+
+# Build stub files
+src/agent/content-creator.js
+src/agent/manager.js
+src/agent/translate.js

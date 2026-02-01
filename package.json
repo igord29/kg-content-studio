@@ -6,6 +6,7 @@
 	"module": ".agentuity/app.js",
 	"type": "module",
 	"scripts": {
+		"prebuild": "bash create-stubs.sh",
 		"build": "agentuity build",
 		"postbuild": "bash fix-imports.sh",
 		"dev": "agentuity dev",

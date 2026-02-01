@@ -6,7 +6,7 @@
 	"module": ".agentuity/app.js",
 	"type": "module",
 	"scripts": {
-		"build": "agentuity build",
+		"build": "agentuity build && bash fix-imports.sh",
 		"dev": "agentuity dev",
 		"start": "bun .agentuity/app.js",
 		"deploy": "agentuity deploy",

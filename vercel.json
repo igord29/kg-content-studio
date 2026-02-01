@@ -1,0 +1,6 @@
+{
+  "buildCommand": "bun run build",
+  "outputDirectory": ".agentuity",
+  "installCommand": "bun install",
+  "framework": null
+}

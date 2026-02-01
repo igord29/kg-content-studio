@@ -12,7 +12,7 @@
 	"scripts": {
 		"prebuild": "bash create-stubs.sh",
 		"build": "echo 'Starting build...' && agentuity build && echo 'Build complete!'",
-		"postbuild": "bash fix-imports.sh",
+		"postbuild": "bash fix-host.sh && bash fix-imports.sh",
 		"dev": "agentuity dev",
 		"start": "bun .agentuity/app.js",
 		"deploy": "agentuity deploy",

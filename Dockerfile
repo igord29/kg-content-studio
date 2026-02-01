@@ -17,8 +17,8 @@ RUN bash create-stubs.sh
 # Build the application
 RUN bun run build
 
-# Fix imports after build
-RUN bash fix-imports.sh
+# Fix host binding and imports after build
+RUN bash fix-host.sh && bash fix-imports.sh
 
 # Set environment variables for production
 ENV NODE_ENV=production

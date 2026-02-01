@@ -1,5 +1,6 @@
 import { createApp } from '@agentuity/runtime';
 
+// Force Railway to rebuild with latest changes
 const { server, logger } = await createApp({
 	hostname: '0.0.0.0',
 	port: parseInt(process.env.PORT || '8080', 10),

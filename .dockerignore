@@ -1,0 +1,11 @@
+node_modules
+.agentuity
+.git
+.gitignore
+.env
+.env.*
+.vscode
+*.log
+*.md
+!README.md
+.DS_Store

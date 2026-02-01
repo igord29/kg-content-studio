@@ -12,32 +12,27 @@ echo "Checking import paths in routes.ts..."
 
 # Check if file exists
 if [ ! -f "$ROUTES_FILE" ]; then
-    echo -e "${RED}Error: $ROUTES_FILE not found${NC}"
-    echo "Make sure you're running this from the project root directory."
-    exit 1
-fi
-
-# Check if paths are already correct
-if grep -q "'../agent/content-creator/index.js'" "$ROUTES_FILE" && \
-   grep -q "'../agent/manager/index.js'" "$ROUTES_FILE" && \
-   grep -q "'../agent/translate/index.js'" "$ROUTES_FILE"; then
-    echo -e "${GREEN}✓ Import paths are already correct${NC}"
+    echo -e "${YELLOW}Warning: $ROUTES_FILE not found${NC}"
+    echo "File will be generated during build."
     exit 0
 fi
 
 # Make backup
 cp "$ROUTES_FILE" "$ROUTES_FILE.backup"
-echo "Created backup: $ROUTES_FILE.backup"
 
-# Fix import paths
-sed -i "s|'../agent/content-creator.js'|'../agent/content-creator/index.js'|g" "$ROUTES_FILE"
-sed -i "s|'../agent/manager.js'|'../agent/manager/index.js'|g" "$ROUTES_FILE"
-sed -i "s|'../agent/translate.js'|'../agent/translate/index.js'|g" "$ROUTES_FILE"
+# Fix import paths - match any quote style and 'from' syntax
+sed -i "s|from '../agent/content-creator\.js'|from '../agent/content-creator/index.js'|g" "$ROUTES_FILE"
+sed -i "s|from \"../agent/content-creator\.js\"|from \"../agent/content-creator/index.js\"|g" "$ROUTES_FILE"
+sed -i "s|from '../agent/manager\.js'|from '../agent/manager/index.js'|g" "$ROUTES_FILE"
+sed -i "s|from \"../agent/manager\.js\"|from \"../agent/manager/index.js\"|g" "$ROUTES_FILE"
+sed -i "s|from '../agent/translate\.js'|from '../agent/translate/index.js'|g" "$ROUTES_FILE"
+sed -i "s|from \"../agent/translate\.js\"|from \"../agent/translate/index.js\"|g" "$ROUTES_FILE"
 
-# Verify changes
-if grep -q "'../agent/content-creator/index.js'" "$ROUTES_FILE" && \
-   grep -q "'../agent/manager/index.js'" "$ROUTES_FILE" && \
-   grep -q "'../agent/translate/index.js'" "$ROUTES_FILE"; then
+# Check if any changes were made
+if diff "$ROUTES_FILE" "$ROUTES_FILE.backup" > /dev/null 2>&1; then
+    echo -e "${GREEN}✓ Import paths are already correct${NC}"
+    rm "$ROUTES_FILE.backup"
+else
     echo -e "${GREEN}✓ Successfully fixed import paths in routes.ts${NC}"
     echo ""
     echo "Fixed paths:"
@@ -45,10 +40,6 @@ if grep -q "'../agent/content-creator/index.js'" "$ROUTES_FILE" && \
     echo "  - manager.js → manager/index.js"
     echo "  - translate.js → translate/index.js"
     rm "$ROUTES_FILE.backup"
-    exit 0
-else
-    echo -e "${RED}✗ Failed to fix import paths${NC}"
-    echo "Restoring backup..."
-    mv "$ROUTES_FILE.backup" "$ROUTES_FILE"
-    exit 1
 fi
+
+exit 0

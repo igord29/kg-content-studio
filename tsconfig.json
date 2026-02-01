@@ -20,7 +20,10 @@
 		"noPropertyAccessFromIndexSignature": false,
 		"paths": {
 			"@agent/*": ["./src/agent/*"],
-			"@api/*": ["./src/api/*"]
+			"@api/*": ["./src/api/*"],
+			"../agent/content-creator.js": ["./src/agent/content-creator/index.ts"],
+			"../agent/manager.js": ["./src/agent/manager/index.ts"],
+			"../agent/translate.js": ["./src/agent/translate/index.ts"]
 		}
 	},
 	"include": ["src/**/*", "app.ts"]

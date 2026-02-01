@@ -5,6 +5,10 @@
 	"private": true,
 	"module": ".agentuity/app.js",
 	"type": "module",
+	"engines": {
+		"bun": ">=1.3.8",
+		"node": ">=22.0.0"
+	},
 	"scripts": {
 		"prebuild": "bash create-stubs.sh",
 		"build": "echo 'Starting build...' && agentuity build && echo 'Build complete!'",

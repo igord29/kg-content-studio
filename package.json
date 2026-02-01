@@ -6,7 +6,9 @@
 	"module": ".agentuity/app.js",
 	"type": "module",
 	"scripts": {
-		"build": "agentuity build && bash fix-imports.sh",
+		"prebuild": "bash fix-imports.sh || echo 'No routes.ts to fix yet'",
+		"build": "agentuity build",
+		"postbuild": "bash fix-imports.sh",
 		"dev": "agentuity dev",
 		"start": "bun .agentuity/app.js",
 		"deploy": "agentuity deploy",

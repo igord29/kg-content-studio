@@ -1,6 +1,19 @@
 {
-  "buildCommand": "bun run build",
-  "outputDirectory": ".agentuity",
-  "installCommand": "bun install",
-  "framework": null
+  "version": 2,
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": ".agentuity"
+      }
+    }
+  ],
+  "routes": [
+    { "handle": "filesystem" },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
 }

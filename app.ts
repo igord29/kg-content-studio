@@ -1,6 +1,8 @@
 import { createApp } from '@agentuity/runtime';
 
 const { server, logger } = await createApp({
+	hostname: '0.0.0.0',
+	port: parseInt(process.env.PORT || '8080', 10),
 	setup: async () => {
 		// anything you return from this will be automatically
 		// available in the ctx.app. this allows you to initialize

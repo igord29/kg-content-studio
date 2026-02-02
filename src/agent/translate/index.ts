@@ -5,13 +5,8 @@
  */
 import { createAgent } from '@agentuity/runtime';
 import { s } from '@agentuity/schema';
-import OpenAI from 'openai';
-
-/**
- * AI Gateway: Routes requests to OpenAI, Anthropic, and other LLM providers.
- * One SDK key, unified observability and billing; no separate API keys needed.
- */
-const client = new OpenAI();
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
 
 const LANGUAGES = ['Spanish', 'French', 'German', 'Chinese'] as const;
 const MODELS = ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo'] as const;
@@ -62,16 +57,16 @@ const agent = createAgent('translate', {
 
 		const prompt = `Translate to ${toLanguage}:\n\n${text}`;
 
-		// Call OpenAI via AI Gateway (automatically routed and tracked)
-		const completion = await client.chat.completions.create({
-			model,
-			messages: [{ role: 'user', content: prompt }],
+		// Call OpenAI via AI Gateway using Vercel AI SDK
+		const result = await generateText({
+			model: openai(model),
+			prompt,
 		});
 
-		const translation = completion.choices[0]?.message?.content ?? '';
+		const translation = result.text;
 
-		// Token usage from the response (also available via x-agentuity-tokens header)
-		const tokens = completion.usage?.total_tokens ?? 0;
+		// Token usage from the response
+		const tokens = result.usage?.totalTokens ?? 0;
 
 		// Add translation to history
 		const truncate = (str: string, len: number) =>

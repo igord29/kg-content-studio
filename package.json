@@ -10,11 +10,9 @@
 		"node": ">=22.0.0"
 	},
 	"scripts": {
-		"prebuild": "bash create-stubs.sh",
-		"build": "echo 'Starting build...' && agentuity build && echo 'Build complete!'",
-		"postbuild": "bash fix-host.sh && bash fix-imports.sh",
+		"build": "bash create-stubs.sh && agentuity build",
 		"dev": "agentuity dev",
-		"start": "bun .agentuity/app.js",
+		"start": "agentuity start",
 		"deploy": "agentuity deploy",
 		"typecheck": "bunx tsc --noEmit"
 	},
@@ -27,7 +25,8 @@
 		"react": "^19.2.0",
 		"react-dom": "^19.2.0",
 		"@agentuity/evals": "latest",
-		"openai": "latest"
+		"ai": "latest",
+		"@ai-sdk/openai": "latest"
 	},
 	"devDependencies": {
 		"@agentuity/cli": "latest",

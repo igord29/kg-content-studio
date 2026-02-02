@@ -1,6 +1,5 @@
 import { createApp } from '@agentuity/runtime';
 
-// Railway deployment - server will bind to 0.0.0.0 via env vars
 const { server, logger } = await createApp({
 	setup: async () => {
 		// anything you return from this will be automatically

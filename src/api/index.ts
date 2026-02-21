@@ -142,6 +142,58 @@ api.get('/drive-file/:fileId', async (c) => {
 	}
 });
 
+// Pre-processed file proxy — serves FFmpeg-enhanced clips from .temp-cataloger/
+// Same HMAC token approach as drive-file, but for locally pre-processed files
+api.get('/processed-file/:processedId', async (c) => {
+	const processedId = c.req.param('processedId');
+	const token = c.req.query('token');
+
+	if (!processedId || !token) {
+		return c.text('Missing processed ID or token', 400);
+	}
+
+	if (!verifyDriveProxyToken(processedId, token)) {
+		return c.text('Invalid token', 403);
+	}
+
+	try {
+		const fs = await import('fs');
+		const path = await import('path');
+
+		// Security: only serve from the .temp-cataloger/ directory
+		const tempDir = path.resolve(process.cwd(), '.temp-cataloger');
+		const filePath = path.join(tempDir, `processed_${processedId}.mp4`);
+		const resolvedPath = path.resolve(filePath);
+
+		if (!resolvedPath.startsWith(tempDir)) {
+			return c.text('Access denied', 403);
+		}
+
+		if (!fs.existsSync(resolvedPath)) {
+			return c.text('Processed file not found', 404);
+		}
+
+		const stat = fs.statSync(resolvedPath);
+		const stream = fs.createReadStream(resolvedPath);
+		const { Readable } = await import('stream');
+		const webStream = Readable.toWeb(stream as any);
+
+		return new Response(webStream as unknown as ReadableStream, {
+			status: 200,
+			headers: {
+				'Content-Type': 'video/mp4',
+				'Content-Length': String(stat.size),
+				'Cache-Control': 'public, max-age=3600',
+				'Content-Disposition': `inline; filename="processed_${processedId}.mp4"`,
+			},
+		});
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error('[processed-file proxy] Error streaming file %s: %s', processedId, msg);
+		return c.text('Failed to stream processed file: ' + msg, 500);
+	}
+});
+
 // Grant writer agent
 api.post('/grant-writer', grantWriter.validator(), async (c) => {
 	const data = c.req.valid('json');

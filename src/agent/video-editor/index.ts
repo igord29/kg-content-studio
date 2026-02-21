@@ -52,7 +52,8 @@ import {
 	MODE_RENDER_SETTINGS,
 	type RenderConfig,
 } from './shotstack';
-import { buildDriveProxyUrl } from './drive-proxy';
+import { buildDriveProxyUrl, buildProcessedFileProxyUrl } from './drive-proxy';
+import { preprocessAllClips, cleanupProcessedFiles, type PreprocessClipConfig, type PreprocessedClip } from './preprocess';
 import {
 	selectTrack,
 	shouldAddMusic,
@@ -307,6 +308,7 @@ const agent = createAgent('video-editor', {
 				trimStart?: number;
 				duration?: number;
 				purpose?: string;
+				speed?: number;
 			}>;
 
 			const overlays = (editPlanObj.textOverlays || []) as Array<{
@@ -353,24 +355,53 @@ const agent = createAgent('video-editor', {
 			ctx.logger.info('[render] Starting cloud render: %d clips, platform: %s, mode: %s, total planned duration: %ds, music: %s',
 				clips.length, platform, editMode, totalEditDuration, musicUrl ? musicSource : 'none');
 
-			// Build proxy URLs for each clip — Shotstack fetches from our API,
-			// which streams directly from Google Drive using service account auth.
-			// No need to make files public or deal with Google Drive download redirects.
+			// --- FFmpeg Pre-Processing Pipeline ---
+			// Download each clip from Google Drive, apply sharpening + speed ramping,
+			// then serve the processed files via proxy URLs for Shotstack to fetch.
+			// This replaces the old direct-proxy approach where raw clips went to Shotstack.
+
+			const preprocessConfigs: PreprocessClipConfig[] = clips.map((clip) => ({
+				fileId: clip.fileId,
+				filename: clip.filename,
+				trimStart: clip.trimStart || 0,
+				duration: clip.duration || MODE_RENDER_SETTINGS[editMode]?.defaultClipLength || 5,
+				speed: clip.speed,     // undefined = 1.0 (default)
+				sharpen: true,         // always sharpen phone footage
+			}));
+
+			let processedClips: PreprocessedClip[];
+			try {
+				ctx.logger.info('[render] Pre-processing %d clips (sharpen + speed ramp)...', preprocessConfigs.length);
+				processedClips = await preprocessAllClips(preprocessConfigs, ctx.logger);
+				ctx.logger.info('[render] Pre-processing complete: %d clips ready', processedClips.length);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.logger.error('[render] Pre-processing failed: %s', msg);
+				return {
+					success: false,
+					error: 'FFmpeg pre-processing failed: ' + msg,
+				};
+			}
+
+			// Build proxy URLs for processed files — Shotstack fetches from our API,
+			// which streams the pre-processed (sharpened + speed-ramped) files from disk.
+			// trim=0 because pre-processing already applied trimStart/duration.
 			const renderClips: Array<{ src: string; trim: number; length: number }> = [];
 
-			for (let i = 0; i < clips.length; i++) {
-				const clip = clips[i]!;
-				const clipDuration = clip.duration || MODE_RENDER_SETTINGS[editMode]?.defaultClipLength || 5;
+			for (let i = 0; i < processedClips.length; i++) {
+				const processed = processedClips[i]!;
+				const originalClip = clips[i]!;
 
-				const proxyUrl = buildDriveProxyUrl(appUrl, clip.fileId);
-				ctx.logger.info('[render] Clip %d/%d: %s (%s) trim=%ds dur=%ds purpose="%s"',
-					i + 1, clips.length, clip.fileId, clip.filename || 'unknown',
-					clip.trimStart || 0, clipDuration, clip.purpose || 'unspecified');
+				const proxyUrl = buildProcessedFileProxyUrl(appUrl, processed.processedId);
+				ctx.logger.info('[render] Clip %d/%d: %s (%s) processed=%s effectiveDur=%ds speed=%sx purpose="%s"',
+					i + 1, processedClips.length, processed.originalFileId, originalClip.filename || 'unknown',
+					processed.processedId, processed.effectiveDuration.toFixed(1), processed.speed,
+					originalClip.purpose || 'unspecified');
 
 				renderClips.push({
 					src: proxyUrl,
-					trim: clip.trimStart || 0,
-					length: clipDuration,
+					trim: 0,  // already trimmed during pre-processing
+					length: processed.effectiveDuration,
 				});
 			}
 
@@ -391,15 +422,26 @@ const agent = createAgent('video-editor', {
 				const renderId = await submitRenderTimeline(timeline);
 				ctx.logger.info('[render] Submitted. Render ID: %s', renderId);
 
+				// Schedule background cleanup of processed files after Shotstack fetches them.
+				// Shotstack typically fetches within 30-60s of submission, so we wait 10 minutes
+				// to be safe, then delete the processed files from disk.
+				setTimeout(async () => {
+					ctx.logger.info('[render] Cleaning up %d pre-processed files...', processedClips.length);
+					await cleanupProcessedFiles(processedClips);
+					ctx.logger.info('[render] Cleanup complete');
+				}, 10 * 60 * 1000);
+
 				return {
 					success: true,
 					renderId,
 					renderStatus: 'queued',
 					renderPlatform: platform,
 					renderMode: editMode,
-					message: `Render submitted: ${clips.length} clips, ${overlays.length} overlays (via proxy)`,
+					message: `Render submitted: ${clips.length} clips (pre-processed with sharpening${clips.some(c => c.speed && c.speed !== 1.0) ? ' + speed ramping' : ''}), ${overlays.length} overlays`,
 				};
 			} catch (err) {
+				// Clean up processed files on submission failure
+				await cleanupProcessedFiles(processedClips);
 				const msg = err instanceof Error ? err.message : String(err);
 				ctx.logger.error('[render] Submission failed: %s', msg);
 				return {
@@ -563,42 +605,65 @@ const agent = createAgent('video-editor', {
 				fs.mkdirSync(tempDir, { recursive: true });
 			}
 
-			// Download all source videos from Google Drive
-			const localFiles: string[] = [];
-			try {
-				for (let i = 0; i < videoIds.length; i++) {
-					const fileId = videoIds[i]!;
-					const localPath = path.join(tempDir, `clip_${i}_${fileId}.mp4`);
-					ctx.logger.info('[video-editor] Downloading clip %d/%d: %s', i + 1, videoIds.length, fileId);
-					await downloadVideo(fileId, localPath);
-					localFiles.push(localPath);
-				}
-			} catch (err) {
-				return {
-					success: false,
-					ffmpegAvailable: true,
-					error: 'Failed to download videos: ' + (err instanceof Error ? err.message : String(err)),
-				};
-			}
-
 			// Build FFmpeg command from edit plan
 			// editPlan may be a string (raw AI text), a structured object, or null
 			const editPlanObj = (rawEditPlan && typeof rawEditPlan === 'object') ? rawEditPlan as Record<string, unknown> : null;
 			const platformConfig = PLATFORM_SETTINGS[platform] || PLATFORM_SETTINGS['youtube']!;
 			const modeConfig = MODE_RENDER_SETTINGS[editMode] || MODE_RENDER_SETTINGS['game_day']!;
-			const editPlanClips = editPlanObj?.clips as Array<{ trimStart?: number; duration?: number }> | undefined;
+			const editPlanClips = editPlanObj?.clips as Array<{ fileId?: string; trimStart?: number; duration?: number; speed?: number }> | undefined;
+
+			// --- Pre-process clips: download from Drive, apply sharpen + speed ---
+			const preprocessConfigs: PreprocessClipConfig[] = [];
+
+			if (editPlanClips && editPlanClips.length > 0) {
+				// Use edit plan clip configs (includes trimStart, duration, speed)
+				for (const clip of editPlanClips) {
+					preprocessConfigs.push({
+						fileId: clip.fileId || videoIds[0]!,
+						trimStart: clip.trimStart || 0,
+						duration: clip.duration || modeConfig.defaultClipLength,
+						speed: clip.speed,
+						sharpen: true,
+					});
+				}
+			} else {
+				// Fallback: use raw videoIds with default trim
+				for (const fileId of videoIds) {
+					preprocessConfigs.push({
+						fileId,
+						trimStart: 0,
+						duration: modeConfig.defaultClipLength,
+						sharpen: true,
+					});
+				}
+			}
+
+			let processedClips: PreprocessedClip[];
+			try {
+				ctx.logger.info('[render-local] Pre-processing %d clips (sharpen + speed ramp)...', preprocessConfigs.length);
+				processedClips = await preprocessAllClips(preprocessConfigs, ctx.logger);
+				ctx.logger.info('[render-local] Pre-processing complete: %d clips ready', processedClips.length);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.logger.error('[render-local] Pre-processing failed: %s', msg);
+				return {
+					success: false,
+					ffmpegAvailable: true,
+					error: 'FFmpeg pre-processing failed: ' + msg,
+				};
+			}
 
 			const outputFilename = `render_${platform}_${editMode}_${Date.now()}.mp4`;
 			const outputPath = path.join(tempDir, outputFilename);
 
-			// Build filter_complex for concatenation with transitions
+			// Build filter_complex for concatenation — clips are already trimmed + enhanced
 			const inputArgs: string[] = [];
 			const filterParts: string[] = [];
 
-			for (let i = 0; i < localFiles.length; i++) {
-				const trimStart = editPlanClips?.[i]?.trimStart || 0;
-				const duration = editPlanClips?.[i]?.duration || modeConfig.defaultClipLength;
-				inputArgs.push('-ss', String(trimStart), '-t', String(duration), '-i', `"${localFiles[i]}"`);
+			for (let i = 0; i < processedClips.length; i++) {
+				const pc = processedClips[i]!;
+				// No -ss/-t needed — pre-processed files are already trimmed
+				inputArgs.push('-i', `"${pc.localPath}"`);
 				filterParts.push(
 					`[${i}:v]scale=${platformConfig.width}:${platformConfig.height}:force_original_aspect_ratio=decrease,` +
 					`pad=${platformConfig.width}:${platformConfig.height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}]`
@@ -606,15 +671,18 @@ const agent = createAgent('video-editor', {
 			}
 
 			// Concatenate all scaled clips
-			const concatInputs = localFiles.map((_, i) => `[v${i}]`).join('');
-			filterParts.push(`${concatInputs}concat=n=${localFiles.length}:v=1:a=0[outv]`);
+			const concatInputs = processedClips.map((_, i) => `[v${i}]`).join('');
+			filterParts.push(`${concatInputs}concat=n=${processedClips.length}:v=1:a=0[outv]`);
 
 			const filterComplex = filterParts.join('; ');
 			const ffmpegCmd = `ffmpeg -y ${inputArgs.join(' ')} -filter_complex "${filterComplex}" -map "[outv]" -c:v libx264 -preset fast -crf 23 -r 30 "${outputPath}"`;
 
 			try {
-				ctx.logger.info('[video-editor] Running FFmpeg render...');
+				ctx.logger.info('[render-local] Running FFmpeg concat render...');
 				execSync(ffmpegCmd, { stdio: 'pipe', timeout: 300000 });
+
+				// Clean up pre-processed intermediates
+				await cleanupProcessedFiles(processedClips);
 
 				return {
 					success: true,
@@ -622,9 +690,11 @@ const agent = createAgent('video-editor', {
 					localOutputPath: outputPath,
 					renderPlatform: platform,
 					renderMode: editMode,
-					message: `Local render complete: ${outputPath}`,
+					message: `Local render complete (with sharpening): ${outputPath}`,
 				};
 			} catch (err) {
+				// Clean up on failure too
+				await cleanupProcessedFiles(processedClips);
 				return {
 					success: false,
 					ffmpegAvailable: true,

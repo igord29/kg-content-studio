@@ -55,3 +55,14 @@ export function buildDriveProxyUrl(appUrl: string, fileId: string): string {
 	const base = appUrl.endsWith('/') ? appUrl.slice(0, -1) : appUrl;
 	return `${base}/api/drive-file/${encodeURIComponent(fileId)}?token=${token}`;
 }
+
+/**
+ * Build a signed proxy URL for a pre-processed local file.
+ * Shotstack fetches from this URL to get FFmpeg-enhanced clips
+ * (sharpened, speed-ramped) from .temp-cataloger/.
+ */
+export function buildProcessedFileProxyUrl(appUrl: string, processedId: string): string {
+	const token = createDriveProxyToken(processedId);
+	const base = appUrl.endsWith('/') ? appUrl.slice(0, -1) : appUrl;
+	return `${base}/api/processed-file/${encodeURIComponent(processedId)}?token=${token}`;
+}

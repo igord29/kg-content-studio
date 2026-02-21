@@ -541,8 +541,9 @@ CRITICAL: Each source video should be broken into MULTIPLE clip segments at diff
       "fileId": "google_drive_file_id",
       "filename": "original_filename.MP4",
       "trimStart": 55,
-      "duration": 2,
-      "purpose": "peak — winning point celebration"
+      "duration": 4,
+      "speed": 0.5,
+      "purpose": "peak — winning point celebration in SLOW-MO (4s source → 8s screen time)"
     },
     {
       "fileId": "google_drive_file_id",
@@ -562,8 +563,9 @@ CRITICAL: Each source video should be broken into MULTIPLE clip segments at diff
       "fileId": "google_drive_file_id",
       "filename": "original_filename.MP4",
       "trimStart": 44,
-      "duration": 2,
-      "purpose": "build — action from different angle"
+      "duration": 6,
+      "speed": 2.0,
+      "purpose": "build — fast-motion montage of setup sequence (6s source → 3s screen time)"
     },
     {
       "fileId": "google_drive_file_id",
@@ -600,17 +602,37 @@ CRITICAL: Each source video should be broken into MULTIPLE clip segments at diff
 }
 \`\`\`
 
+SPEED RAMPING (optional per clip):
+- "speed": 0.5 = slow-motion — use for peak moments: winning shots, celebrations, emotional reactions. Makes the viewer FEEL the moment.
+- "speed": 1.0 = normal speed — default. Omit the field or set explicitly.
+- "speed": 1.5 = slightly fast — good for montage transitions, setup sequences, walking shots.
+- "speed": 2.0 = double speed — time-lapse of setup, establishing location, walking approaches.
+- Range: 0.25 to 4.0. Stay within 0.5 to 2.0 for most edits.
+- Use slow-mo SPARINGLY — one or two peak moments per edit maximum. Overuse kills the impact.
+- When speed ≠ 1.0, effective output duration = duration / speed:
+  - 4s clip at speed=0.5 → 8s of screen time (slow-mo stretches it)
+  - 6s clip at speed=2.0 → 3s of screen time (fast-forward compresses it)
+  - Account for this when calculating totalDuration!
+- Best uses per mode:
+  - Game Day: slow-mo on the winning point or celebration, fast-forward on setup/warmup
+  - Our Story: slow-mo on the emotional peak moment, normal speed for everything else
+  - Quick Hit: generally normal speed (keeps it authentic), occasional slow-mo for impact
+  - Showcase: slow-mo on hero moments, fast-forward on establishing/montage sections
+
+NOTE ON SHARPENING: All clips are automatically sharpened during pre-processing. Phone footage tends to be soft — the render engine applies a moderate sharpening filter (unsharp 5x5, 0.8 luma) to make everything crisper without introducing noise. You don't need to specify this in the edit plan.
+
 Rules for the JSON:
 - clips[].fileId must match the Google Drive file ID from the footage list provided
 - clips[].trimStart is seconds into the SOURCE video where this segment begins
 - clips[].duration is how many seconds of the source to use
+- clips[].speed is optional (default 1.0). Use 0.5 for slow-mo on peak moments, 1.5-2.0 for fast montage. Omit for normal speed.
 - The SAME fileId SHOULD appear multiple times with different trimStart values — this is how you cut multiple moments from one source video
 - clips must be in playback order (first clip in array plays first)
 - You MUST include at least 6 clip segments. 8-12 is ideal for dynamic edits.
 - Vary trimStart across the FULL duration of the source — don't cluster in the first 20 seconds
-- textOverlays[].start is seconds into the OUTPUT timeline
+- textOverlays[].start is seconds into the OUTPUT timeline (account for speed-adjusted durations!)
 - position is one of: "top", "center", "bottom"
 - transitions is one of: "fast_cuts", "crossfade", "minimal"
-- totalDuration should match the target platform duration (TikTok: 25-45s, YouTube: 60-120s, etc.) — NOT always 15 seconds
+- totalDuration should match the target platform duration (TikTok: 25-45s, YouTube: 60-120s, etc.) — NOT always 15 seconds. Remember to use effective durations (duration/speed) when calculating total.
 - Always include this JSON block — the render engine cannot function without it
 `;

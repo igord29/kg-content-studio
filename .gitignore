@@ -32,6 +32,7 @@ credentials/
 !package-lock.json
 !tsconfig.json
 !agentuity.config.json
+!src/agent/video-editor/catalog-seed.json
 
 # Large catalog data files
 catalog-results.json

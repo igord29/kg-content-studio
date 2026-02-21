@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // --- Types ---
 
@@ -43,6 +43,27 @@ interface EditPlanResult {
 	message?: string;
 }
 
+interface ReviewIssue {
+	severity: 'critical' | 'warning' | 'suggestion';
+	timestamp: string;
+	category: 'pacing' | 'storytelling' | 'platform' | 'visual' | 'text';
+	description: string;
+	fix: string;
+}
+
+interface VideoReview {
+	overallScore: number;
+	storytellingScore: number;
+	pacingScore: number;
+	platformFitScore: number;
+	storyArc: 'clear' | 'weak' | 'missing';
+	hookEffectiveness: string;
+	endingQuality: string;
+	issues: ReviewIssue[];
+	strengths: string[];
+	summary: string;
+}
+
 interface RenderJob {
 	platform: string;
 	renderId?: string;
@@ -51,6 +72,11 @@ interface RenderJob {
 	error?: string;
 	method: 'shotstack' | 'ffmpeg';
 	localOutputPath?: string;
+	// Review state
+	review?: VideoReview | null;
+	reviewStatus?: 'idle' | 'reviewing' | 'done' | 'failed';
+	reviewError?: string;
+	revisedEditPlan?: any;
 }
 
 const RENDER_STATUS_MESSAGES: Record<string, string> = {
@@ -817,6 +843,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 	// --- Render handlers ---
 
+	// Ref to hold the latest triggerReview so pollRenderStatus can call it stably
+	const triggerReviewRef = useRef<(downloadUrl: string, platform: string, mode: string) => void>(() => {});
+
 	const pollRenderStatus = useCallback(async (
 		renderId: string,
 		platform: string,
@@ -874,6 +903,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						} catch {
 							// best-effort save — don't block the UI
 						}
+
+						// Auto-trigger AI review of the rendered video
+						triggerReviewRef.current(data.downloadUrl, platform, renderMeta.mode);
 					}
 
 					if (newStatus !== 'done' && newStatus !== 'failed') {
@@ -889,6 +921,62 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 		setTimeout(poll, pollInterval);
 	}, []);
+
+	// --- AI Review ---
+
+	const triggerReview = useCallback(async (downloadUrl: string, platform: string, mode: string) => {
+		// Mark this job as reviewing
+		setRenderJobs(prev => prev.map(j =>
+			j.platform === platform && j.method === 'shotstack' && j.status === 'done'
+				? { ...j, reviewStatus: 'reviewing' as const }
+				: j
+		));
+
+		try {
+			const resp = await fetch('/api/video-editor', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					task: 'review-render',
+					reviewUrl: downloadUrl,
+					platform,
+					editMode: mode,
+					originalEditPlan: editPlanData || null,
+					autoRevise: true,
+				}),
+			});
+
+			const data = await resp.json();
+
+			if (data.success && data.review) {
+				setRenderJobs(prev => prev.map(j =>
+					j.platform === platform && j.method === 'shotstack' && j.reviewStatus === 'reviewing'
+						? {
+							...j,
+							reviewStatus: 'done' as const,
+							review: data.review as VideoReview,
+							revisedEditPlan: data.revisedEditPlanData || null,
+						}
+						: j
+				));
+			} else {
+				setRenderJobs(prev => prev.map(j =>
+					j.platform === platform && j.method === 'shotstack' && j.reviewStatus === 'reviewing'
+						? { ...j, reviewStatus: 'failed' as const, reviewError: data.error || 'Review failed' }
+						: j
+				));
+			}
+		} catch (err) {
+			setRenderJobs(prev => prev.map(j =>
+				j.platform === platform && j.method === 'shotstack' && j.reviewStatus === 'reviewing'
+					? { ...j, reviewStatus: 'failed' as const, reviewError: err instanceof Error ? err.message : 'Network error' }
+					: j
+			));
+		}
+	}, [editPlanData]);
+
+	// Keep the ref in sync with the latest triggerReview
+	triggerReviewRef.current = triggerReview;
 
 	const handleRenderPlatform = useCallback(async (platform: string, method: 'shotstack' | 'ffmpeg') => {
 		// Add or update job entry
@@ -976,6 +1064,8 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						));
 						// Immediately done — save to library now
 						saveToLibrary(data.downloadUrl, data.renderId);
+						// Auto-trigger AI review
+						triggerReviewRef.current(data.downloadUrl, platform, renderMeta.mode);
 					} else if (data.renderId) {
 						setRenderJobs(prev => prev.map(j =>
 							j.platform === platform && j.method === method
@@ -1002,7 +1092,81 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					: j
 			));
 		}
-	}, [selectedIds, selectedMode, editPlan, editPlanData, topic, pollRenderStatus]);
+	}, [selectedIds, selectedMode, editPlan, editPlanData, topic, pollRenderStatus, triggerReview]);
+
+	const handleReviseAndRerender = useCallback(async (platform: string) => {
+		// Find the job with a revised edit plan
+		const job = renderJobs.find(j => j.platform === platform && j.method === 'shotstack' && j.revisedEditPlan);
+		if (!job?.revisedEditPlan) return;
+
+		// Swap the edit plan data to the revised version
+		setEditPlanData(job.revisedEditPlan);
+
+		// Clear the old review state and reset render status
+		setRenderJobs(prev => prev.map(j =>
+			j.platform === platform && j.method === 'shotstack'
+				? {
+					...j,
+					status: 'submitting' as const,
+					review: null,
+					reviewStatus: 'idle' as const,
+					revisedEditPlan: undefined,
+					reviewError: undefined,
+					downloadUrl: undefined,
+					error: undefined,
+					renderId: undefined,
+				}
+				: j
+		));
+
+		// Re-submit the render with the revised edit plan
+		try {
+			const resp = await fetch('/api/video-editor', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					task: 'render',
+					videoIds: Array.from(selectedIds),
+					editPlan: job.revisedEditPlan,
+					platform,
+					editMode: selectedMode === 'auto' ? 'game_day' : selectedMode,
+					musicUrl: musicEnabled ? (customMusicUrl.trim() || undefined) : undefined,
+					musicDisabled: !musicEnabled,
+				}),
+			});
+
+			const data = await resp.json();
+
+			if (data.success && data.renderId) {
+				const renderMeta = {
+					mode: selectedMode === 'auto' ? 'game_day' : selectedMode,
+					topic,
+					clipCount: Array.isArray(job.revisedEditPlan.clips) ? job.revisedEditPlan.clips.length : 0,
+					editPlanSummary: 'Revised edit plan from AI review',
+				};
+
+				setRenderJobs(prev => prev.map(j =>
+					j.platform === platform && j.method === 'shotstack'
+						? { ...j, status: 'queued' as const, renderId: data.renderId }
+						: j
+				));
+
+				pollRenderStatus(data.renderId, platform, renderMeta);
+			} else {
+				setRenderJobs(prev => prev.map(j =>
+					j.platform === platform && j.method === 'shotstack'
+						? { ...j, status: 'failed' as const, error: data.error || 'Re-render failed' }
+						: j
+				));
+			}
+		} catch (err) {
+			setRenderJobs(prev => prev.map(j =>
+				j.platform === platform && j.method === 'shotstack'
+					? { ...j, status: 'failed' as const, error: err instanceof Error ? err.message : 'Network error' }
+					: j
+			));
+		}
+	}, [renderJobs, selectedIds, selectedMode, topic, musicEnabled, customMusicUrl, pollRenderStatus]);
 
 	const handleRenderAll = useCallback(async (method: 'shotstack' | 'ffmpeg') => {
 		setRenderingAll(true);
@@ -2777,6 +2941,200 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 														Download
 													</a>
 												)}
+
+												{/* AI Review section */}
+												{shotstackJob?.reviewStatus === 'reviewing' && (
+													<div style={{
+														marginTop: 6,
+														padding: '6px 8px',
+														borderRadius: 4,
+														border: `1px solid ${S.borderColor}`,
+														background: '#0a0d14',
+														fontFamily: S.mono,
+														fontSize: 9,
+														color: S.orange,
+													}}>
+														Reviewing render with AI...
+													</div>
+												)}
+
+												{shotstackJob?.reviewStatus === 'failed' && (
+													<div style={{
+														marginTop: 6,
+														fontFamily: S.mono,
+														fontSize: 9,
+														color: S.red,
+													}}>
+														Review failed: {shotstackJob.reviewError}
+													</div>
+												)}
+
+												{shotstackJob?.reviewStatus === 'done' && shotstackJob.review && (() => {
+													const r = shotstackJob.review;
+													const scoreColor = (score: number) =>
+														score >= 8 ? S.accentLight : score >= 5 ? S.orange : S.red;
+													const severityColor = (sev: string) =>
+														sev === 'critical' ? S.red : sev === 'warning' ? S.orange : S.textMuted;
+													const hasCritical = r.issues.some(i => i.severity === 'critical' || i.severity === 'warning');
+
+													return (
+														<div style={{
+															marginTop: 8,
+															padding: '8px',
+															borderRadius: 6,
+															border: `1px solid ${hasCritical ? '#92400e' : S.accent}`,
+															background: hasCritical ? '#92400e10' : '#2D6A4F10',
+														}}>
+															{/* Score row */}
+															<div style={{
+																display: 'flex',
+																gap: 10,
+																marginBottom: 6,
+																flexWrap: 'wrap',
+															}}>
+																{[
+																	{ label: 'Overall', score: r.overallScore },
+																	{ label: 'Story', score: r.storytellingScore },
+																	{ label: 'Pacing', score: r.pacingScore },
+																	{ label: 'Platform', score: r.platformFitScore },
+																].map(({ label: lbl, score }) => (
+																	<div key={lbl} style={{
+																		fontFamily: S.mono,
+																		fontSize: 9,
+																		color: S.textMuted,
+																	}}>
+																		{lbl}:{' '}
+																		<span style={{
+																			color: scoreColor(score),
+																			fontWeight: 700,
+																		}}>
+																			{score}/10
+																		</span>
+																	</div>
+																))}
+															</div>
+
+															{/* Story arc */}
+															<div style={{
+																fontFamily: S.mono,
+																fontSize: 8,
+																color: S.textMuted,
+																marginBottom: 4,
+															}}>
+																Arc: <span style={{
+																	color: r.storyArc === 'clear' ? S.accentLight
+																		: r.storyArc === 'weak' ? S.orange : S.red,
+																}}>{r.storyArc}</span>
+																{' · '}Hook: {r.hookEffectiveness}
+																{' · '}End: {r.endingQuality}
+															</div>
+
+															{/* Summary */}
+															<div style={{
+																fontFamily: S.serif,
+																fontSize: 10,
+																color: S.textPrimary,
+																lineHeight: 1.4,
+																marginBottom: r.issues.length > 0 ? 6 : 0,
+															}}>
+																{r.summary}
+															</div>
+
+															{/* Issues */}
+															{r.issues.length > 0 && (
+																<div style={{ marginBottom: 6 }}>
+																	<div style={{
+																		fontFamily: S.mono,
+																		fontSize: 8,
+																		color: S.textMuted,
+																		letterSpacing: 1,
+																		textTransform: 'uppercase' as const,
+																		marginBottom: 3,
+																	}}>
+																		Issues ({r.issues.length})
+																	</div>
+																	{r.issues.slice(0, 5).map((issue, idx) => (
+																		<div key={idx} style={{
+																			fontFamily: S.mono,
+																			fontSize: 8,
+																			color: severityColor(issue.severity),
+																			padding: '2px 0',
+																			borderBottom: idx < Math.min(r.issues.length, 5) - 1
+																				? `1px solid ${S.borderColor}` : 'none',
+																		}}>
+																			<span style={{ textTransform: 'uppercase' as const, fontWeight: 700 }}>
+																				{issue.severity}
+																			</span>
+																			{' '}[{issue.category}] {issue.description}
+																			<div style={{ color: S.textMuted, paddingLeft: 8 }}>
+																				Fix: {issue.fix}
+																			</div>
+																		</div>
+																	))}
+																	{r.issues.length > 5 && (
+																		<div style={{
+																			fontFamily: S.mono,
+																			fontSize: 8,
+																			color: S.textDim,
+																			marginTop: 2,
+																		}}>
+																			+{r.issues.length - 5} more issues
+																		</div>
+																	)}
+																</div>
+															)}
+
+															{/* Strengths */}
+															{r.strengths.length > 0 && (
+																<div style={{ marginBottom: 6 }}>
+																	<div style={{
+																		fontFamily: S.mono,
+																		fontSize: 8,
+																		color: S.textMuted,
+																		letterSpacing: 1,
+																		textTransform: 'uppercase' as const,
+																		marginBottom: 3,
+																	}}>
+																		Strengths
+																	</div>
+																	{r.strengths.slice(0, 3).map((s_item, idx) => (
+																		<div key={idx} style={{
+																			fontFamily: S.mono,
+																			fontSize: 8,
+																			color: S.accentLight,
+																			padding: '1px 0',
+																		}}>
+																			+ {s_item}
+																		</div>
+																	))}
+																</div>
+															)}
+
+															{/* Revise & Re-render button */}
+															{hasCritical && shotstackJob.revisedEditPlan && (
+																<button
+																	onClick={() => handleReviseAndRerender(platformId)}
+																	style={{
+																		width: '100%',
+																		padding: '6px 10px',
+																		borderRadius: 4,
+																		border: `1px solid ${S.orange}`,
+																		background: '#92400e20',
+																		color: S.orange,
+																		cursor: 'pointer',
+																		fontFamily: S.mono,
+																		fontSize: 9,
+																		fontWeight: 700,
+																		letterSpacing: 0.5,
+																	}}
+																	type="button"
+																>
+																	Revise &amp; Re-render
+																</button>
+															)}
+														</div>
+													);
+												})()}
 
 												{/* FFmpeg render status */}
 												{ffmpegJob && (

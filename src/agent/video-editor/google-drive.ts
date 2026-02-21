@@ -84,10 +84,9 @@ export interface CatalogEntry {
   sceneAnalysis?: {
     duration: number;
     sceneChanges: Array<{ timestamp: number; score: number }>;
-    motionPeaks: Array<{ timestamp: number; intensity: number }>;
+    highMotionMoments: number[];
     quietMoments: number[];
     recommendedHooks: number[];
-    recommendedCloseups: number[];
   };
 }
 

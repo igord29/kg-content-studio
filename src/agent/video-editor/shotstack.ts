@@ -652,13 +652,37 @@ export function buildRenderTimeline(config: RenderConfig): object {
 		return clipObj;
 	});
 
+	// --- Calculate actual video track duration ---
+	// This prevents text overlays from extending past video content (which causes black frames)
+	const lastClip = videoClips[videoClips.length - 1] as { start: number; length: number } | undefined;
+	const videoDuration = lastClip ? lastClip.start + lastClip.length : 0;
+
 	// --- Build professional text overlays using HTML asset ---
 	// HTML assets give us full control over fonts, colors, backgrounds, and layout
 	// compared to the basic "title" asset which looks generic
+	// CLAMP: all overlays must fit within the video duration to prevent black screen at end
 	const textClips = (config.textOverlays || []).map((overlay, idx) => {
 		const position = overlay.position || 'bottom';
 		const isFirst = idx === 0;    // hook text gets special treatment
 		const isLast = idx === (config.textOverlays?.length || 0) - 1;
+
+		// Clamp overlay timing to video duration
+		let start = overlay.start;
+		let duration = overlay.duration;
+
+		if (videoDuration > 0) {
+			// Overlay must not start after video ends
+			if (start >= videoDuration) {
+				start = videoDuration - duration - 0.5;
+			}
+			// Overlay must not extend past video content
+			if (start + duration > videoDuration) {
+				duration = videoDuration - start - 0.2;
+			}
+			// Safety bounds
+			if (start < 0) start = 0;
+			if (duration < 0.5) duration = 0.5;
+		}
 
 		// Mode-specific text styling
 		const textStyle = getTextStyle(config.mode, position, isFirst, isLast);
@@ -671,8 +695,8 @@ export function buildRenderTimeline(config: RenderConfig): object {
 				width: textStyle.width,
 				height: textStyle.height,
 			},
-			start: overlay.start,
-			length: overlay.duration,
+			start,
+			length: duration,
 			transition: {
 				in: isFirst ? 'fade' : 'fadeFast',
 				out: 'fadeFast',

@@ -946,9 +946,9 @@ async function analyzeVideoScenesFromPath(
 		}
 	}
 
-	const motionPeaks = sceneChanges
-		.filter(sc => sc.timestamp > 1 && sc.timestamp < duration - 1)
-		.map(sc => ({ timestamp: sc.timestamp, intensity: sc.score }));
+	const highMotionMoments = sceneChanges
+		.filter(sc => sc.timestamp > 2 && sc.timestamp < duration * 0.8)
+		.map(sc => sc.timestamp);
 
 	const quietMoments: number[] = [];
 	const sorted = [...sceneChanges].sort((a, b) => a.timestamp - b.timestamp);
@@ -970,16 +970,24 @@ async function analyzeVideoScenesFromPath(
 	}
 
 	const earlyScenes = sceneChanges.filter(sc => sc.timestamp < duration * 0.3);
-	const recommendedHooks = earlyScenes.slice(0, 3).map(sc => sc.timestamp);
-	const recommendedCloseups = quietMoments.filter(t => t < duration * 0.5).slice(0, 3);
+	const recommendedHooks = earlyScenes.slice(0, 5).map(sc => sc.timestamp);
+
+	// If no hooks found from scene changes, suggest evenly spaced timestamps in first 30%
+	if (recommendedHooks.length === 0 && duration > 3) {
+		const hookWindow = duration * 0.3;
+		recommendedHooks.push(
+			Math.round(hookWindow * 0.2 * 10) / 10,
+			Math.round(hookWindow * 0.5 * 10) / 10,
+			Math.round(hookWindow * 0.8 * 10) / 10,
+		);
+	}
 
 	return {
 		duration,
 		sceneChanges,
-		motionPeaks,
+		highMotionMoments,
 		quietMoments,
 		recommendedHooks,
-		recommendedCloseups,
 	};
 }
 

@@ -1,6 +1,6 @@
 /**
  * Scene Analyzer
- * Uses FFmpeg to detect scene changes, motion peaks, and key moments in videos.
+ * Uses FFmpeg to detect scene changes and key moments in videos.
  * Results are stored in the catalog to help the AI make better editing decisions.
  *
  * File: src/agent/video-editor/scene-analyzer.ts
@@ -13,25 +13,18 @@ export interface SceneChange {
 	score: number;           // 0-1, how dramatic the scene change is
 }
 
-export interface MotionPeak {
-	timestamp: number;
-	intensity: number;       // relative motion intensity
-}
-
 export interface SceneAnalysis {
-	duration: number;               // total video duration in seconds
-	sceneChanges: SceneChange[];    // detected scene boundaries
-	motionPeaks: MotionPeak[];      // high-motion moments (action, celebration)
-	quietMoments: number[];         // timestamps of low-motion (good for interviews, establishing shots)
-	recommendedHooks: number[];     // best timestamps for opening hooks (high motion + scene change)
-	recommendedCloseups: number[];  // timestamps likely showing faces/close interaction
+	duration: number;
+	sceneChanges: SceneChange[];
+	highMotionMoments: number[];     // timestamps of peak action
+	quietMoments: number[];          // timestamps of calm (interviews, establishing)
+	recommendedHooks: number[];      // best timestamps for opening hooks
 }
 
 /**
- * Analyze a video for scene changes and motion using FFmpeg.
- * Downloads the video temporarily, runs analysis, cleans up.
+ * Analyze a video for scene changes using FFmpeg.
  */
-export async function analyzeVideoScenes(fileId: string, _filename: string): Promise<SceneAnalysis> {
+export async function analyzeVideoScenes(fileId: string, filename: string): Promise<SceneAnalysis> {
 	const fs = await import('fs');
 	const path = await import('path');
 	const { execSync } = await import('child_process');
@@ -49,132 +42,104 @@ export async function analyzeVideoScenes(fileId: string, _filename: string): Pro
 
 		// Get video duration
 		const durationOutput = execSync(
-			`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${localPath}"`,
-			{ encoding: 'utf-8', timeout: 30000 },
-		).trim();
+			`ffprobe -v error -show_entries format=duration -of csv=p=0 "${localPath}"`,
+			{ stdio: 'pipe' }
+		).toString().trim();
 		const duration = parseFloat(durationOutput) || 0;
 
-		if (duration <= 0) {
-			return {
-				duration: 0,
-				sceneChanges: [],
-				motionPeaks: [],
-				quietMoments: [],
-				recommendedHooks: [],
-				recommendedCloseups: [],
-			};
-		}
-
-		// Detect scene changes using ffmpeg's scene detection filter.
-		// This outputs timestamps where the visual content changes significantly.
-		// We use showinfo to get pts_time for each detected scene change.
+		// Detect scene changes (threshold 0.3 = moderate sensitivity)
 		let sceneOutput = '';
 		try {
 			sceneOutput = execSync(
 				`ffmpeg -i "${localPath}" -vf "select='gt(scene,0.3)',showinfo" -f null - 2>&1`,
-				{ encoding: 'utf-8', timeout: 120000 },
-			);
+				{ stdio: 'pipe', timeout: 120000 }
+			).toString();
 		} catch (err: any) {
-			// ffmpeg writes to stderr, which execSync treats as an error with stdio: 'pipe'
-			// but with default stdio the output comes through — use the error output if available
-			if (err.stderr) {
-				sceneOutput = err.stderr.toString();
-			} else if (err.stdout) {
-				sceneOutput = err.stdout.toString();
-			}
+			// FFmpeg outputs to stderr even on success, capture it
+			sceneOutput = err.stderr?.toString() || err.stdout?.toString() || '';
 		}
 
 		const sceneChanges: SceneChange[] = [];
-		const sceneRegex = /pts_time:\s*(\d+\.?\d*)/g;
+		const sceneRegex = /pts_time:(\d+\.?\d*)/g;
 		let match;
 		while ((match = sceneRegex.exec(sceneOutput)) !== null) {
 			const ts = parseFloat(match[1]!);
 			if (!isNaN(ts)) {
 				sceneChanges.push({
-					timestamp: ts,
-					score: 0.5, // default score
+					timestamp: Math.round(ts * 10) / 10,
+					score: 0.5,
 				});
 			}
 		}
 
-		// Use scene changes as proxy for motion peaks — scene changes in the middle
-		// of the video tend to correlate with action moments
-		const motionPeaks: MotionPeak[] = sceneChanges
-			.filter(sc => sc.timestamp > 1 && sc.timestamp < duration - 1)
-			.map(sc => ({ timestamp: sc.timestamp, intensity: sc.score }));
+		// High motion moments: scene changes in the first 80% of the video
+		// (action tends to happen mid-video, not at start/end)
+		const highMotionMoments = sceneChanges
+			.filter(sc => sc.timestamp > 2 && sc.timestamp < duration * 0.8)
+			.map(sc => sc.timestamp);
 
-		// Quiet moments: gaps between scene changes longer than 5 seconds
-		// (good for interviews, establishing shots, slow moments)
+		// Quiet moments: long gaps between scene changes (>5 seconds = likely static shot or interview)
 		const quietMoments: number[] = [];
-		const sortedChanges = [...sceneChanges].sort((a, b) => a.timestamp - b.timestamp);
-
-		// Check gap from start to first scene change
-		if (sortedChanges.length > 0 && sortedChanges[0]!.timestamp > 5) {
-			quietMoments.push(sortedChanges[0]!.timestamp / 2);
-		}
-
-		for (let i = 0; i < sortedChanges.length - 1; i++) {
-			const gap = sortedChanges[i + 1]!.timestamp - sortedChanges[i]!.timestamp;
+		const sortedScenes = [...sceneChanges].sort((a, b) => a.timestamp - b.timestamp);
+		for (let i = 0; i < sortedScenes.length - 1; i++) {
+			const gap = sortedScenes[i + 1]!.timestamp - sortedScenes[i]!.timestamp;
 			if (gap > 5) {
-				quietMoments.push(sortedChanges[i]!.timestamp + gap / 2);
+				quietMoments.push(
+					Math.round((sortedScenes[i]!.timestamp + gap / 2) * 10) / 10
+				);
 			}
 		}
 
-		// Check gap from last scene change to end
-		if (sortedChanges.length > 0) {
-			const lastChange = sortedChanges[sortedChanges.length - 1]!;
-			if (duration - lastChange.timestamp > 5) {
-				quietMoments.push(lastChange.timestamp + (duration - lastChange.timestamp) / 2);
-			}
+		// Also check gap from start to first scene change
+		if (sortedScenes.length > 0 && sortedScenes[0]!.timestamp > 5) {
+			quietMoments.unshift(Math.round((sortedScenes[0]!.timestamp / 2) * 10) / 10);
 		}
 
-		// Recommended hooks: first 3 scene changes in the first 30% of video
-		// (high motion + scene change = visually interesting opening)
-		const earlyScenes = sceneChanges.filter(sc => sc.timestamp < duration * 0.3);
-		const recommendedHooks = earlyScenes.slice(0, 3).map(sc => sc.timestamp);
+		// Recommended hooks: scene changes in the first 30% of the video
+		const recommendedHooks = sceneChanges
+			.filter(sc => sc.timestamp > 0.5 && sc.timestamp < duration * 0.3)
+			.slice(0, 5)
+			.map(sc => sc.timestamp);
 
-		// Recommended closeups: quiet moments in first half
-		// (likely face-to-face interactions, interviews, establishing shots)
-		const recommendedCloseups = quietMoments.filter(t => t < duration * 0.5).slice(0, 3);
+		// If no hooks found from scene changes, suggest evenly spaced timestamps in first 30%
+		if (recommendedHooks.length === 0 && duration > 3) {
+			const hookWindow = duration * 0.3;
+			recommendedHooks.push(
+				Math.round(hookWindow * 0.2 * 10) / 10,
+				Math.round(hookWindow * 0.5 * 10) / 10,
+				Math.round(hookWindow * 0.8 * 10) / 10,
+			);
+		}
 
 		return {
 			duration,
 			sceneChanges,
-			motionPeaks,
+			highMotionMoments,
 			quietMoments,
 			recommendedHooks,
-			recommendedCloseups,
 		};
 	} finally {
-		// Clean up downloaded file
+		// Clean up
 		try {
 			if (fs.existsSync(localPath)) {
 				fs.unlinkSync(localPath);
 			}
-		} catch { /* best effort cleanup */ }
+		} catch { /* best effort */ }
 	}
 }
 
 /**
  * Format scene analysis for inclusion in AI edit plan prompts.
- * Makes the data human-readable so GPT-4o can use it for intelligent clip selection.
  */
 export function formatSceneAnalysisForPrompt(analysis: SceneAnalysis): string {
-	const sceneTimestamps = analysis.sceneChanges.map(sc =>
-		`${sc.timestamp.toFixed(1)}s`,
-	).join(', ');
+	const scenes = analysis.sceneChanges.map(sc => `${sc.timestamp}s`).join(', ');
+	const hooks = analysis.recommendedHooks.map(t => `${t}s`).join(', ');
+	const quiet = analysis.quietMoments.map(t => `${t}s`).join(', ');
+	const action = analysis.highMotionMoments.slice(0, 8).map(t => `${t}s`).join(', ');
 
-	const hookTimestamps = analysis.recommendedHooks.map(t =>
-		`${t.toFixed(1)}s`,
-	).join(', ');
-
-	const quietTimestamps = analysis.quietMoments.map(t =>
-		`${t.toFixed(1)}s`,
-	).join(', ');
-
-	return `  - Total Duration: ${analysis.duration.toFixed(1)}s
-  - Scene Changes At: [${sceneTimestamps || 'none detected'}]
-  - Best Hook Moments: [${hookTimestamps || 'none detected'}]
-  - Quiet/Interview Moments: [${quietTimestamps || 'none detected'}]
-  - Total Scene Changes: ${analysis.sceneChanges.length}`;
+	return `  - Video Duration: ${analysis.duration.toFixed(1)}s
+  - Scene Changes (${analysis.sceneChanges.length} detected): [${scenes}]
+  - High-Action Moments: [${action || 'none detected'}]
+  - Quiet/Static Moments: [${quiet || 'none detected'}]
+  - Recommended Hook Timestamps: [${hooks}]`;
 }

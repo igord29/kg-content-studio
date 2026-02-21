@@ -581,7 +581,7 @@ const agent = createAgent('video-editor', {
 
 				return {
 					success: true,
-					message: `Scene analysis complete: ${analysis.sceneChanges.length} scene changes, ${analysis.motionPeaks.length} motion peaks detected`,
+					message: `Scene analysis complete: ${analysis.sceneChanges.length} scene changes, ${analysis.highMotionMoments.length} action moments, ${analysis.recommendedHooks.length} recommended hooks`,
 					catalog: updatedEntry ? [updatedEntry] : [],
 				};
 			} catch (err) {

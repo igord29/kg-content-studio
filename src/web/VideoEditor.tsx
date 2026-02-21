@@ -72,6 +72,8 @@ interface RenderJob {
 	error?: string;
 	method: 'shotstack' | 'ffmpeg';
 	localOutputPath?: string;
+	// The edit plan that produced this render (so review compares against the right plan)
+	usedEditPlan?: any;
 	// Review state
 	review?: VideoReview | null;
 	reviewStatus?: 'idle' | 'reviewing' | 'done' | 'failed';
@@ -843,7 +845,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 	// --- Render handlers ---
 
-	// Ref to hold the latest triggerReview so pollRenderStatus can call it stably
+	// Ref to hold latest triggerReview so pollRenderStatus can call it stably
 	const triggerReviewRef = useRef<(downloadUrl: string, platform: string, mode: string) => void>(() => {});
 
 	const pollRenderStatus = useCallback(async (
@@ -925,12 +927,17 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	// --- AI Review ---
 
 	const triggerReview = useCallback(async (downloadUrl: string, platform: string, mode: string) => {
-		// Mark this job as reviewing
-		setRenderJobs(prev => prev.map(j =>
-			j.platform === platform && j.method === 'shotstack' && j.status === 'done'
-				? { ...j, reviewStatus: 'reviewing' as const }
-				: j
-		));
+		// Get the edit plan that was actually used for this render (stored on the job)
+		let planForReview: any = null;
+		setRenderJobs(prev => {
+			const job = prev.find(j => j.platform === platform && j.method === 'shotstack' && j.status === 'done');
+			planForReview = job?.usedEditPlan || editPlanData || null;
+			return prev.map(j =>
+				j.platform === platform && j.method === 'shotstack' && j.status === 'done'
+					? { ...j, reviewStatus: 'reviewing' as const }
+					: j
+			);
+		});
 
 		try {
 			const resp = await fetch('/api/video-editor', {
@@ -941,7 +948,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					reviewUrl: downloadUrl,
 					platform,
 					editMode: mode,
-					originalEditPlan: editPlanData || null,
+					originalEditPlan: planForReview,
 					autoRevise: true,
 				}),
 			});
@@ -979,17 +986,20 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	triggerReviewRef.current = triggerReview;
 
 	const handleRenderPlatform = useCallback(async (platform: string, method: 'shotstack' | 'ffmpeg') => {
-		// Add or update job entry
+		// Capture the current edit plan at the moment of render submission
+		const currentEditPlan = editPlanData;
+
+		// Add or update job entry — store which plan was used
 		setRenderJobs(prev => {
 			const existing = prev.find(j => j.platform === platform && j.method === method);
 			if (existing) {
 				return prev.map(j =>
 					j.platform === platform && j.method === method
-						? { ...j, status: 'submitting' as const, error: undefined, downloadUrl: undefined, renderId: undefined }
+						? { ...j, status: 'submitting' as const, error: undefined, downloadUrl: undefined, renderId: undefined, usedEditPlan: currentEditPlan }
 						: j
 				);
 			}
-			return [...prev, { platform, method, status: 'submitting' as const }];
+			return [...prev, { platform, method, status: 'submitting' as const, usedEditPlan: currentEditPlan }];
 		});
 
 		const taskType = method === 'ffmpeg' ? 'render-local' : 'render';
@@ -1102,7 +1112,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		// Swap the edit plan data to the revised version
 		setEditPlanData(job.revisedEditPlan);
 
-		// Clear the old review state and reset render status
+		// Clear the old review state and reset render status — store revised plan as the one being used
 		setRenderJobs(prev => prev.map(j =>
 			j.platform === platform && j.method === 'shotstack'
 				? {
@@ -1115,6 +1125,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					downloadUrl: undefined,
 					error: undefined,
 					renderId: undefined,
+					usedEditPlan: job.revisedEditPlan,
 				}
 				: j
 		));

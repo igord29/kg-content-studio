@@ -12,7 +12,7 @@
   "scripts": {
     "build": "bash create-stubs.sh && node fix-registry-paths.js --skip-type-check",
     "dev": "agentuity dev",
-    "start": "agentuity start",
+    "start": "bun .agentuity/app.js",
     "deploy": "bash create-stubs.sh && node fix-registry-paths.js deploy",
     "typecheck": "bunx tsc --noEmit"
   },

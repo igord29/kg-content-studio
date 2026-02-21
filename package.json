@@ -1,40 +1,44 @@
 {
-	"name": "social-media-agent1",
-	"version": "0.0.1",
-	"license": "Apache-2.0",
-	"private": true,
-	"module": ".agentuity/app.js",
-	"type": "module",
-	"engines": {
-		"bun": ">=1.3.8",
-		"node": ">=22.0.0"
-	},
-	"scripts": {
-		"build": "bash create-stubs.sh && agentuity build",
-		"dev": "agentuity dev",
-		"start": "agentuity start",
-		"deploy": "agentuity deploy",
-		"typecheck": "bunx tsc --noEmit"
-	},
-	"dependencies": {
-		"@agentuity/frontend": "latest",
-		"@agentuity/react": "latest",
-		"@agentuity/runtime": "latest",
-		"@agentuity/schema": "latest",
-		"@agentuity/workbench": "latest",
-		"react": "^19.2.0",
-		"react-dom": "^19.2.0",
-		"@agentuity/evals": "latest",
-		"ai": "latest",
-		"@ai-sdk/openai": "latest"
-	},
-	"devDependencies": {
-		"@agentuity/cli": "latest",
-		"@types/bun": "latest",
-		"@types/react": "^19.2.0",
-		"@types/react-dom": "^19.2.0",
-		"typescript": "^5",
-		"@tailwindcss/vite": "^4.1.18",
-		"tailwindcss": "^4.1.18"
-	}
+  "name": "social-media-agent1",
+  "version": "0.0.1",
+  "license": "Apache-2.0",
+  "private": true,
+  "module": ".agentuity/app.js",
+  "type": "module",
+  "engines": {
+    "bun": ">=1.3.8",
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "bash create-stubs.sh && node fix-registry-paths.js --skip-type-check",
+    "dev": "agentuity dev",
+    "start": "agentuity start",
+    "deploy": "bash create-stubs.sh && node fix-registry-paths.js deploy",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentuity/evals": "latest",
+    "@agentuity/frontend": "latest",
+    "@agentuity/react": "latest",
+    "@agentuity/runtime": "latest",
+    "@agentuity/schema": "latest",
+    "@agentuity/workbench": "latest",
+    "@ai-sdk/openai": "latest",
+    "@googleapis/drive": "^20.1.0",
+    "ai": "latest",
+    "google-auth-library": "^10.5.0",
+    "openai": "^6.17.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@agentuity/cli": "latest",
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/bun": "latest",
+    "@types/node": "^25.2.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5"
+  }
 }

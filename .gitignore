@@ -24,6 +24,18 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]\*.json
 .env
 .env.\*
 
+# credentials and secrets
+
+credentials/
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!agentuity.config.json
+
+# Large catalog data files
+catalog-results.json
+
 # caches
 
 .eslintcache
@@ -46,3 +58,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]\*.json
 src/agent/content-creator.js
 src/agent/manager.js
 src/agent/translate.js
+
+# Cataloger temp files (video downloads + extracted frames)
+.temp-cataloger/

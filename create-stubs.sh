@@ -26,5 +26,29 @@ export * from './translate/index.js';
 export { default } from './translate/index.js';
 EOF
 
+cat > src/agent/video-editor.js << 'EOF'
+// Stub file for TypeScript - will be replaced by build
+export * from './video-editor/index.js';
+export { default } from './video-editor/index.js';
+EOF
+
+cat > src/agent/grant-writer.js << 'EOF'
+// Stub file for TypeScript - will be replaced by build
+export * from './grant-writer/index.js';
+export { default } from './grant-writer/index.js';
+EOF
+
+cat > src/agent/donor-researcher.js << 'EOF'
+// Stub file for TypeScript - will be replaced by build
+export * from './donor-researcher/index.js';
+export { default } from './donor-researcher/index.js';
+EOF
+
+cat > src/agent/venue-prospector.js << 'EOF'
+// Stub file for TypeScript - will be replaced by build
+export * from './venue-prospector/index.js';
+export { default } from './venue-prospector/index.js';
+EOF
+
 echo "✓ Stub files created"
 exit 0

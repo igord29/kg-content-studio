@@ -8,7 +8,7 @@
 import React, { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgentuityProvider } from '@agentuity/react';
-import { App } from './App';
+import { ContentStudio } from './index';
 
 function init() {
 	const elem = document.getElementById('root');
@@ -19,7 +19,7 @@ function init() {
 	const app = (
 		<StrictMode>
 			<AgentuityProvider>
-				<App />
+				<ContentStudio />
 			</AgentuityProvider>
 		</StrictMode>
 	);

@@ -31,5 +31,5 @@ export default {
 	 *
 	 * @see https://vitejs.dev/plugins/
 	 */
-	plugins: [tailwindcss()],
+	plugins: tailwindcss(),
 } satisfies AgentuityConfig;

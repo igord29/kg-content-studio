@@ -5,7 +5,7 @@
   "deployment": {
     "domains": [],
     "resources": {
-      "memory": "500Mi",
+      "memory": "1Gi",
       "cpu": "500m",
       "disk": "500Mi"
     }

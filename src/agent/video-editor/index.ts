@@ -54,6 +54,7 @@ import {
 } from './shotstack';
 import { buildDriveProxyUrl, buildProcessedFileProxyUrl } from './drive-proxy';
 import { preprocessAllClips, cleanupProcessedFiles, type PreprocessClipConfig, type PreprocessedClip } from './preprocess';
+import { submitRemotionRender, checkRemotionStatus, testRemotionAvailability } from './remotion/render';
 import {
 	selectTrack,
 	shouldAddMusic,
@@ -102,6 +103,7 @@ const AgentInput = s.object({
 	// Render task fields
 	editPlan: s.any().optional(), // The AI-generated edit plan with clip info
 	renderId: s.string().optional(), // For render-status polling
+	renderEngine: s.string().optional(), // 'shotstack' | 'remotion' — which render engine to use
 
 	// Catalog task fields
 	catalogAction: s.string().optional(), // 'generate' | 'save' | 'organize' | 'run-full' | 'analyze-single' | 'update-entry'
@@ -156,6 +158,7 @@ const AgentOutput = s.object({
 	renderMode: s.string().optional(),
 	ffmpegAvailable: s.boolean().optional(),
 	shotstackConnected: s.boolean().optional(),
+	remotionAvailable: s.boolean().optional(),
 	localOutputPath: s.string().optional(),
 
 	// Download render fields
@@ -232,6 +235,26 @@ const agent = createAgent('video-editor', {
 			}
 		}
 
+		if (task === 'test-remotion') {
+			ctx.logger.info('[test-remotion] Checking Remotion availability...');
+			try {
+				const result = await testRemotionAvailability(ctx.logger);
+				return {
+					success: result.available,
+					remotionAvailable: result.available,
+					message: result.message,
+				};
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.logger.error('[test-remotion] Error: %s', msg);
+				return {
+					success: false,
+					remotionAvailable: false,
+					message: msg,
+				};
+			}
+		}
+
 		if (task === 'download-render') {
 			const { filePath } = input;
 
@@ -282,6 +305,7 @@ const agent = createAgent('video-editor', {
 			const platform = input.platform || 'tiktok';
 			const editMode = input.editMode || 'game_day';
 			const appUrl = input.appUrl;
+			const renderEngine = (input as any).renderEngine as string | undefined;
 
 			// editPlan should be the structured JSON from the edit task's editPlanData
 			const editPlanObj = (rawEditPlan && typeof rawEditPlan === 'object')
@@ -294,6 +318,105 @@ const agent = createAgent('video-editor', {
 					error: 'No structured edit plan provided. Generate an edit plan first, then render.',
 				};
 			}
+
+			// --- Remotion render path ---
+			if (renderEngine === 'remotion') {
+				const clips = editPlanObj.clips as Array<{
+					fileId: string;
+					filename?: string;
+					trimStart?: number;
+					duration?: number;
+					purpose?: string;
+					speed?: number;
+				}>;
+
+				const overlays = (editPlanObj.textOverlays || []) as Array<{
+					text: string;
+					start: number;
+					duration: number;
+					position?: string;
+				}>;
+
+				// Music selection (same logic as Shotstack path)
+				const musicDisabled = (input as any).musicDisabled === true;
+				const editPlanMusicUrl = (editPlanObj.musicUrl as string) || null;
+				const editPlanMusicTier = (editPlanObj.musicTier as number) || undefined;
+				const editPlanMusicDirection = (editPlanObj.musicDirection as string) || undefined;
+				const customMusicUrl = (input as any).musicUrl as string | undefined;
+
+				let musicUrl: string | null = musicDisabled ? null : editPlanMusicUrl;
+				if (!musicDisabled && !musicUrl && customMusicUrl) {
+					musicUrl = customMusicUrl;
+				}
+				if (!musicDisabled && !musicUrl && shouldAddMusic(platform, editPlanMusicTier)) {
+					const selection = selectTrack(editMode, editPlanMusicDirection);
+					if (selection) {
+						musicUrl = selection.track.url;
+						ctx.logger.info('[render-remotion] Auto-selected music: "%s" by %s',
+							selection.track.title, selection.track.artist);
+					}
+				}
+
+				const totalEditDuration = clips.reduce((sum, c) => sum + (c.duration || 0), 0);
+				ctx.logger.info('[render-remotion] Starting Remotion render: %d clips, platform: %s, mode: %s, total: %ds',
+					clips.length, platform, editMode, totalEditDuration);
+
+				// Pre-process clips (same as Shotstack — sharpen + speed ramp)
+				const preprocessConfigs: PreprocessClipConfig[] = clips.map((clip) => ({
+					fileId: clip.fileId,
+					filename: clip.filename,
+					trimStart: clip.trimStart || 0,
+					duration: clip.duration || MODE_RENDER_SETTINGS[editMode]?.defaultClipLength || 5,
+					speed: clip.speed,
+					sharpen: true,
+				}));
+
+				let processedClips: PreprocessedClip[];
+				try {
+					ctx.logger.info('[render-remotion] Pre-processing %d clips...', preprocessConfigs.length);
+					processedClips = await preprocessAllClips(preprocessConfigs, ctx.logger);
+					ctx.logger.info('[render-remotion] Pre-processing complete');
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					ctx.logger.error('[render-remotion] Pre-processing failed: %s', msg);
+					return { success: false, error: 'FFmpeg pre-processing failed: ' + msg };
+				}
+
+				// Submit Remotion render (runs in background)
+				// Unlike Shotstack, Remotion uses local file paths — no proxy URLs needed.
+				// Cleanup is handled by render.ts after render completes (not on a timer).
+				try {
+					const renderId = await submitRemotionRender(
+						{
+							clips,
+							textOverlays: overlays,
+							musicUrl,
+							mode: editMode,
+							platform,
+						},
+						processedClips,
+						ctx.logger,
+					);
+
+					ctx.logger.info('[render-remotion] Submitted. Render ID: %s', renderId);
+
+					return {
+						success: true,
+						renderId,
+						renderStatus: 'queued',
+						renderPlatform: platform,
+						renderMode: editMode,
+						message: `Remotion render submitted: ${clips.length} clips (pre-processed with sharpening${clips.some(c => c.speed && c.speed !== 1.0) ? ' + speed ramping' : ''})`,
+					};
+				} catch (err) {
+					await cleanupProcessedFiles(processedClips);
+					const msg = err instanceof Error ? err.message : String(err);
+					ctx.logger.error('[render-remotion] Submission failed: %s', msg);
+					return { success: false, error: 'Remotion render failed: ' + msg };
+				}
+			}
+
+			// --- Shotstack render path (default) ---
 
 			if (!appUrl) {
 				return {
@@ -457,6 +580,19 @@ const agent = createAgent('video-editor', {
 				return { success: false, error: 'renderId is required for render-status' };
 			}
 
+			// Auto-detect engine by render ID prefix
+			if (renderId.startsWith('remotion_')) {
+				const status = checkRemotionStatus(renderId);
+				return {
+					success: true,
+					renderId: status.id,
+					renderStatus: status.status,
+					downloadUrl: status.url,
+					error: status.error,
+				};
+			}
+
+			// Shotstack render (default)
 			try {
 				const status = await checkStatus(renderId);
 				return {

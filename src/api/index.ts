@@ -194,6 +194,53 @@ api.get('/processed-file/:processedId', async (c) => {
 	}
 });
 
+// Remotion render download — streams completed Remotion renders from .temp-cataloger/
+// Keyed by render ID (format: remotion_<timestamp>_<random>)
+api.get('/remotion-render/:renderId', async (c) => {
+	const renderId = c.req.param('renderId');
+
+	if (!renderId || !renderId.startsWith('remotion_')) {
+		return c.text('Invalid render ID', 400);
+	}
+
+	try {
+		const fs = await import('fs');
+		const path = await import('path');
+
+		// Security: only serve from the .temp-cataloger/ directory
+		const tempDir = path.resolve(process.cwd(), '.temp-cataloger');
+		const filePath = path.join(tempDir, `${renderId}.mp4`);
+		const resolvedPath = path.resolve(filePath);
+
+		if (!resolvedPath.startsWith(tempDir)) {
+			return c.text('Access denied', 403);
+		}
+
+		if (!fs.existsSync(resolvedPath)) {
+			return c.text('Render not found or not yet complete', 404);
+		}
+
+		const stat = fs.statSync(resolvedPath);
+		const stream = fs.createReadStream(resolvedPath);
+		const { Readable } = await import('stream');
+		const webStream = Readable.toWeb(stream as any);
+
+		return new Response(webStream as unknown as ReadableStream, {
+			status: 200,
+			headers: {
+				'Content-Type': 'video/mp4',
+				'Content-Length': String(stat.size),
+				'Cache-Control': 'public, max-age=3600',
+				'Content-Disposition': `inline; filename="${renderId}.mp4"`,
+			},
+		});
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error('[remotion-render] Error streaming render %s: %s', renderId, msg);
+		return c.text('Failed to stream render: ' + msg, 500);
+	}
+});
+
 // Grant writer agent
 api.post('/grant-writer', grantWriter.validator(), async (c) => {
 	const data = c.req.valid('json');

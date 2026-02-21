@@ -70,7 +70,7 @@ interface RenderJob {
 	status: 'pending' | 'submitting' | 'queued' | 'fetching' | 'rendering' | 'saving' | 'done' | 'failed';
 	downloadUrl?: string;
 	error?: string;
-	method: 'shotstack' | 'ffmpeg';
+	method: 'shotstack' | 'ffmpeg' | 'remotion';
 	localOutputPath?: string;
 	// The edit plan that produced this render (so review compares against the right plan)
 	usedEditPlan?: any;
@@ -618,6 +618,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	const [renderingAll, setRenderingAll] = useState(false);
 	const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
 	const [shotstackConnected, setShotstackConnected] = useState<boolean | null>(null);
+	const [remotionAvailable, setRemotionAvailable] = useState<boolean | null>(null);
 
 	// Catalog state
 	const [catalogRunning, setCatalogRunning] = useState(false);
@@ -717,6 +718,11 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify({ task: 'check-ffmpeg' }),
 				}).then(r => r.json()).then(d => setFfmpegAvailable(d.ffmpegAvailable === true)).catch(() => setFfmpegAvailable(false)),
+				fetch('/api/video-editor', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ task: 'test-remotion' }),
+				}).then(r => r.json()).then(d => setRemotionAvailable(d.remotionAvailable === true)).catch(() => setRemotionAvailable(false)),
 			]);
 
 			// Load summary and video list in parallel
@@ -989,7 +995,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	// Keep the ref in sync with the latest triggerReview
 	triggerReviewRef.current = triggerReview;
 
-	const handleRenderPlatform = useCallback(async (platform: string, method: 'shotstack' | 'ffmpeg') => {
+	const handleRenderPlatform = useCallback(async (platform: string, method: 'shotstack' | 'ffmpeg' | 'remotion') => {
 		// Capture the current edit plan at the moment of render submission
 		const currentEditPlan = editPlanData;
 
@@ -1007,6 +1013,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		});
 
 		const taskType = method === 'ffmpeg' ? 'render-local' : 'render';
+		const renderEngine = method === 'remotion' ? 'remotion' : undefined;
 
 		try {
 			const resp = await fetch('/api/video-editor', {
@@ -1018,6 +1025,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					editPlan: editPlanData || null,
 					platform,
 					editMode: selectedMode === 'auto' ? 'game_day' : selectedMode,
+					renderEngine,
 					// Music: pass custom URL if provided, disable if user turned off
 					musicUrl: musicEnabled ? (customMusicUrl.trim() || undefined) : undefined,
 					musicDisabled: !musicEnabled,
@@ -1198,7 +1206,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		}
 	}, [renderJobs, selectedIds, selectedMode, topic, musicEnabled, customMusicUrl, pollRenderStatus]);
 
-	const handleRenderAll = useCallback(async (method: 'shotstack' | 'ffmpeg') => {
+	const handleRenderAll = useCallback(async (method: 'shotstack' | 'ffmpeg' | 'remotion') => {
 		setRenderingAll(true);
 		const platforms = Array.from(enabledPlatforms);
 
@@ -2800,6 +2808,20 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 										}} />
 										Local Render {ffmpegAvailable ? 'Available' : ffmpegAvailable === null ? 'Checking...' : 'Unavailable'}
 									</span>
+									<span style={{
+										display: 'inline-flex',
+										alignItems: 'center',
+										gap: 4,
+										color: remotionAvailable ? '#a78bfa' : (remotionAvailable === null ? S.textMuted : '#6b7280'),
+									}}>
+										<span style={{
+											width: 5,
+											height: 5,
+											borderRadius: '50%',
+											background: remotionAvailable ? '#a78bfa' : (remotionAvailable === null ? S.textMuted : '#6b7280'),
+										}} />
+										Enhanced {remotionAvailable ? 'Available' : remotionAvailable === null ? 'Checking...' : 'Unavailable'}
+									</span>
 								</div>
 
 								{/* Music controls */}
@@ -2868,9 +2890,12 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 										const label = PLATFORM_LABELS[platformId] || platformId;
 										const shotstackJob = renderJobs.find(j => j.platform === platformId && j.method === 'shotstack');
 										const ffmpegJob = renderJobs.find(j => j.platform === platformId && j.method === 'ffmpeg');
+										const remotionJob = renderJobs.find(j => j.platform === platformId && j.method === 'remotion');
 										const isRendering = shotstackJob?.status === 'submitting' || shotstackJob?.status === 'queued' ||
 											shotstackJob?.status === 'fetching' || shotstackJob?.status === 'rendering' || shotstackJob?.status === 'saving' ||
-											ffmpegJob?.status === 'submitting';
+											ffmpegJob?.status === 'submitting' ||
+											remotionJob?.status === 'submitting' || remotionJob?.status === 'queued' ||
+											remotionJob?.status === 'fetching' || remotionJob?.status === 'rendering' || remotionJob?.status === 'saving';
 
 										return (
 											<div key={platformId} style={{
@@ -2883,7 +2908,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 													display: 'flex',
 													justifyContent: 'space-between',
 													alignItems: 'center',
-													marginBottom: shotstackJob || ffmpegJob ? 6 : 0,
+													marginBottom: shotstackJob || ffmpegJob || remotionJob ? 6 : 0,
 												}}>
 													<span style={{
 														fontFamily: S.mono,
@@ -2929,6 +2954,28 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 																type="button"
 															>
 																{ffmpegJob?.status === 'submitting' ? 'Rendering...' : 'Local'}
+															</button>
+														)}
+														{remotionAvailable && (
+															<button
+																onClick={() => handleRenderPlatform(platformId, 'remotion')}
+																disabled={isRendering || renderingAll}
+																style={{
+																	padding: '3px 8px',
+																	borderRadius: 4,
+																	border: `1px solid ${isRendering ? S.borderColor : '#7c3aed'}`,
+																	background: 'transparent',
+																	color: isRendering ? S.textMuted : '#a78bfa',
+																	cursor: isRendering ? 'not-allowed' : 'pointer',
+																	fontFamily: S.mono,
+																	fontSize: 8,
+																}}
+																type="button"
+															>
+																{remotionJob?.status === 'submitting' ? 'Submitting...'
+																	: remotionJob?.status === 'queued' || remotionJob?.status === 'fetching' ? 'Preparing...'
+																	: remotionJob?.status === 'rendering' ? 'Rendering...'
+																	: 'Enhanced'}
 															</button>
 														)}
 													</div>
@@ -3279,6 +3326,44 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 														)}
 													</div>
 												)}
+
+												{/* Remotion render status */}
+												{remotionJob && (
+													<div style={{
+														fontFamily: S.mono,
+														fontSize: 9,
+														color: remotionJob.status === 'done' ? '#a78bfa'
+															: remotionJob.status === 'failed' ? S.red
+															: S.textMuted,
+														marginBottom: remotionJob.downloadUrl ? 4 : 0,
+													}}>
+														Enhanced: {RENDER_STATUS_MESSAGES[remotionJob.status] || remotionJob.status}
+														{remotionJob.error && (
+															<span style={{ color: S.red }}> - {remotionJob.error}</span>
+														)}
+													</div>
+												)}
+												{remotionJob?.downloadUrl && (
+													<a
+														href={remotionJob.downloadUrl}
+														target="_blank"
+														rel="noopener noreferrer"
+														style={{
+															display: 'inline-block',
+															padding: '4px 10px',
+															borderRadius: 4,
+															background: '#7c3aed20',
+															border: '1px solid #7c3aed',
+															color: '#a78bfa',
+															fontFamily: S.mono,
+															fontSize: 9,
+															textDecoration: 'none',
+															marginRight: 6,
+														}}
+													>
+														Download (Enhanced)
+													</a>
+												)}
 											</div>
 										);
 									})}
@@ -3330,9 +3415,31 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 											{renderingAll ? 'Rendering...' : 'Render All (Local)'}
 										</button>
 									)}
+									{remotionAvailable && (
+										<button
+											onClick={() => handleRenderAll('remotion')}
+											disabled={renderingAll || enabledPlatforms.size === 0}
+											style={{
+												flex: 1,
+												padding: '10px',
+												borderRadius: 6,
+												border: `1px solid ${renderingAll ? S.borderColor : '#7c3aed'}`,
+												background: renderingAll ? S.borderColor : '#7c3aed20',
+												color: renderingAll ? S.textMuted : '#a78bfa',
+												cursor: renderingAll || enabledPlatforms.size === 0 ? 'not-allowed' : 'pointer',
+												fontFamily: S.mono,
+												fontSize: 10,
+												fontWeight: 700,
+												letterSpacing: 0.5,
+											}}
+											type="button"
+										>
+											{renderingAll ? 'Rendering...' : 'Render All (Enhanced)'}
+										</button>
+									)}
 								</div>
 
-								{!shotstackConnected && !ffmpegAvailable && shotstackConnected !== null && ffmpegAvailable !== null && (
+								{!shotstackConnected && !ffmpegAvailable && !remotionAvailable && shotstackConnected !== null && ffmpegAvailable !== null && remotionAvailable !== null && (
 									<div style={{
 										marginTop: 8,
 										padding: '8px 10px',

@@ -468,23 +468,37 @@ const agent = createAgent('video-editor', {
 						// Build footage context from catalog for the original clips
 						const catalog = loadExistingCatalog();
 						const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
-						const originalClips = Array.isArray(originalPlan.clips) ? originalPlan.clips as Array<{ fileId: string; filename?: string }> : [];
+						const originalClips = Array.isArray(originalPlan.clips) ? originalPlan.clips as Array<{ fileId: string; filename?: string; trimStart?: number; duration?: number; purpose?: string }> : [];
 
 						const footageContext = originalClips.map((clip, index) => {
 							const ce = catalogMap.get(clip.fileId);
 							if (ce) {
-								let sceneInfo = '';
+								// Build inline scene analysis with specific timestamps for the reviser
+								let sceneTimestamps = '';
 								if (ce.sceneAnalysis) {
-									sceneInfo = '\n' + formatSceneAnalysisForPrompt(ce.sceneAnalysis);
+									const sa = ce.sceneAnalysis;
+									const sceneChanges = sa.sceneChanges?.map((sc: any) => typeof sc === 'number' ? `${sc.toFixed(1)}s` : `${(sc.timestamp || sc).toFixed?.(1) || sc}s`).join(', ') || 'none';
+									const highMotion = sa.highMotionMoments?.map((hm: any) => typeof hm === 'number' ? `${hm.toFixed(1)}s` : `${(hm.timestamp || hm).toFixed?.(1) || hm}s`).join(', ') || 'none';
+									const hooks = sa.recommendedHooks?.map((h: any) => typeof h === 'number' ? `${h.toFixed(1)}s` : `${(h.timestamp || h).toFixed?.(1) || h}s`).join(', ') || 'none';
+									sceneTimestamps = `
+    Available trim points (USE THESE for trimStart changes):
+      * Scene Changes: [${sceneChanges}]
+      * High-Action Moments: [${highMotion}]
+      * Recommended Hooks: [${hooks}]`;
 								}
+
 								return `Clip ${index + 1}: ${clip.filename || clip.fileId}
+  - Current: trimStart=${clip.trimStart || 0}s, duration=${clip.duration || 'default'}s, purpose="${clip.purpose || 'unspecified'}"
+  - Source Duration: ${ce.duration || 'unknown'}
   - Description: ${ce.activity}
   - Location: ${ce.suspectedLocation}
   - Content Type: ${ce.contentType}
   - Quality: ${ce.quality}
-  - Notable: ${ce.notableMoments || 'None'}${sceneInfo}`;
+  - Notable: ${ce.notableMoments || 'None'}${sceneTimestamps}`;
 							}
-							return `Clip ${index + 1}: ${clip.filename || clip.fileId} — no catalog data`;
+							return `Clip ${index + 1}: ${clip.filename || clip.fileId}
+  - Current: trimStart=${clip.trimStart || 0}s, duration=${clip.duration || 'default'}s
+  — no catalog data`;
 						}).join('\n\n');
 
 						revisedPlan = await generateRevisedEditPlan(review, originalPlan, footageContext, editMode, platform);

@@ -79,6 +79,10 @@ interface RenderJob {
 	reviewStatus?: 'idle' | 'reviewing' | 'done' | 'failed';
 	reviewError?: string;
 	revisedEditPlan?: any;
+	// Revision tracking
+	revisionCount?: number;          // 0 = original, 1 = first revision, 2 = max
+	previousScores?: number[];       // overall scores from prior renders
+	originalDownloadUrl?: string;    // preserves the original render's download URL
 }
 
 const RENDER_STATUS_MESSAGES: Record<string, string> = {
@@ -1109,8 +1113,20 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		const job = renderJobs.find(j => j.platform === platform && j.method === 'shotstack' && j.revisedEditPlan);
 		if (!job?.revisedEditPlan) return;
 
+		// Enforce revision cap
+		const currentRevision = job.revisionCount || 0;
+		if (currentRevision >= 2) return;
+
 		// Swap the edit plan data to the revised version
 		setEditPlanData(job.revisedEditPlan);
+
+		// Track the current score and preserve original download URL
+		const currentScore = job.review?.overallScore;
+		const prevScores = [...(job.previousScores || [])];
+		if (currentScore !== undefined) {
+			prevScores.push(currentScore);
+		}
+		const origUrl = job.originalDownloadUrl || job.downloadUrl;
 
 		// Clear the old review state and reset render status — store revised plan as the one being used
 		setRenderJobs(prev => prev.map(j =>
@@ -1126,6 +1142,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					error: undefined,
 					renderId: undefined,
 					usedEditPlan: job.revisedEditPlan,
+					revisionCount: currentRevision + 1,
+					previousScores: prevScores,
+					originalDownloadUrl: origUrl,
 				}
 				: j
 		));
@@ -2982,6 +3001,11 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 												{shotstackJob?.reviewStatus === 'done' && shotstackJob.review && (() => {
 													const r = shotstackJob.review;
+													const revisionCount = shotstackJob.revisionCount || 0;
+													const previousScores = shotstackJob.previousScores || [];
+													const lastPrevScore: number | null = previousScores.length > 0 ? (previousScores[previousScores.length - 1] ?? null) : null;
+													const scoreRegressed = lastPrevScore !== null && r.overallScore < lastPrevScore;
+													const maxRevisionsReached = revisionCount >= 2;
 													const scoreColor = (score: number) =>
 														score >= 8 ? S.accentLight : score >= 5 ? S.orange : S.red;
 													const severityColor = (sev: string) =>
@@ -2996,6 +3020,60 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 															border: `1px solid ${hasCritical ? '#92400e' : S.accent}`,
 															background: hasCritical ? '#92400e10' : '#2D6A4F10',
 														}}>
+															{/* Revision tracking header */}
+															{revisionCount > 0 && (
+																<div style={{
+																	fontFamily: S.mono,
+																	fontSize: 8,
+																	color: S.textMuted,
+																	marginBottom: 4,
+																	display: 'flex',
+																	justifyContent: 'space-between',
+																}}>
+																	<span>Revision {revisionCount} of 2</span>
+																	{lastPrevScore !== null && (
+																		<span>
+																			Previous: <span style={{ color: scoreColor(lastPrevScore), fontWeight: 700 }}>{lastPrevScore}/10</span>
+																			{' → '}
+																			<span style={{ color: scoreColor(r.overallScore), fontWeight: 700 }}>{r.overallScore}/10</span>
+																			{scoreRegressed && <span style={{ color: S.red, marginLeft: 4 }}>↓</span>}
+																		</span>
+																	)}
+																</div>
+															)}
+
+															{/* Score regression warning */}
+															{scoreRegressed && shotstackJob.originalDownloadUrl && (
+																<div style={{
+																	padding: '4px 8px',
+																	borderRadius: 4,
+																	border: `1px solid ${S.red}`,
+																	background: '#7f1d1d20',
+																	marginBottom: 6,
+																	fontFamily: S.mono,
+																	fontSize: 8,
+																	color: S.red,
+																	display: 'flex',
+																	justifyContent: 'space-between',
+																	alignItems: 'center',
+																}}>
+																	<span>Score dropped from {lastPrevScore}/10 to {r.overallScore}/10</span>
+																	<a
+																		href={shotstackJob.originalDownloadUrl}
+																		target="_blank"
+																		rel="noopener noreferrer"
+																		style={{
+																			color: S.orange,
+																			textDecoration: 'underline',
+																			fontSize: 8,
+																			fontWeight: 700,
+																		}}
+																	>
+																		Download Original
+																	</a>
+																</div>
+															)}
+
 															{/* Score row */}
 															<div style={{
 																display: 'flex',
@@ -3121,8 +3199,22 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 																</div>
 															)}
 
-															{/* Revise & Re-render button */}
-															{hasCritical && shotstackJob.revisedEditPlan && (
+															{/* Revise & Re-render button or max reached message */}
+															{maxRevisionsReached ? (
+																<div style={{
+																	width: '100%',
+																	padding: '6px 10px',
+																	borderRadius: 4,
+																	border: `1px solid ${S.borderColor}`,
+																	background: '#1a1f2e',
+																	color: S.textMuted,
+																	fontFamily: S.mono,
+																	fontSize: 9,
+																	textAlign: 'center' as const,
+																}}>
+																	Maximum revisions reached (2/2)
+																</div>
+															) : hasCritical && shotstackJob.revisedEditPlan && (
 																<button
 																	onClick={() => handleReviseAndRerender(platformId)}
 																	style={{
@@ -3140,7 +3232,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 																	}}
 																	type="button"
 																>
-																	Revise &amp; Re-render
+																	Revise &amp; Re-render{revisionCount > 0 ? ` (${revisionCount + 1}/2)` : ''}
 																</button>
 															)}
 														</div>

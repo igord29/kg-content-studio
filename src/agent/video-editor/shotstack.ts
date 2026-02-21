@@ -282,13 +282,34 @@ export function buildShotstackTimeline(config: EditConfig): ShotstackTimeline {
 		};
 	});
 
-	// Build tracks (video on bottom, text on top)
+	// Calculate video duration for background track
+	const lastVideoClip = videoClips[videoClips.length - 1] as { start: number; length: number } | undefined;
+	const legacyVideoDuration = lastVideoClip ? lastVideoClip.start + lastVideoClip.length : 0;
+
+	// Build tracks (text on top, video middle, background color bottom)
 	const tracks: ShotstackTimeline['timeline']['tracks'] = [];
 
 	if (textClips.length > 0) {
 		tracks.push({ clips: textClips as any });
 	}
 	tracks.push({ clips: videoClips as any });
+
+	// Add background color track to prevent black frames during transitions
+	if (legacyVideoDuration > 0 && size) {
+		tracks.push({
+			clips: [{
+				asset: {
+					type: 'html',
+					html: `<div style="width:100%;height:100%;background-color:${modeConfig.bgColor};"></div>`,
+					css: '',
+					width: size.width,
+					height: size.height,
+				},
+				start: 0,
+				length: legacyVideoDuration + 1,
+			}] as any,
+		});
+	}
 
 	// Soundtrack
 	const soundtrack = config.music?.sourceUrl
@@ -657,6 +678,8 @@ export function buildRenderTimeline(config: RenderConfig): object {
 	const lastClip = videoClips[videoClips.length - 1] as { start: number; length: number } | undefined;
 	const videoDuration = lastClip ? lastClip.start + lastClip.length : 0;
 
+	console.log(`[shotstack] Timeline: ${totalClips} clips, videoDuration=${videoDuration.toFixed(2)}s, transitionDuration=${transitionDuration}s, mode=${config.mode}, platform=${config.platform}`);
+
 	// --- Build professional text overlays using HTML asset ---
 	// HTML assets give us full control over fonts, colors, backgrounds, and layout
 	// compared to the basic "title" asset which looks generic
@@ -677,7 +700,7 @@ export function buildRenderTimeline(config: RenderConfig): object {
 			}
 			// Overlay must not extend past video content
 			if (start + duration > videoDuration) {
-				duration = videoDuration - start - 0.2;
+				duration = videoDuration - start;
 			}
 			// Safety bounds
 			if (start < 0) start = 0;
@@ -708,12 +731,36 @@ export function buildRenderTimeline(config: RenderConfig): object {
 		};
 	});
 
-	// Build timeline — text track FIRST (index 0 = foreground in Shotstack), video SECOND (background)
+	// Build timeline — text track FIRST (index 0 = foreground in Shotstack), video SECOND, background color LAST
+	// The background color track is the KEY fix for black frames: when the last clip's
+	// transition-out fades, it reveals this solid color instead of empty timeline (black).
 	const tracks: Array<{ clips: any[] }> = [];
 	if (textClips.length > 0) {
 		tracks.push({ clips: textClips });
 	}
 	tracks.push({ clips: videoClips });
+
+	// Add a solid background color track as the bottommost layer
+	// This ensures ALL transitions (including the last clip's out-transition)
+	// fade into the mode's background color, not black empty timeline
+	if (videoDuration > 0) {
+		const bgTrack = {
+			clips: [{
+				asset: {
+					type: 'html' as const,
+					html: `<div style="width:100%;height:100%;background-color:${modeConfig.bgColor};"></div>`,
+					css: '',
+					width: platformSettings.width,
+					height: platformSettings.height,
+				},
+				start: 0,
+				length: videoDuration + 1, // +1s buffer beyond video end
+				fit: 'none' as const,
+			}],
+		};
+		tracks.push(bgTrack);
+		console.log(`[shotstack] Added background color track: ${modeConfig.bgColor}, length=${(videoDuration + 1).toFixed(2)}s`);
+	}
 
 	const timeline: Record<string, unknown> = {
 		tracks,

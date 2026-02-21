@@ -9,6 +9,7 @@
 
 import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
+import { videoDirectorPrompt } from './video-director-prompt';
 
 // --- Types ---
 
@@ -442,13 +443,33 @@ export async function generateRevisedEditPlan(
 	mode: string,
 	platform: string,
 ): Promise<Record<string, unknown> | null> {
-	const issuesList = review.issues.map((issue, i) =>
-		`${i + 1}. [${issue.severity.toUpperCase()}] ${issue.category} at ${issue.timestamp}: ${issue.description}\n   Fix: ${issue.fix}`
-	).join('\n');
+	// Map each issue to the clip index it most likely affects (by timestamp)
+	const originalClips = Array.isArray(originalEditPlan.clips) ? originalEditPlan.clips as Array<{ trimStart?: number; duration?: number; fileId?: string; filename?: string; purpose?: string }> : [];
+
+	const issuesList = review.issues.map((issue, i) => {
+		// Try to match issue timestamp to a clip index
+		let clipHint = '';
+		if (issue.timestamp) {
+			const tsMatch = issue.timestamp.match(/(\d+)/);
+			if (tsMatch) {
+				const issueTime = parseInt(tsMatch[1]!);
+				let accumulatedTime = 0;
+				for (let ci = 0; ci < originalClips.length; ci++) {
+					const clipDur = originalClips[ci]?.duration || 4;
+					if (issueTime >= accumulatedTime && issueTime < accumulatedTime + clipDur) {
+						clipHint = ` → Affects Clip ${ci + 1} (${originalClips[ci]?.filename || originalClips[ci]?.fileId || 'unknown'})`;
+						break;
+					}
+					accumulatedTime += clipDur;
+				}
+			}
+		}
+		return `${i + 1}. [${issue.severity.toUpperCase()}] ${issue.category} at ${issue.timestamp}: ${issue.description}${clipHint}\n   Fix: ${issue.fix}`;
+	}).join('\n');
 
 	const strengthsList = review.strengths.map((s, i) => `${i + 1}. ${s}`).join('\n');
 
-	const prompt = `You previously generated an edit plan for a ${platform} video in ${mode} mode. The rendered video was reviewed by a professional editor. Here are the results:
+	const prompt = `You are REVISING an edit plan that was already rendered and reviewed. The rendered video scored poorly. Your job is to fix it.
 
 SCORES:
 - Overall: ${review.overallScore}/10
@@ -460,7 +481,7 @@ STORY ARC: ${review.storyArc}
 HOOK: ${review.hookEffectiveness}
 ENDING: ${review.endingQuality}
 
-ISSUES TO FIX:
+ISSUES TO FIX (with affected clips):
 ${issuesList}
 
 STRENGTHS TO KEEP:
@@ -471,20 +492,50 @@ REVIEWER SUMMARY: ${review.summary}
 ORIGINAL EDIT PLAN:
 ${JSON.stringify(originalEditPlan, null, 2)}
 
-AVAILABLE FOOTAGE:
+AVAILABLE FOOTAGE (with scene analysis timestamps):
 ${footageContext}
 
-Generate a REVISED edit plan that:
-1. Fixes every critical and warning issue listed above
-2. Preserves the strengths that were called out
-3. Follows the ${mode} mode structure and ${platform} platform rules
-4. Tells a clear story with an emotional arc
-5. Uses appropriate clip durations (no clip soup — hold clips long enough to land)
+---
 
-Return ONLY the revised JSON edit plan (same format as the original) wrapped in \`\`\`json fences. Include a brief "revisionNotes" field explaining what you changed and why.`;
+YOUR PRIMARY REVISION TOOL IS \`trimStart\`.
+
+The original edit plan picked specific moments from the source videos. Many of those moments may be boring, poorly framed, or wrong for the story. Each source video has multiple interesting moments at different timestamps. Your job is to pick BETTER moments by changing trimStart values.
+
+REVISION STRATEGY:
+1. For each issue flagged by the reviewer, identify which clip(s) it affects
+2. Look at the SCENE ANALYSIS data for that clip's source video — find alternative trim points:
+   - Scene Changes: good for establishing shots and transitions
+   - High-Motion Moments: good for energy and action
+   - Recommended Hooks: good for opening clips and attention-grabbers
+3. Change the trimStart to a DIFFERENT timestamp from the scene analysis
+4. Adjust duration to hold the new moment long enough to land (usually 3-6s)
+
+GOOD REVISION EXAMPLE:
+  Issue: "Clip 3 at 8-12s is boring — shows empty court"
+  Original: trimStart=2, duration=4
+  Source video has highMotionMoments at [8.7, 22.1] and sceneChanges at [1.5, 12.0, 28.3]
+  → Revised: trimStart=8.7, duration=4 (picks a high-action moment instead)
+
+BAD REVISION (what NOT to do):
+  Issue: "Clip 3 at 8-12s is boring — shows empty court"
+  Original: trimStart=2, duration=4
+  → Revised: trimStart=2, duration=6 (WRONG — same boring footage, just longer!)
+
+ADDITIONAL RULES:
+- Do NOT just stretch or shrink clip durations — that keeps the same boring footage
+- DO pick different trimStart values from the scene analysis timestamps
+- KEEP clips that the reviewer praised — don't change what works
+- KEEP the same fileId references — you can only change WHEN you cut into each video, not WHICH videos to use
+- You CAN reorder clips for better story flow
+- You CAN add the same fileId twice with different trimStart to show different moments
+- Target total duration for ${platform}: match platform guidelines
+- Follow ${mode} mode structure for pacing and energy
+
+Return ONLY the revised JSON edit plan (same format as the original) wrapped in \`\`\`json fences. Include a "revisionNotes" field explaining what you changed and why for each clip.`;
 
 	const result = await generateText({
 		model: openai('gpt-4o'),
+		system: videoDirectorPrompt,
 		prompt,
 	});
 

@@ -282,6 +282,18 @@ declare module '@agentuity/frontend' {
 				stream: typeof manager extends { stream?: infer S } ? S : false;
 				params: never;
 			};
+	'GET /api/processed-file/:processedId': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: { processedId: string };
+			};
+	'GET /api/remotion-render/:renderId': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: { renderId: string };
+			};
 	'POST /api/translate': {
 				inputSchema: POSTApiTranslateInputSchema;
 				outputSchema: POSTApiTranslateOutputSchema;
@@ -413,6 +425,22 @@ declare module '@agentuity/frontend' {
 			 */
 			post: { input: POSTApiManagerInput; output: POSTApiManagerOutput; type: 'api'; params: never; paramsTuple: [] };
 		};
+		processedFile: {
+			processedId: {
+				/**
+				 * Route: GET /api/processed-file/:processedId
+				 */
+				get: { input: never; output: never; type: 'api'; params: { processedId: string }; paramsTuple: [string] };
+			};
+		};
+		remotionRender: {
+			renderId: {
+				/**
+				 * Route: GET /api/remotion-render/:renderId
+				 */
+				get: { input: never; output: never; type: 'api'; params: { renderId: string }; paramsTuple: [string] };
+			};
+		};
 		translate: {
 			history: {
 				/**
@@ -519,6 +547,18 @@ declare module '@agentuity/react' {
 				outputSchema: POSTApiManagerOutputSchema;
 				stream: typeof manager extends { stream?: infer S } ? S : false;
 				params: never;
+			};
+	'GET /api/processed-file/:processedId': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: { processedId: string };
+			};
+	'GET /api/remotion-render/:renderId': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: { renderId: string };
 			};
 	'POST /api/translate': {
 				inputSchema: POSTApiTranslateInputSchema;
@@ -631,6 +671,22 @@ declare module '@agentuity/react' {
 			 * Route: POST /api/manager
 			 */
 			post: { input: POSTApiManagerInput; output: POSTApiManagerOutput; type: 'api'; params: never; paramsTuple: [] };
+		};
+		processedFile: {
+			processedId: {
+				/**
+				 * Route: GET /api/processed-file/:processedId
+				 */
+				get: { input: never; output: never; type: 'api'; params: { processedId: string }; paramsTuple: [string] };
+			};
+		};
+		remotionRender: {
+			renderId: {
+				/**
+				 * Route: GET /api/remotion-render/:renderId
+				 */
+				get: { input: never; output: never; type: 'api'; params: { renderId: string }; paramsTuple: [string] };
+			};
 		};
 		translate: {
 			history: {
@@ -747,6 +803,28 @@ const _rpcRouteMetadata = {
 				"post": {
 						"type": "api",
 						"path": "/api/manager"
+				}
+		},
+		"processedFile": {
+				"processedId": {
+						"get": {
+								"type": "api",
+								"path": "/api/processed-file/:processedId",
+								"pathParams": [
+										"processedId"
+								]
+						}
+				}
+		},
+		"remotionRender": {
+				"renderId": {
+						"get": {
+								"type": "api",
+								"path": "/api/remotion-render/:renderId",
+								"pathParams": [
+										"renderId"
+								]
+						}
 				}
 		},
 		"translate": {

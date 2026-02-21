@@ -62,6 +62,7 @@ import {
 	type MusicTrack,
 } from './music';
 import { formatSceneAnalysisForPrompt } from './scene-analyzer';
+import { reviewRenderedVideo, generateRevisedEditPlan } from './video-reviewer';
 
 const AgentInput = s.object({
 	// Task type: determines which workflow to run
@@ -119,6 +120,11 @@ const AgentInput = s.object({
 	// Catalog config overrides
 	batchSize: s.number().optional(),
 
+	// Review task fields
+	reviewUrl: s.string().optional(), // Shotstack download URL of rendered video
+	originalEditPlan: s.any().optional(), // The edit plan that produced this render
+	autoRevise: s.boolean().optional(), // Whether to auto-generate a revised edit plan
+
 	// Internal: passed by API route for proxy URL construction
 	appUrl: s.string().optional(),
 });
@@ -156,6 +162,10 @@ const AgentOutput = s.object({
 	mimeType: s.string().optional(),
 	base64Data: s.string().optional(),
 	fileSize: s.number().optional(),
+
+	// Review output fields
+	review: s.any().optional(),
+	revisedEditPlanData: s.any().optional(),
 
 	// Legacy output fields
 	videoScript: s.string().optional(),
@@ -419,6 +429,87 @@ const agent = createAgent('video-editor', {
 					success: false,
 					error: 'Status check failed: ' + (err instanceof Error ? err.message : String(err)),
 				};
+			}
+		}
+
+		// --- Review rendered video ---
+		if (task === 'review-render') {
+			const reviewUrl = input.reviewUrl as string | undefined;
+			const platform = input.platform || 'tiktok';
+			const editMode = input.editMode || 'game_day';
+			const originalPlan = (input.originalEditPlan && typeof input.originalEditPlan === 'object')
+				? input.originalEditPlan as Record<string, unknown>
+				: null;
+			const autoRevise = (input as any).autoRevise === true;
+
+			if (!reviewUrl) {
+				return { success: false, error: 'reviewUrl is required — provide the Shotstack download URL of the rendered video' };
+			}
+
+			ctx.logger.info('[video-editor] Reviewing render: platform=%s, mode=%s, autoRevise=%s', platform, editMode, autoRevise);
+
+			try {
+				const review = await reviewRenderedVideo(reviewUrl, originalPlan, editMode, platform);
+
+				ctx.logger.info('[video-editor] Review complete: overall=%d/10, storytelling=%d/10, pacing=%d/10, platform=%d/10, issues=%d',
+					review.overallScore, review.storytellingScore, review.pacingScore, review.platformFitScore, review.issues.length);
+
+				let revisedPlan: Record<string, unknown> | null = null;
+
+				// Auto-revise if requested and there are critical/warning issues
+				if (autoRevise && originalPlan) {
+					const hasSignificantIssues = review.issues.some(
+						i => i.severity === 'critical' || i.severity === 'warning'
+					);
+
+					if (hasSignificantIssues) {
+						ctx.logger.info('[video-editor] Auto-revising edit plan based on %d issues...', review.issues.length);
+
+						// Build footage context from catalog for the original clips
+						const catalog = loadExistingCatalog();
+						const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
+						const originalClips = Array.isArray(originalPlan.clips) ? originalPlan.clips as Array<{ fileId: string; filename?: string }> : [];
+
+						const footageContext = originalClips.map((clip, index) => {
+							const ce = catalogMap.get(clip.fileId);
+							if (ce) {
+								let sceneInfo = '';
+								if (ce.sceneAnalysis) {
+									sceneInfo = '\n' + formatSceneAnalysisForPrompt(ce.sceneAnalysis);
+								}
+								return `Clip ${index + 1}: ${clip.filename || clip.fileId}
+  - Description: ${ce.activity}
+  - Location: ${ce.suspectedLocation}
+  - Content Type: ${ce.contentType}
+  - Quality: ${ce.quality}
+  - Notable: ${ce.notableMoments || 'None'}${sceneInfo}`;
+							}
+							return `Clip ${index + 1}: ${clip.filename || clip.fileId} — no catalog data`;
+						}).join('\n\n');
+
+						revisedPlan = await generateRevisedEditPlan(review, originalPlan, footageContext, editMode, platform);
+
+						if (revisedPlan) {
+							ctx.logger.info('[video-editor] Revised edit plan generated with %d clips',
+								Array.isArray(revisedPlan.clips) ? revisedPlan.clips.length : 0);
+						} else {
+							ctx.logger.warn('[video-editor] Failed to generate revised edit plan');
+						}
+					} else {
+						ctx.logger.info('[video-editor] No critical/warning issues — skipping auto-revise');
+					}
+				}
+
+				return {
+					success: true,
+					review,
+					revisedEditPlanData: revisedPlan,
+					message: `Review complete: ${review.overallScore}/10 overall. ${review.issues.length} issues found.${revisedPlan ? ' Revised edit plan generated.' : ''}`,
+				};
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.logger.error('[video-editor] Review failed: %s', msg);
+				return { success: false, error: 'Video review failed: ' + msg };
 			}
 		}
 

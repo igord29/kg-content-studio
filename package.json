@@ -29,6 +29,7 @@
     "@remotion/media-utils": "^4.0.427",
     "@remotion/renderer": "^4.0.427",
     "@remotion/transitions": "^4.0.427",
+    "@remotion/web-renderer": "^4.0.427",
     "ai": "latest",
     "google-auth-library": "^10.5.0",
     "openai": "^6.17.0",

@@ -54,7 +54,9 @@ import {
 } from './shotstack';
 import { buildDriveProxyUrl, buildProcessedFileProxyUrl } from './drive-proxy';
 import { preprocessAllClips, cleanupProcessedFiles, type PreprocessClipConfig, type PreprocessedClip } from './preprocess';
-import { submitRemotionRender, checkRemotionStatus, testRemotionAvailability } from './remotion/render';
+// Remotion imports are dynamic to prevent Vite from bundling @remotion/renderer
+// (which transitively imports @remotion/studio → @remotion/web-renderer)
+// import { submitRemotionRender, checkRemotionStatus, testRemotionAvailability } from './remotion/render';
 import {
 	selectTrack,
 	shouldAddMusic,
@@ -238,6 +240,7 @@ const agent = createAgent('video-editor', {
 		if (task === 'test-remotion') {
 			ctx.logger.info('[test-remotion] Checking Remotion availability...');
 			try {
+				const { testRemotionAvailability } = await import('./remotion/render');
 				const result = await testRemotionAvailability(ctx.logger);
 				return {
 					success: result.available,
@@ -386,6 +389,7 @@ const agent = createAgent('video-editor', {
 				// Unlike Shotstack, Remotion uses local file paths — no proxy URLs needed.
 				// Cleanup is handled by render.ts after render completes (not on a timer).
 				try {
+					const { submitRemotionRender } = await import('./remotion/render');
 					const renderId = await submitRemotionRender(
 						{
 							clips,
@@ -582,6 +586,7 @@ const agent = createAgent('video-editor', {
 
 			// Auto-detect engine by render ID prefix
 			if (renderId.startsWith('remotion_')) {
+				const { checkRemotionStatus } = await import('./remotion/render');
 				const status = checkRemotionStatus(renderId);
 				return {
 					success: true,

@@ -19,6 +19,25 @@ export default {
 	},
 
 	/**
+	 * Build Configuration
+	 *
+	 * external: packages excluded from the server bundle, loaded from node_modules at runtime.
+	 * Remotion packages include browser-only deps (@remotion/studio → @remotion/web-renderer)
+	 * that can't be bundled. They're dynamically imported at runtime only when needed.
+	 */
+	build: {
+		external: [
+			'remotion',
+			'@remotion/renderer',
+			'@remotion/bundler',
+			'@remotion/transitions',
+			'@remotion/media-utils',
+			'@remotion/studio',
+			'@remotion/web-renderer',
+		],
+	},
+
+	/**
 	 * Vite Plugins
 	 *
 	 * Custom Vite plugins for the client build (src/web/).
@@ -32,4 +51,4 @@ export default {
 	 * @see https://vitejs.dev/plugins/
 	 */
 	plugins: tailwindcss(),
-} satisfies AgentuityConfig;
+} as AgentuityConfig;

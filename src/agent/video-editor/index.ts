@@ -904,7 +904,7 @@ const agent = createAgent('video-editor', {
 			}, 0);
 
 			const userMessage = `
-Task: Generate a complete edit plan for the target platform. Edit like a professional video editor — find the BEST moments across all footage and cut them together dynamically.
+Task: Generate a complete edit plan that tells a compelling story. Read ALL the footage descriptions first, find the narrative thread, and build an edit that lets the viewer understand and feel what's happening — not just see a montage of clips.
 
 Topic: ${topic}
 Purpose: ${purpose}
@@ -914,37 +914,46 @@ Target Platforms: ${input.platforms?.join(', ') || 'All (TikTok, IG Reels, IG Fe
 Available footage (${videoDetails.length} source files, ~${Math.round(totalFootageDuration)}s total):
 ${footageContext}
 
-CRITICAL EDITING INSTRUCTIONS:
-- You are a professional editor. Do NOT just use the first few seconds of each file. Scrub through the ENTIRE duration of each source video to find the best moments.
-- BREAK EACH SOURCE VIDEO INTO MULTIPLE CLIPS. A single 83-second source video should produce 4-8+ individual clip segments at different trim points, not one single clip.
-- Each clip entry in the JSON represents a SEGMENT extracted from a source video, using trimStart (where to start in the source) and duration (how many seconds to use from that point).
-- The same fileId CAN and SHOULD appear multiple times in the clips array with different trimStart values to pull different moments from the same source video.
-- Follow the structural templates from the system prompt (HOOK → BUILD → PEAK → RESOLVE for Game Day, etc.)
-- TARGET DURATION for the output video should match platform guidelines:
-  - TikTok/IG Reels: 25-45 seconds (NOT 15 seconds — use the full allowance for impact)
+STORYTELLING INSTRUCTIONS:
+- STEP 1: Read ALL clip descriptions first. Understand the full picture before you start cutting.
+- STEP 2: Find the story. What happened at this location? What's the emotional center? What moment would make someone stop scrolling?
+- STEP 3: Build an arc around that center — context → anticipation → the moment → the impact.
+- STEP 4: Give each clip enough time to land. The viewer needs to SEE and UNDERSTAND each shot before you cut away.
+  - 30-second video: 5-7 clips at 4-5 seconds each. NOT 12 clips at 2 seconds each.
+  - 45-second video: 7-10 clips, mix of 3-6 second holds.
+  - 60+ second video: 10-15 clips with breathing room, establishing shots, and reactions.
+- STEP 5: The hook should INVITE the viewer into the story, not just shock them. A child's focused face or a wide shot of kids gathering is more compelling than a random action flash.
+
+EDITING RULES:
+- Scrub through the ENTIRE duration of each source video — don't just grab the first few seconds.
+- The same fileId CAN appear multiple times with different trimStart values to pull different moments.
+- Each clip entry uses trimStart (seconds into the source) and duration (seconds to use).
+- Hold clips long enough for the viewer to process them. A 4-second clip of a kid concentrating is more powerful than two 2-second flashes of random action.
+- Include quiet/breathing moments between high-energy clips. The contrast makes both stronger.
+- End with intention — the last clip should feel like a resolution, not like you ran out of footage.
+- TARGET DURATION should match platform guidelines:
+  - TikTok/IG Reels: 30-45 seconds
   - IG Feed: 30-45 seconds
   - YouTube: 60-120 seconds
   - Facebook: 45-60 seconds
   - LinkedIn: 30-45 seconds
-- Use fast cuts (1-3s per clip segment) for Game Day, longer holds (3-6s) for Our Story/Showcase.
-- Create visual variety: alternate between wide shots, close-ups, action moments, reactions, crowd shots.
-- The first clip MUST be the strongest visual hook — motion, a face, an impact moment. Never start with a static establishing shot.
 
-Use your knowledge of each clip's content, location, and quality to make intelligent sequencing decisions. Place the strongest visual hooks first. Group location-specific clips together unless creating a cross-location montage. Avoid using poor-quality clips in hero positions.
+Use your knowledge of each clip's content, location, and quality to make intelligent sequencing decisions. Group location-specific clips together. Avoid using poor-quality clips in hero positions. Prioritize moments that show real human connection over generic action.
 
 Generate:
-1. Mode selection with reasoning (consider the content types and suggested modes from the catalog)
-2. Clip sequencing with timestamps and purpose of each clip — SHOW YOUR EDITORIAL THINKING (why this moment, why this order)
-3. Platform variant breakdown (duration, aspect ratio, music tier, CTA)
-4. Music approach
-5. Text overlay content (aligned with Kimberly's voice, use real location names and readable text from clips)
-6. Review summary for approval
-7. REQUIRED: A structured JSON block wrapped in \`\`\`json fences containing: mode, clips (with fileId, filename, trimStart, duration, purpose), textOverlays (with text, start, duration, position), transitions, totalDuration, musicTier, and musicDirection. The render engine depends on this JSON — the edit plan is incomplete without it.
+1. THE STORY — What narrative are you telling? What's the emotional arc? (2-3 sentences explaining your creative vision)
+2. Mode selection with reasoning
+3. Clip sequencing with timestamps and purpose — EXPLAIN YOUR EDITORIAL THINKING (why this moment, why this order, what it adds to the story)
+4. Platform variant breakdown (duration, aspect ratio, music tier, CTA)
+5. Music approach
+6. Text overlay content (aligned with Kimberly's voice, use real location names and readable text from clips)
+7. Review summary for approval
+8. REQUIRED: A structured JSON block wrapped in \`\`\`json fences containing: mode, clips (with fileId, filename, trimStart, duration, purpose), textOverlays (with text, start, duration, position), transitions, totalDuration, musicTier, and musicDirection. The render engine depends on this JSON — the edit plan is incomplete without it.
 
 IMPORTANT JSON RULES:
 - clips[].fileId must be the Google Drive fileId provided for each clip (a long alphanumeric string like "1aBcDeFg..."), NOT the filename.
 - Copy the fileId exactly from the "Google Drive fileId" field listed for each clip.
-- You MUST have at least 6 clip segments in the clips array. More is better for dynamic edits.
+- Aim for 6-10 clip segments with meaningful duration (3-5s each). Quality over quantity.
 - Vary trimStart values across the full duration of each source video — do NOT cluster all clips in the first 20 seconds.
 - totalDuration should match the platform target durations listed above, NOT default to 15 seconds.
 `;

@@ -258,6 +258,23 @@ const agent = createAgent('video-editor', {
 			}
 		}
 
+		if (task === 'setup-remotion-lambda') {
+			ctx.logger.info('[setup-remotion-lambda] Setting up Lambda infrastructure...');
+			try {
+				const { setupLambdaInfra } = await import('./remotion/render');
+				const result = await setupLambdaInfra(ctx.logger);
+				return {
+					success: result.success,
+					remotionAvailable: result.success,
+					message: result.message,
+				};
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.logger.error('[setup-remotion-lambda] Error: %s', msg);
+				return { success: false, remotionAvailable: false, message: msg };
+			}
+		}
+
 		if (task === 'download-render') {
 			const { filePath } = input;
 
@@ -322,8 +339,15 @@ const agent = createAgent('video-editor', {
 				};
 			}
 
-			// --- Remotion render path ---
+			// --- Remotion Lambda render path ---
 			if (renderEngine === 'remotion') {
+				if (!appUrl) {
+					return {
+						success: false,
+						error: 'App URL not available. Cannot build proxy URLs for Remotion Lambda.',
+					};
+				}
+
 				const clips = editPlanObj.clips as Array<{
 					fileId: string;
 					filename?: string;
@@ -361,7 +385,7 @@ const agent = createAgent('video-editor', {
 				}
 
 				const totalEditDuration = clips.reduce((sum, c) => sum + (c.duration || 0), 0);
-				ctx.logger.info('[render-remotion] Starting Remotion render: %d clips, platform: %s, mode: %s, total: %ds',
+				ctx.logger.info('[render-remotion] Starting Remotion Lambda render: %d clips, platform: %s, mode: %s, total: %ds',
 					clips.length, platform, editMode, totalEditDuration);
 
 				// Pre-process clips (same as Shotstack — sharpen + speed ramp)
@@ -385,9 +409,9 @@ const agent = createAgent('video-editor', {
 					return { success: false, error: 'FFmpeg pre-processing failed: ' + msg };
 				}
 
-				// Submit Remotion render (runs in background)
-				// Unlike Shotstack, Remotion uses local file paths — no proxy URLs needed.
-				// Cleanup is handled by render.ts after render completes (not on a timer).
+				// Submit Remotion Lambda render
+				// Lambda workers fetch preprocessed clips via proxy URLs (same as Shotstack).
+				// Cleanup on a 30-min timer so proxy URLs stay alive during Lambda render.
 				try {
 					const { submitRemotionRender } = await import('./remotion/render');
 					const renderId = await submitRemotionRender(
@@ -399,10 +423,18 @@ const agent = createAgent('video-editor', {
 							platform,
 						},
 						processedClips,
+						appUrl,
 						ctx.logger,
 					);
 
-					ctx.logger.info('[render-remotion] Submitted. Render ID: %s', renderId);
+					ctx.logger.info('[render-remotion] Submitted to Lambda. Render ID: %s', renderId);
+
+					// Schedule cleanup of preprocessed files after 30 minutes
+					// (Lambda needs proxy URLs to stay alive while rendering, typically 2-5 min)
+					setTimeout(async () => {
+						ctx.logger.info('[render-remotion] Cleaning up %d pre-processed files (30min timer)...', processedClips.length);
+						await cleanupProcessedFiles(processedClips);
+					}, 30 * 60 * 1000);
 
 					return {
 						success: true,
@@ -410,13 +442,13 @@ const agent = createAgent('video-editor', {
 						renderStatus: 'queued',
 						renderPlatform: platform,
 						renderMode: editMode,
-						message: `Remotion render submitted: ${clips.length} clips (pre-processed with sharpening${clips.some(c => c.speed && c.speed !== 1.0) ? ' + speed ramping' : ''})`,
+						message: `Remotion Lambda render submitted: ${clips.length} clips (pre-processed with sharpening${clips.some(c => c.speed && c.speed !== 1.0) ? ' + speed ramping' : ''})`,
 					};
 				} catch (err) {
 					await cleanupProcessedFiles(processedClips);
 					const msg = err instanceof Error ? err.message : String(err);
-					ctx.logger.error('[render-remotion] Submission failed: %s', msg);
-					return { success: false, error: 'Remotion render failed: ' + msg };
+					ctx.logger.error('[render-remotion] Lambda submission failed: %s', msg);
+					return { success: false, error: 'Remotion Lambda render failed: ' + msg };
 				}
 			}
 
@@ -587,7 +619,7 @@ const agent = createAgent('video-editor', {
 			// Auto-detect engine by render ID prefix
 			if (renderId.startsWith('remotion_')) {
 				const { checkRemotionStatus } = await import('./remotion/render');
-				const status = checkRemotionStatus(renderId);
+				const status = await checkRemotionStatus(renderId, ctx.logger);
 				return {
 					success: true,
 					renderId: status.id,

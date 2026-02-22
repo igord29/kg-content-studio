@@ -10,6 +10,9 @@ declare global {
 		readonly GOOGLE_DRIVE_FOLDER_ID: string;
 		readonly OPENAI_API_KEY: string;
 		readonly PIXABAY_API_KEY: string;
+		readonly REMOTION_AWS_ACCESS_KEY_ID: string;
+		readonly REMOTION_AWS_REGION: string;
+		readonly REMOTION_AWS_SECRET_ACCESS_KEY: string;
 		readonly SHOTSTACK_API_KEY: string;
 		readonly SHOTSTACK_ENV: string;
 		}

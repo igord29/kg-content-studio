@@ -194,7 +194,7 @@ api.get('/processed-file/:processedId', async (c) => {
 	}
 });
 
-// Remotion render download — streams completed Remotion renders from .temp-cataloger/
+// Remotion render download — redirects to S3 URL for Lambda-rendered videos
 // Keyed by render ID (format: remotion_<timestamp>_<random>)
 api.get('/remotion-render/:renderId', async (c) => {
 	const renderId = c.req.param('renderId');
@@ -204,40 +204,23 @@ api.get('/remotion-render/:renderId', async (c) => {
 	}
 
 	try {
-		const fs = await import('fs');
-		const path = await import('path');
+		const { checkRemotionStatus } = await import('../agent/video-editor/remotion/render');
+		const status = await checkRemotionStatus(renderId);
 
-		// Security: only serve from the .temp-cataloger/ directory
-		const tempDir = path.resolve(process.cwd(), '.temp-cataloger');
-		const filePath = path.join(tempDir, `${renderId}.mp4`);
-		const resolvedPath = path.resolve(filePath);
-
-		if (!resolvedPath.startsWith(tempDir)) {
-			return c.text('Access denied', 403);
+		if (status.status === 'done' && status.url) {
+			// Redirect to S3 public URL — browser follows redirect and downloads
+			return c.redirect(status.url, 302);
 		}
 
-		if (!fs.existsSync(resolvedPath)) {
-			return c.text('Render not found or not yet complete', 404);
+		if (status.status === 'failed') {
+			return c.text('Render failed: ' + (status.error || 'Unknown error'), 500);
 		}
 
-		const stat = fs.statSync(resolvedPath);
-		const stream = fs.createReadStream(resolvedPath);
-		const { Readable } = await import('stream');
-		const webStream = Readable.toWeb(stream as any);
-
-		return new Response(webStream as unknown as ReadableStream, {
-			status: 200,
-			headers: {
-				'Content-Type': 'video/mp4',
-				'Content-Length': String(stat.size),
-				'Cache-Control': 'public, max-age=3600',
-				'Content-Disposition': `inline; filename="${renderId}.mp4"`,
-			},
-		});
+		return c.text('Render not yet complete (status: ' + status.status + ')', 202);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
-		console.error('[remotion-render] Error streaming render %s: %s', renderId, msg);
-		return c.text('Failed to stream render: ' + msg, 500);
+		console.error('[remotion-render] Error checking render %s: %s', renderId, msg);
+		return c.text('Failed: ' + msg, 500);
 	}
 });
 

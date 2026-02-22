@@ -22,18 +22,15 @@ export default {
 	 * Build Configuration
 	 *
 	 * external: packages excluded from the server bundle, loaded from node_modules at runtime.
-	 * Remotion packages include browser-only deps (@remotion/studio → @remotion/web-renderer)
-	 * that can't be bundled. They're dynamically imported at runtime only when needed.
+	 *
+	 * Only @remotion/lambda-client is needed at runtime in the cloud (lightweight, zero deps).
+	 * It's used by render.ts for renderMediaOnLambda() and getRenderProgress().
+	 * Heavy packages (@remotion/lambda, @remotion/renderer, etc.) are only used locally
+	 * by scripts/setup-remotion-lambda.ts and are NOT deployed.
 	 */
 	build: {
 		external: [
-			'remotion',
-			'@remotion/renderer',
-			'@remotion/bundler',
-			'@remotion/transitions',
-			'@remotion/media-utils',
-			'@remotion/studio',
-			'@remotion/web-renderer',
+			'@remotion/lambda-client',
 		],
 	},
 

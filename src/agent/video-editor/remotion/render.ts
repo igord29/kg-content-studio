@@ -1,11 +1,14 @@
 /**
- * Remotion Render Orchestration
+ * Remotion Lambda Render Orchestration
  *
- * Manages the full lifecycle of Remotion renders:
- *   1. Bundle management (webpack bundle, cached after first build)
- *   2. Props conversion (RenderConfig → CLCVideoProps)
- *   3. Background render submission (renderMedia in async IIFE)
- *   4. Status tracking via in-memory registry
+ * Manages the full lifecycle of Remotion renders via AWS Lambda:
+ *   1. Infrastructure config from env vars (set by scripts/setup-remotion-lambda.ts)
+ *   2. Props conversion (RenderConfig → CLCVideoProps with proxy URLs)
+ *   3. Render submission via renderMediaOnLambda()
+ *   4. Status polling via getRenderProgress()
+ *
+ * Only imports from '@remotion/lambda/client' (lightweight).
+ * Heavy deployment functions live in scripts/setup-remotion-lambda.ts (run locally).
  *
  * Same RenderResult shape as Shotstack's checkStatus() so the
  * frontend polling code works for both engines transparently.
@@ -16,18 +19,9 @@
 import type { CLCVideoProps } from './types';
 import type { PreprocessedClip } from '../preprocess';
 import { PLATFORM_SETTINGS } from '../shotstack';
+import { buildProcessedFileProxyUrl } from '../drive-proxy';
 
 // --- Types ---
-
-interface RenderEntry {
-	id: string;
-	status: 'queued' | 'bundling' | 'rendering' | 'done' | 'failed';
-	outputPath?: string;
-	error?: string;
-	createdAt: number;
-	updatedAt: number;
-	progress?: number;  // 0-1 render progress
-}
 
 export interface RenderResult {
 	id: string;
@@ -42,77 +36,123 @@ interface Logger {
 	warn?: (...args: any[]) => void;
 }
 
+interface LambdaInfrastructure {
+	bucketName: string;
+	functionName: string;
+	serveUrl: string;
+	region: string;
+}
+
+interface LambdaRenderEntry {
+	localId: string;            // Our render ID: remotion_<ts>_<rand>
+	lambdaRenderId: string;     // Lambda's internal render ID
+	bucketName: string;
+	functionName: string;
+	region: string;
+	status: 'queued' | 'rendering' | 'done' | 'failed';
+	outputUrl?: string;         // S3 public URL
+	error?: string;
+	createdAt: number;
+}
+
 // --- In-Memory State ---
 
 /**
- * Registry of active/completed Remotion renders.
- * Key: render ID (remotion_<timestamp>_<random>)
- * Value: current status, output path, errors
+ * Cached Lambda infrastructure — read from env vars on first use.
+ * Set by running: bun scripts/setup-remotion-lambda.ts
  */
-const renderRegistry = new Map<string, RenderEntry>();
+let cachedInfra: LambdaInfrastructure | null = null;
 
 /**
- * Cached webpack bundle path — built once on first render,
- * reused for subsequent renders. ~15-30s to build initially.
+ * Registry of active/completed Lambda renders.
+ * Key: our render ID (remotion_<timestamp>_<random>)
+ * Value: Lambda render ID mapping + status
  */
-let cachedBundlePath: string | null = null;
-let bundlePromise: Promise<string> | null = null;
+const renderRegistry = new Map<string, LambdaRenderEntry>();
 
-// --- Bundle Management ---
+// --- Lambda Infrastructure ---
 
 /**
- * Get or create the Remotion webpack bundle.
- * Uses a singleton promise to prevent concurrent bundle builds.
+ * Get the AWS region from env var or default.
  */
-async function getBundle(logger?: Logger): Promise<string> {
-	// Return cached bundle if available
-	if (cachedBundlePath) {
-		// Verify it still exists on disk
-		const fs = await import('fs');
-		if (fs.existsSync(cachedBundlePath)) {
-			return cachedBundlePath;
-		}
-		logger?.info('[remotion] Cached bundle missing from disk, rebuilding...');
-		cachedBundlePath = null;
+function getRegion(): string {
+	return process.env.REMOTION_AWS_REGION || 'us-east-1';
+}
+
+/**
+ * Get Lambda infrastructure config from environment variables.
+ *
+ * These env vars are set after running the one-time setup script:
+ *   bun scripts/setup-remotion-lambda.ts
+ *
+ * If env vars aren't set, falls back to auto-discovery via
+ * @remotion/lambda/client (getFunctions/getSites) — lightweight
+ * API calls that only read existing AWS resources.
+ */
+async function getInfra(logger?: Logger): Promise<LambdaInfrastructure> {
+	if (cachedInfra) return cachedInfra;
+
+	const region = getRegion();
+
+	// Check for explicit env var config (fastest path — no AWS API calls)
+	const envFunction = process.env.REMOTION_FUNCTION_NAME;
+	const envServeUrl = process.env.REMOTION_SERVE_URL;
+	const envBucket = process.env.REMOTION_BUCKET_NAME;
+
+	if (envFunction && envServeUrl && envBucket) {
+		logger?.info('[remotion-lambda] Using env var config: function=%s, bucket=%s', envFunction, envBucket);
+		cachedInfra = {
+			bucketName: envBucket,
+			functionName: envFunction,
+			serveUrl: envServeUrl,
+			region,
+		};
+		return cachedInfra;
 	}
 
-	// If a bundle is already being built, wait for it
-	if (bundlePromise) {
-		logger?.info('[remotion] Bundle already building, waiting...');
-		return bundlePromise;
-	}
+	// Fallback: auto-discover from AWS via lightweight /client APIs
+	logger?.info('[remotion-lambda] No env var config — discovering infrastructure via AWS API...');
+	const startTime = Date.now();
 
-	// Build new bundle
-	bundlePromise = (async () => {
-		const startTime = Date.now();
-		logger?.info('[remotion] Building webpack bundle...');
+	try {
+		const { getFunctions, getSites } = await import('@remotion/lambda/client');
 
-		try {
-			const { bundle } = await import('@remotion/bundler');
-			const path = await import('path');
-
-			const entryPoint = path.resolve(
-				process.cwd(),
-				'src/agent/video-editor/remotion/entry.tsx',
+		// Discover Lambda function
+		const functions = await getFunctions({
+			region: region as any,
+			compatibleOnly: true,
+		});
+		if (functions.length === 0) {
+			throw new Error(
+				'No Remotion Lambda function found. Run: bun scripts/setup-remotion-lambda.ts'
 			);
-
-			const bundlePath = await bundle({
-				entryPoint,
-				// Use default webpack config — Remotion handles React/TS
-			});
-
-			const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-			logger?.info('[remotion] Bundle built in %ss: %s', elapsed, bundlePath);
-
-			cachedBundlePath = bundlePath;
-			return bundlePath;
-		} catch (err) {
-			bundlePromise = null;  // Allow retry on next attempt
-			throw err;
 		}
-	})();
+		const functionName = functions[0]!.functionName;
 
-	return bundlePromise;
+		// Discover site (need bucket name first — extract from function's bucket or site listing)
+		const sites = await getSites({ region: region as any });
+		if (sites.sites.length === 0) {
+			throw new Error(
+				'No Remotion site found. Run: bun scripts/setup-remotion-lambda.ts'
+			);
+		}
+		const site = sites.sites[0]!;
+		const serveUrl = site.serveUrl;
+		const bucketName = site.bucketName;
+
+		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+		logger?.info('[remotion-lambda] Discovered infra in %ss: function=%s, site=%s, bucket=%s',
+			elapsed, functionName, serveUrl, bucketName);
+
+		cachedInfra = { bucketName, functionName, serveUrl, region };
+		return cachedInfra;
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		logger?.error?.('[remotion-lambda] Infrastructure discovery failed: %s', msg);
+		throw new Error(
+			'Remotion Lambda infrastructure not found. Run: bun scripts/setup-remotion-lambda.ts\n' + msg
+		);
+	}
 }
 
 // --- Props Builder ---
@@ -120,8 +160,8 @@ async function getBundle(logger?: Logger): Promise<string> {
 /**
  * Convert a RenderConfig + PreprocessedClips to Remotion CLCVideoProps.
  *
- * Key difference from Shotstack: uses local file paths (processedClip.localPath)
- * instead of proxy URLs, since Remotion renders locally.
+ * Uses proxy URLs (not local file paths) so Lambda workers can fetch
+ * the preprocessed clips over HTTP from our server.
  */
 export function buildRemotionProps(
 	config: {
@@ -144,14 +184,14 @@ export function buildRemotionProps(
 		platform: string;
 	},
 	processedClips: PreprocessedClip[],
+	appUrl: string,
 ): CLCVideoProps {
 	const platformSettings = PLATFORM_SETTINGS[config.platform] || PLATFORM_SETTINGS['youtube']!;
 
-	// FPS: not stored in PLATFORM_SETTINGS, use standard 30fps
+	// FPS: standard 30fps
 	const fps = 30;
 
-	// Mode-specific settings — transitionDuration and bgColor from MODE_CONFIGS
-	// (not in exported MODE_RENDER_SETTINGS, which only has transitionIn/Out/clipLength/volume)
+	// Mode-specific settings
 	const REMOTION_MODE_SETTINGS: Record<string, { transitionDuration: number; bgColor: string }> = {
 		game_day:  { transitionDuration: 0.5, bgColor: '#000000' },
 		our_story: { transitionDuration: 1.0, bgColor: '#0a0a0a' },
@@ -161,11 +201,10 @@ export function buildRemotionProps(
 	const remotionMode = REMOTION_MODE_SETTINGS[config.mode] || REMOTION_MODE_SETTINGS['game_day']!;
 	const transitionDurationFrames = Math.round(remotionMode.transitionDuration * fps);
 
-	// Build clip props using local file paths from preprocessing
+	// Build clip props using proxy URLs (Lambda fetches these over HTTP)
 	const clipProps: CLCVideoProps['clips'] = processedClips.map((pc) => ({
-		src: pc.localPath,
+		src: buildProcessedFileProxyUrl(appUrl, pc.processedId),
 		length: pc.effectiveDuration,
-		// effect and transition are auto-assigned by CLCVideo based on mode + index
 	}));
 
 	// Build text overlay props — convert seconds to frames
@@ -199,16 +238,14 @@ export function buildRemotionProps(
 // --- Render Submission ---
 
 /**
- * Submit a Remotion render in the background.
- *
- * Returns immediately with a render ID. The actual render runs
- * in an async IIFE — check status via checkRemotionStatus().
+ * Submit a Remotion render to AWS Lambda.
  *
  * Flow:
- *   1. Register render in registry as 'queued'
- *   2. Async: getBundle() → selectComposition() → renderMedia()
- *   3. Update registry with 'done' + outputPath or 'failed' + error
- *   4. Cleanup preprocessed source files after render completes
+ *   1. Ensure Lambda infrastructure is ready (bucket, function, site)
+ *   2. Build props with proxy URLs for video clips
+ *   3. Call renderMediaOnLambda() — kicks off distributed render on AWS
+ *   4. Store mapping in registry for status polling
+ *   5. Return our render ID immediately
  */
 export async function submitRemotionRender(
 	config: {
@@ -231,121 +268,48 @@ export async function submitRemotionRender(
 		platform: string;
 	},
 	processedClips: PreprocessedClip[],
+	appUrl: string,
 	logger?: Logger,
 ): Promise<string> {
 	const renderId = `remotion_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-	const now = Date.now();
 
-	// Register in registry
-	renderRegistry.set(renderId, {
-		id: renderId,
-		status: 'queued',
-		createdAt: now,
-		updatedAt: now,
+	logger?.info('[remotion-lambda] Render %s: getting infrastructure config...', renderId);
+
+	// Step 1: Get Lambda infrastructure config
+	const infra = await getInfra(logger);
+
+	// Step 2: Build props with proxy URLs
+	const props = buildRemotionProps(config, processedClips, appUrl);
+
+	logger?.info('[remotion-lambda] Submitting render: %d clips, %dx%d, mode=%s, platform=%s',
+		props.clips.length, props.width, props.height, config.mode, config.platform);
+
+	// Step 3: Submit to Lambda
+	const { renderMediaOnLambda } = await import('@remotion/lambda/client');
+
+	const result = await renderMediaOnLambda({
+		region: infra.region as any,
+		functionName: infra.functionName,
+		serveUrl: infra.serveUrl,
+		composition: 'CLCVideo',
+		codec: 'h264',
+		inputProps: props as unknown as Record<string, unknown>,
+		privacy: 'public',
 	});
 
-	logger?.info('[remotion] Render %s registered, starting background render...', renderId);
+	// Step 4: Store mapping in registry
+	renderRegistry.set(renderId, {
+		localId: renderId,
+		lambdaRenderId: result.renderId,
+		bucketName: result.bucketName,
+		functionName: infra.functionName,
+		region: infra.region,
+		status: 'queued',
+		createdAt: Date.now(),
+	});
 
-	// Build props BEFORE the async IIFE so errors are caught synchronously
-	const props = buildRemotionProps(config, processedClips);
-
-	// Fire and forget — render runs in the background
-	(async () => {
-		const fs = await import('fs');
-		const path = await import('path');
-
-		try {
-			// Step 1: Ensure Chromium is available
-			const { ensureBrowser } = await import('@remotion/renderer');
-			await ensureBrowser();
-
-			// Step 2: Get or build the webpack bundle
-			renderRegistry.set(renderId, {
-				...renderRegistry.get(renderId)!,
-				status: 'bundling',
-				updatedAt: Date.now(),
-			});
-
-			const bundlePath = await getBundle(logger);
-
-			// Step 3: Select the composition
-			const { selectComposition } = await import('@remotion/renderer');
-			const composition = await selectComposition({
-				serveUrl: bundlePath,
-				id: 'CLCVideo',
-				inputProps: props as unknown as Record<string, unknown>,
-			});
-
-			// Step 4: Render the video
-			renderRegistry.set(renderId, {
-				...renderRegistry.get(renderId)!,
-				status: 'rendering',
-				updatedAt: Date.now(),
-			});
-
-			const tempDir = path.join(process.cwd(), '.temp-cataloger');
-			if (!fs.existsSync(tempDir)) {
-				fs.mkdirSync(tempDir, { recursive: true });
-			}
-
-			const outputPath = path.join(tempDir, `${renderId}.mp4`);
-
-			logger?.info('[remotion] Starting renderMedia: %d clips, %dx%d, %dfps, ~%ds',
-				props.clips.length, props.width, props.height, props.fps,
-				props.clips.reduce((sum, c) => sum + c.length, 0));
-
-			const { renderMedia } = await import('@remotion/renderer');
-			await renderMedia({
-				composition,
-				serveUrl: bundlePath,
-				codec: 'h264',
-				outputLocation: outputPath,
-				inputProps: props as unknown as Record<string, unknown>,
-				concurrency: 1,  // Conservative for Railway memory limits
-				onProgress: ({ progress }) => {
-					const entry = renderRegistry.get(renderId);
-					if (entry) {
-						entry.progress = progress;
-						entry.updatedAt = Date.now();
-					}
-				},
-			});
-
-			// Step 5: Mark as done
-			const stat = fs.statSync(outputPath);
-			logger?.info('[remotion] Render %s complete: %s (%dMB)',
-				renderId, outputPath, (stat.size / (1024 * 1024)).toFixed(1));
-
-			renderRegistry.set(renderId, {
-				...renderRegistry.get(renderId)!,
-				status: 'done',
-				outputPath,
-				updatedAt: Date.now(),
-			});
-
-			// Step 6: Cleanup preprocessed source files (they're baked into the render now)
-			const { cleanupProcessedFiles } = await import('../preprocess');
-			await cleanupProcessedFiles(processedClips);
-			logger?.info('[remotion] Cleaned up %d preprocessed source files', processedClips.length);
-
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			logger?.error?.('[remotion] Render %s failed: %s', renderId, msg);
-
-			renderRegistry.set(renderId, {
-				...renderRegistry.get(renderId)!,
-				status: 'failed',
-				error: msg,
-				updatedAt: Date.now(),
-			});
-
-			// Cleanup preprocessed files even on failure
-			try {
-				const { cleanupProcessedFiles } = await import('../preprocess');
-				await cleanupProcessedFiles(processedClips);
-			} catch { /* best effort */ }
-		}
-	})();
+	logger?.info('[remotion-lambda] Submitted. Lambda renderId: %s → our renderId: %s',
+		result.renderId, renderId);
 
 	return renderId;
 }
@@ -353,12 +317,13 @@ export async function submitRemotionRender(
 // --- Status Check ---
 
 /**
- * Check the status of a Remotion render.
+ * Check the status of a Remotion Lambda render.
  *
+ * Polls AWS Lambda for progress, caches done/failed results.
  * Returns the same RenderResult shape as Shotstack's checkStatus()
- * so the frontend polling code works transparently for both engines.
+ * so the frontend polling code works transparently.
  */
-export function checkRemotionStatus(renderId: string): RenderResult {
+export async function checkRemotionStatus(renderId: string, logger?: Logger): Promise<RenderResult> {
 	const entry = renderRegistry.get(renderId);
 
 	if (!entry) {
@@ -369,92 +334,126 @@ export function checkRemotionStatus(renderId: string): RenderResult {
 		};
 	}
 
-	// Map Remotion-specific statuses to Shotstack-compatible ones
-	let mappedStatus: RenderResult['status'];
-	switch (entry.status) {
-		case 'queued':
-			mappedStatus = 'queued';
-			break;
-		case 'bundling':
-			mappedStatus = 'fetching';  // "fetching" = preparing resources
-			break;
-		case 'rendering':
-			mappedStatus = 'rendering';
-			break;
-		case 'done':
-			mappedStatus = 'done';
-			break;
-		case 'failed':
-			mappedStatus = 'failed';
-			break;
-		default:
-			mappedStatus = 'queued';
+	// Return cached terminal states
+	if (entry.status === 'done') {
+		return { id: renderId, status: 'done', url: entry.outputUrl };
+	}
+	if (entry.status === 'failed') {
+		return { id: renderId, status: 'failed', error: entry.error };
 	}
 
-	// Build download URL for completed renders
-	let downloadUrl: string | undefined;
-	if (entry.status === 'done' && entry.outputPath) {
-		downloadUrl = `/api/remotion-render/${encodeURIComponent(renderId)}`;
-	}
+	// Poll Lambda for progress
+	try {
+		const { getRenderProgress } = await import('@remotion/lambda/client');
 
-	return {
-		id: renderId,
-		status: mappedStatus,
-		url: downloadUrl,
-		error: entry.error,
-	};
+		const progress = await getRenderProgress({
+			renderId: entry.lambdaRenderId,
+			bucketName: entry.bucketName,
+			functionName: entry.functionName,
+			region: entry.region as any,
+		});
+
+		if (progress.fatalErrorEncountered) {
+			const errorMsg = progress.errors?.[0]?.message || 'Lambda render failed';
+			entry.status = 'failed';
+			entry.error = errorMsg;
+			logger?.error?.('[remotion-lambda] Render %s failed: %s', renderId, errorMsg);
+			return { id: renderId, status: 'failed', error: errorMsg };
+		}
+
+		if (progress.done && progress.outputFile) {
+			// With privacy: 'public', outputFile is a directly accessible S3 URL
+			entry.status = 'done';
+			entry.outputUrl = progress.outputFile;
+			logger?.info('[remotion-lambda] Render %s complete: %s', renderId, progress.outputFile);
+			return { id: renderId, status: 'done', url: progress.outputFile };
+		}
+
+		// Still in progress
+		const pct = (progress.overallProgress * 100).toFixed(0);
+		logger?.info('[remotion-lambda] Render %s progress: %s%%', renderId, pct);
+
+		entry.status = 'rendering';
+		const mappedStatus: RenderResult['status'] = progress.overallProgress > 0 ? 'rendering' : 'fetching';
+		return { id: renderId, status: mappedStatus };
+
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		logger?.error?.('[remotion-lambda] Progress check failed for %s: %s', renderId, msg);
+		// Don't mark as failed on transient errors — let polling retry
+		return { id: renderId, status: 'rendering' };
+	}
 }
 
 // --- Availability Check ---
 
 /**
- * Test if Remotion rendering is available in this environment.
+ * Test if Remotion Lambda rendering is available.
  *
- * Remotion server-side rendering requires:
- *   - Chromium (downloaded by ensureBrowser(), ~200MB)
- *   - Webpack (for bundling the composition)
- *   - FFmpeg (for encoding)
- *   - ~2GB+ RAM for rendering
+ * Checks for:
+ *   1. AWS credentials (REMOTION_AWS_ACCESS_KEY_ID + SECRET)
+ *   2. Infrastructure config (env vars or auto-discovery)
  *
- * These requirements make it incompatible with the Agentuity cloud
- * container (1Gi RAM, 500m CPU, 500Mi disk). Remotion rendering is
- * only available in local development environments.
- *
- * When Remotion Lambda support is added, this check will be updated
- * to also return true in cloud environments.
+ * If env vars are set (REMOTION_FUNCTION_NAME, etc.), returns immediately.
+ * Otherwise falls back to auto-discovery via lightweight AWS API calls.
  */
 export async function testRemotionAvailability(logger?: Logger): Promise<{
 	available: boolean;
 	message: string;
 }> {
+	const hasAwsCreds = !!(
+		process.env.REMOTION_AWS_ACCESS_KEY_ID &&
+		process.env.REMOTION_AWS_SECRET_ACCESS_KEY
+	);
+
+	if (!hasAwsCreds) {
+		logger?.info('[remotion-lambda] No AWS credentials found');
+		return {
+			available: false,
+			message: 'Remotion Lambda requires REMOTION_AWS_ACCESS_KEY_ID and REMOTION_AWS_SECRET_ACCESS_KEY',
+		};
+	}
+
+	// AWS creds found — try to resolve infrastructure config
 	try {
-		// Detect Agentuity cloud environment — Remotion SSR can't run there
-		// (needs Chromium + webpack + 2GB+ RAM which exceeds container limits)
-		const isCloudEnv = !!process.env.AGENTUITY_SDK_KEY;
-
-		if (isCloudEnv) {
-			logger?.info('[remotion] Cloud environment detected — Remotion SSR not available (needs Chromium + 2GB+ RAM)');
-			return {
-				available: false,
-				message: 'Remotion rendering requires a local environment (Chromium + 2GB+ RAM needed)',
-			};
-		}
-
-		// Local environment — verify Chromium is available or can be downloaded
-		try {
-			const { ensureBrowser } = await import('@remotion/renderer');
-			await ensureBrowser();
-			logger?.info('[remotion] Local environment — Chromium available');
-			return { available: true, message: 'Remotion renderer available (local, Chromium ready)' };
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			logger?.warn?.('[remotion] Local environment but Chromium check failed: %s', msg);
-			// Still mark as available locally — the user can install Chromium
-			return { available: true, message: 'Remotion available (Chromium may need to download on first render)' };
-		}
+		const infra = await getInfra(logger);
+		return {
+			available: true,
+			message: `Remotion Lambda ready (${infra.region}, function: ${infra.functionName})`,
+		};
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
-		logger?.error?.('[remotion] Availability check failed: %s', msg);
-		return { available: false, message: 'Remotion not available: ' + msg };
+		logger?.error?.('[remotion-lambda] Infrastructure check failed: %s', msg);
+		return {
+			available: false,
+			message: 'Remotion Lambda not configured: ' + msg,
+		};
+	}
+}
+
+// --- Explicit Setup ---
+
+/**
+ * Re-discover Lambda infrastructure from AWS.
+ * Forces cache refresh. Useful for debugging.
+ */
+export async function setupLambdaInfra(logger?: Logger): Promise<{
+	success: boolean;
+	message: string;
+	infrastructure?: LambdaInfrastructure;
+}> {
+	// Force re-discovery
+	cachedInfra = null;
+
+	try {
+		const infra = await getInfra(logger);
+		return {
+			success: true,
+			message: `Lambda ready: function=${infra.functionName}, site=${infra.serveUrl}, bucket=${infra.bucketName}, region=${infra.region}`,
+			infrastructure: infra,
+		};
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return { success: false, message: 'Lambda setup failed: ' + msg };
 	}
 }

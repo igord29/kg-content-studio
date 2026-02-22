@@ -408,29 +408,50 @@ export function checkRemotionStatus(renderId: string): RenderResult {
 // --- Availability Check ---
 
 /**
- * Test if Remotion is configured and ready to attempt rendering.
+ * Test if Remotion rendering is available in this environment.
  *
- * This is a lightweight check — it does NOT download Chromium or import
- * heavy @remotion packages (which can fail in serverless environments).
- * Chromium download happens at render time via ensureBrowser().
+ * Remotion server-side rendering requires:
+ *   - Chromium (downloaded by ensureBrowser(), ~200MB)
+ *   - Webpack (for bundling the composition)
+ *   - FFmpeg (for encoding)
+ *   - ~2GB+ RAM for rendering
  *
- * If Chromium isn't available when rendering, the render will fail gracefully
- * with a clear error message in the render status UI.
+ * These requirements make it incompatible with the Agentuity cloud
+ * container (1Gi RAM, 500m CPU, 500Mi disk). Remotion rendering is
+ * only available in local development environments.
+ *
+ * When Remotion Lambda support is added, this check will be updated
+ * to also return true in cloud environments.
  */
 export async function testRemotionAvailability(logger?: Logger): Promise<{
 	available: boolean;
 	message: string;
 }> {
 	try {
-		// Verify the composition files exist (they're part of our source, not external deps)
-		const fs = await import('fs');
-		const path = await import('path');
-		const entryPath = path.resolve(process.cwd(), 'src/agent/video-editor/remotion/entry.tsx');
+		// Detect Agentuity cloud environment — Remotion SSR can't run there
+		// (needs Chromium + webpack + 2GB+ RAM which exceeds container limits)
+		const isCloudEnv = !!process.env.AGENTUITY_SDK_KEY;
 
-		// In production builds, source files may be bundled — check if our render module loaded
-		// (this function being callable means the module imported successfully)
-		logger?.info('[remotion] Remotion render module loaded — marking as available');
-		return { available: true, message: 'Remotion renderer configured' };
+		if (isCloudEnv) {
+			logger?.info('[remotion] Cloud environment detected — Remotion SSR not available (needs Chromium + 2GB+ RAM)');
+			return {
+				available: false,
+				message: 'Remotion rendering requires a local environment (Chromium + 2GB+ RAM needed)',
+			};
+		}
+
+		// Local environment — verify Chromium is available or can be downloaded
+		try {
+			const { ensureBrowser } = await import('@remotion/renderer');
+			await ensureBrowser();
+			logger?.info('[remotion] Local environment — Chromium available');
+			return { available: true, message: 'Remotion renderer available (local, Chromium ready)' };
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			logger?.warn?.('[remotion] Local environment but Chromium check failed: %s', msg);
+			// Still mark as available locally — the user can install Chromium
+			return { available: true, message: 'Remotion available (Chromium may need to download on first render)' };
+		}
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		logger?.error?.('[remotion] Availability check failed: %s', msg);

@@ -1275,17 +1275,21 @@ const agent = createAgent('video-editor', {
 					const readableText = Array.isArray(ce.readableText)
 						? (ce.readableText as unknown as string[]).join(', ')
 						: (ce.readableText || 'None');
+					const totalDurSec = v.duration ? Math.round(parseInt(v.duration) / 1000) : (ce.duration ? parseInt(ce.duration) : 0);
+					const sceneSection = ce.sceneAnalysis
+						? '\n  SCENE ANALYSIS (use these real timestamps for trim points):\n' + formatSceneAnalysisForPrompt(ce.sceneAnalysis)
+						: `\n  ⚠️ SCENE ANALYSIS: NOT AVAILABLE — you do NOT know what happens at specific timestamps. All trim points are ESTIMATES. Spread them across the ${totalDurSec}s duration. Do NOT invent specific actions.`;
 					return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr})
   - Google Drive fileId: ${v.id}
-  - Description: ${ce.activity}
+  - WHAT THE CATALOG DESCRIBES (this is ALL you know about this clip): ${ce.activity}
   - Location: ${ce.suspectedLocation} (${ce.locationConfidence} confidence)
   - Content Type: ${ce.contentType}
   - Quality: ${ce.quality}
   - Indoor/Outdoor: ${ce.indoorOutdoor}
   - People: ${ce.peopleCount || 'Unknown'}
-  - Readable Text: ${readableText}
-  - Notable: ${ce.notableMoments || 'None'}
-  - Suggested Modes: ${ce.suggestedModes?.join(', ') || 'None'}${ce.sceneAnalysis ? '\n  SCENE ANALYSIS (use these real timestamps for trim points):\n' + formatSceneAnalysisForPrompt(ce.sceneAnalysis) : '\n  SCENE ANALYSIS: Not available — trim points are estimates, flag for human review'}
+  - Readable Text Visible In Frames: ${readableText}
+  - Notable Moments Flagged: ${ce.notableMoments || 'None — no specific moments identified'}
+  - Suggested Modes: ${ce.suggestedModes?.join(', ') || 'None'}${sceneSection}
 ${formatUsageContextForPrompt(usageSummaryMap.get(v.id || ''), ce)}`;
 				} else {
 					return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr}) - Google Drive fileId: ${v.id} - no catalog data available`;
@@ -1309,10 +1313,22 @@ Target Platforms: ${input.platforms?.join(', ') || 'All (TikTok, IG Reels, IG Fe
 Available footage (${videoDetails.length} source files, ~${Math.round(totalFootageDuration)}s total):
 ${footageContext}
 
+⚠️ CRITICAL — DO NOT HALLUCINATE CLIP CONTENT:
+The catalog descriptions above tell you the GENERAL activity in each clip (e.g., "Kids playing tennis on outdoor courts"). You do NOT know what specific action happens at any particular second. DO NOT invent specific moments like "close-up of a forehand shot" or "winning point celebration" — the catalog does not describe second-by-second content.
+
+Your clip purposes MUST use language directly from the catalog's Description, Notable, and Readable Text fields. For example:
+- If catalog says "Kids playing tennis on outdoor courts, instruction by coach" → your purpose should say "tennis activity with coach instruction (estimated region)"
+- If catalog says "Kids participating in a tennis event" → your purpose should say "tennis event activity (estimated region)"
+- NEVER write "close-up of forehand" or "winning point celebration" unless the catalog explicitly mentions those specific moments.
+
+When scene analysis IS available (timestamps listed under SCENE ANALYSIS), you can reference high-action vs quiet moments at those specific timestamps. When it's NOT available, all trim points are ESTIMATES and you must say so.
+
+The user's topic "${topic}" describes what they WANT the video to be about. Select clips whose catalog descriptions MATCH that topic. If the catalog says "Kids playing tennis" and the topic asks for "redball tennis tournament", that's a reasonable match — but you still can't invent specific gameplay moments that aren't in the catalog description.
+
 STORYTELLING INSTRUCTIONS:
 - STEP 1: Read ALL clip descriptions first. Understand the full picture before you start cutting.
-- STEP 2: Find the story. What happened at this location? What's the emotional center? What moment would make someone stop scrolling?
-- STEP 3: Build an arc around that center — context → anticipation → the moment → the impact.
+- STEP 2: Find the story based on what the catalog ACTUALLY describes. Don't invent a narrative that requires footage you can't confirm exists.
+- STEP 3: Build an arc using the general activities described — context → activity → energy → resolution.
 - STEP 4: Give each clip enough time to land. The viewer needs to SEE and UNDERSTAND each shot before you cut away.
   - 30-second video: 5-7 clips at 4-5 seconds each. NOT 12 clips at 2 seconds each.
   - 45-second video: 7-10 clips, mix of 3-6 second holds.
@@ -1323,7 +1339,11 @@ EDITING RULES:
 - Scrub through the ENTIRE duration of each source video — don't just grab the first few seconds.
 - The same fileId CAN appear multiple times with different trimStart values to pull different moments.
 - Each clip entry uses trimStart (seconds into the source) and duration (seconds to use).
-- Hold clips long enough for the viewer to process them. A 4-second clip of a kid concentrating is more powerful than two 2-second flashes of random action.
+- When scene analysis is NOT available, SPREAD trim points across the video duration:
+  - For a 60s clip: sample regions around 5s, 15s, 25s, 35s, 45s, 55s
+  - For a 100s clip: sample regions around 8s, 20s, 35s, 50s, 65s, 80s
+  - This maximizes variety since you can't know what's at each timestamp.
+- Hold clips long enough for the viewer to process them. A 4-second clip is more powerful than two 2-second flashes.
 - Include quiet/breathing moments between high-energy clips. The contrast makes both stronger.
 - End with intention — the last clip should feel like a resolution, not like you ran out of footage.
 - DURATION IS STORY-DRIVEN, NOT PLATFORM-LOCKED:
@@ -1341,9 +1361,9 @@ EDITING RULES:
 Use your knowledge of each clip's content, location, and quality to make intelligent sequencing decisions. Group location-specific clips together. Avoid using poor-quality clips in hero positions. Prioritize moments that show real human connection over generic action.
 
 Generate:
-1. THE STORY — What narrative are you telling? What's the emotional arc? (2-3 sentences explaining your creative vision)
+1. THE STORY — What narrative are you telling based on the ACTUAL catalog descriptions? What's the emotional arc? (2-3 sentences — describe your creative INTENT, but be honest about what's confirmed vs estimated)
 2. Mode selection with reasoning
-3. Clip sequencing with timestamps and purpose — EXPLAIN YOUR EDITORIAL THINKING (why this moment, why this order, what it adds to the story)
+3. Clip sequencing with timestamps and purpose — PURPOSES MUST REFERENCE CATALOG DESCRIPTIONS, NOT INVENTED MOMENTS. Flag estimated timestamps as estimates.
 4. Platform variant breakdown (duration, aspect ratio, music tier, CTA)
 5. Music approach
 6. Text overlay content (aligned with Kimberly's voice, use real location names and readable text from clips)
@@ -1353,6 +1373,7 @@ Generate:
 IMPORTANT JSON RULES:
 - clips[].fileId must be the Google Drive fileId provided for each clip (a long alphanumeric string like "1aBcDeFg..."), NOT the filename.
 - Copy the fileId exactly from the "Google Drive fileId" field listed for each clip.
+- clips[].purpose MUST reference catalog data. NEVER invent specific actions not in the catalog.
 - Aim for 6-10 clip segments with meaningful duration (3-5s each). Quality over quantity.
 - Vary trimStart values across the full duration of each source video — do NOT cluster all clips in the first 20 seconds.
 - totalDuration should match the platform target durations listed above, NOT default to 15 seconds.

@@ -133,6 +133,18 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 						// Fade in over 1 second, fade out over 2 seconds
 						const fadeInFrames = fps;
 						const fadeOutFrames = fps * 2;
+						// Guard: ensure inputRange is monotonically increasing
+						// If durationInFrames is too short, skip the hold phase
+						if (durationInFrames <= fadeInFrames + fadeOutFrames + 2) {
+							const mid = Math.floor(durationInFrames / 2);
+							if (mid <= 0 || durationInFrames <= 1) return musicVolume;
+							return interpolate(
+								f,
+								[0, mid, durationInFrames],
+								[0, musicVolume, 0],
+								{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
+							);
+						}
 						return interpolate(
 							f,
 							[0, fadeInFrames, durationInFrames - fadeOutFrames, durationInFrames],

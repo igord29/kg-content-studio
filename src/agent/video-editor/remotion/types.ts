@@ -7,8 +7,9 @@
 
 export interface CLCVideoProps {
 	clips: Array<{
-		src: string;             // local file path (from preprocessing)
+		src: string;             // proxy URL (Drive or preprocessed file)
 		length: number;          // effective duration in seconds
+		trimStart?: number;      // start offset in seconds (for raw clips, skip this many seconds)
 		effect?: string;         // 'zoomIn' | 'zoomOut' | 'slideRight' | 'slideLeft'
 		filter?: string;         // 'boost' | undefined
 		transitionType?: string; // mapped from Shotstack: 'fade' | 'slide' | 'wipe' | 'clockWipe'

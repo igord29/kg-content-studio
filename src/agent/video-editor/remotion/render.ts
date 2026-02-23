@@ -3,7 +3,7 @@
  *
  * Manages the full lifecycle of Remotion renders via AWS Lambda:
  *   1. Infrastructure config from env vars (set by scripts/setup-remotion-lambda.ts)
- *   2. Props conversion (RenderConfig → CLCVideoProps with proxy URLs)
+ *   2. Props conversion (RenderConfig → CLCVideoProps with S3 URLs)
  *   3. Render submission via renderMediaOnLambda()
  *   4. Status polling via getRenderProgress()
  *
@@ -287,6 +287,13 @@ export async function submitRemotionRender(
 	// Step 3: Submit to Lambda
 	const { renderMediaOnLambda } = await import('@remotion/lambda/client');
 
+	// Limit concurrent Lambda invocations for low-concurrency AWS accounts.
+	// Default limit is 10 for new accounts. Target max 4 renderers + 1 orchestrator = 5.
+	const totalDuration = props.clips.reduce((sum, c) => sum + c.length, 0);
+	const totalFrames = Math.ceil(totalDuration * props.fps);
+	const maxRendererLambdas = 4;
+	const framesPerLambda = Math.max(200, Math.ceil(totalFrames / maxRendererLambdas));
+
 	const result = await renderMediaOnLambda({
 		region: infra.region as any,
 		functionName: infra.functionName,
@@ -295,6 +302,10 @@ export async function submitRemotionRender(
 		codec: 'h264',
 		inputProps: props as unknown as Record<string, unknown>,
 		privacy: 'public',
+		framesPerLambda,
+		// Generous timeout: Lambda workers must download full videos from Drive via our proxy
+		// before extracting frames. Default 30s is too short for large clips.
+		timeoutInMilliseconds: 120_000,
 	});
 
 	// Step 4: Store mapping in registry
@@ -309,6 +320,177 @@ export async function submitRemotionRender(
 	});
 
 	logger?.info('[remotion-lambda] Submitted. Lambda renderId: %s → our renderId: %s',
+		result.renderId, renderId);
+
+	return renderId;
+}
+
+// --- Direct Render (S3 upload → Lambda) ---
+
+/**
+ * Submit a Remotion render to AWS Lambda.
+ *
+ * Pipeline:
+ *   1. Upload raw clips from Google Drive → Remotion S3 bucket (same AWS region)
+ *   2. Build Remotion props with S3 URLs (Lambda → S3 is ~1GB/s)
+ *   3. Submit renderMediaOnLambda() with S3-backed clip URLs
+ *   4. Schedule S3 cleanup after render completes
+ *
+ * This avoids the slow double-hop (Lambda → Agentuity → Drive) that caused
+ * OffthreadVideo timeouts. The upload happens once on our server, then all
+ * Lambda workers fetch from fast same-region S3.
+ */
+export async function submitRemotionRenderDirect(
+	config: {
+		clips: Array<{
+			fileId: string;
+			filename?: string;
+			trimStart?: number;
+			duration?: number;
+			purpose?: string;
+			speed?: number;
+		}>;
+		textOverlays?: Array<{
+			text: string;
+			start: number;
+			duration: number;
+			position?: string;
+		}>;
+		musicUrl?: string | null;
+		mode: string;
+		platform: string;
+	},
+	appUrl: string,
+	logger?: Logger,
+): Promise<string> {
+	const renderId = `remotion_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+	logger?.info('[remotion-lambda] Render %s: getting infrastructure config...', renderId);
+
+	// Step 1: Get Lambda infrastructure config
+	const infra = await getInfra(logger);
+
+	// Step 2: Upload clips from Google Drive to S3
+	// This is the key optimization: Lambda workers fetch from same-region S3 (~1GB/s)
+	// instead of the slow double-hop through our server to Google Drive.
+	const { uploadClipsToS3, cleanupS3Clips } = await import('./s3-upload');
+
+	const fileIds = config.clips.map(c => c.fileId);
+	logger?.info('[remotion-lambda] Uploading %d clips from Drive to S3 bucket %s...',
+		fileIds.length, infra.bucketName);
+
+	const s3Clips = await uploadClipsToS3(
+		fileIds,
+		infra.bucketName,
+		infra.region,
+		logger,
+	);
+
+	// Step 3: Build props with S3 URLs
+	const platformSettings = PLATFORM_SETTINGS[config.platform] || PLATFORM_SETTINGS['youtube']!;
+	const fps = 30;
+
+	const REMOTION_MODE_SETTINGS: Record<string, { transitionDuration: number; bgColor: string }> = {
+		game_day:  { transitionDuration: 0.5, bgColor: '#000000' },
+		our_story: { transitionDuration: 1.0, bgColor: '#0a0a0a' },
+		quick_hit: { transitionDuration: 0.3, bgColor: '#000000' },
+		showcase:  { transitionDuration: 0.8, bgColor: '#0a0a0a' },
+	};
+	const remotionMode = REMOTION_MODE_SETTINGS[config.mode] || REMOTION_MODE_SETTINGS['game_day']!;
+	const transitionDurationFrames = Math.round(remotionMode.transitionDuration * fps);
+
+	// Build clip props using S3 URLs (fast same-region access for Lambda)
+	const clipProps: CLCVideoProps['clips'] = config.clips.map((clip) => {
+		const s3Info = s3Clips.get(clip.fileId);
+		if (!s3Info) {
+			throw new Error(`S3 upload missing for clip ${clip.fileId}`);
+		}
+		return {
+			src: s3Info.s3Url,
+			length: clip.duration || 5,
+			trimStart: clip.trimStart || 0,
+		};
+	});
+
+	// Build text overlay props
+	const textOverlays: CLCVideoProps['textOverlays'] = (config.textOverlays || []).map((overlay, index, arr) => {
+		const startFrame = Math.round(overlay.start * fps);
+		const durationFrames = Math.round(overlay.duration * fps);
+		return {
+			text: overlay.text,
+			startFrame,
+			durationFrames,
+			position: (overlay.position as 'top' | 'center' | 'bottom') || 'bottom',
+			isFirst: index === 0,
+			isLast: index === arr.length - 1,
+		};
+	});
+
+	const props: CLCVideoProps = {
+		clips: clipProps,
+		mode: config.mode,
+		width: platformSettings.width,
+		height: platformSettings.height,
+		fps,
+		textOverlays,
+		musicSrc: config.musicUrl || undefined,
+		musicVolume: 0.3,
+		bgColor: remotionMode.bgColor,
+		transitionDurationFrames,
+	};
+
+	logger?.info('[remotion-lambda] Submitting render (S3-backed): %d clips, %dx%d, mode=%s, platform=%s',
+		props.clips.length, props.width, props.height, config.mode, config.platform);
+
+	// Step 4: Submit to Lambda
+	const { renderMediaOnLambda } = await import('@remotion/lambda/client');
+
+	// Calculate total frames to set framesPerLambda appropriately.
+	// AWS account has a low concurrency limit (default 10 for new accounts).
+	// Remotion spawns (totalFrames / framesPerLambda) renderer Lambdas + 1 orchestrator.
+	// We target max ~4 renderer Lambdas (+ 1 orchestrator = 5 total) to stay well within limit.
+	const totalDuration = clipProps.reduce((sum, c) => sum + c.length, 0);
+	const totalFrames = Math.ceil(totalDuration * fps);
+	const maxRendererLambdas = 4;
+	const framesPerLambda = Math.max(200, Math.ceil(totalFrames / maxRendererLambdas));
+
+	logger?.info('[remotion-lambda] totalFrames=%d, framesPerLambda=%d (max %d renderer Lambdas)',
+		totalFrames, framesPerLambda, maxRendererLambdas);
+
+	const result = await renderMediaOnLambda({
+		region: infra.region as any,
+		functionName: infra.functionName,
+		serveUrl: infra.serveUrl,
+		composition: 'CLCVideo',
+		codec: 'h264',
+		inputProps: props as unknown as Record<string, unknown>,
+		privacy: 'public',
+		framesPerLambda,
+		// Generous timeout: still needed for OffthreadVideo to process large clips
+		timeoutInMilliseconds: 120_000,
+	});
+
+	// Step 5: Store mapping in registry (include S3 clips for cleanup)
+	const entry: LambdaRenderEntry = {
+		localId: renderId,
+		lambdaRenderId: result.renderId,
+		bucketName: result.bucketName,
+		functionName: infra.functionName,
+		region: infra.region,
+		status: 'queued',
+		createdAt: Date.now(),
+	};
+	renderRegistry.set(renderId, entry);
+
+	// Schedule S3 cleanup after 30 minutes (generous: renders take 2-5 min)
+	const s3ClipsList = [...s3Clips.values()];
+	setTimeout(async () => {
+		logger?.info('[remotion-lambda] Cleaning up %d temp S3 clips for render %s...',
+			s3ClipsList.length, renderId);
+		await cleanupS3Clips(s3ClipsList, infra.bucketName, infra.region, logger);
+	}, 30 * 60 * 1000);
+
+	logger?.info('[remotion-lambda] Submitted (S3-backed). Lambda renderId: %s → our renderId: %s',
 		result.renderId, renderId);
 
 	return renderId;

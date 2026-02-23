@@ -23,14 +23,15 @@ export default {
 	 *
 	 * external: packages excluded from the server bundle, loaded from node_modules at runtime.
 	 *
-	 * Only @remotion/lambda-client is needed at runtime in the cloud (lightweight, zero deps).
-	 * It's used by render.ts for renderMediaOnLambda() and getRenderProgress().
-	 * Heavy packages (@remotion/lambda, @remotion/renderer, etc.) are only used locally
-	 * by scripts/setup-remotion-lambda.ts and are NOT deployed.
+	 * @remotion/lambda is externalized so its subpath import '@remotion/lambda/client'
+	 * (used by render.ts for renderMediaOnLambda/getRenderProgress) is loaded from
+	 * node_modules at runtime instead of being bundled. The /client subpath is lightweight
+	 * and zero-dep. Heavy packages (@remotion/renderer, etc.) are only used locally.
 	 */
 	build: {
 		external: [
-			'@remotion/lambda-client',
+			'@remotion/lambda',
+			'@aws-sdk/client-s3',
 		],
 	},
 

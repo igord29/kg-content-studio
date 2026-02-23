@@ -388,33 +388,13 @@ const agent = createAgent('video-editor', {
 				ctx.logger.info('[render-remotion] Starting Remotion Lambda render: %d clips, platform: %s, mode: %s, total: %ds',
 					clips.length, platform, editMode, totalEditDuration);
 
-				// Pre-process clips (same as Shotstack — sharpen + speed ramp)
-				const preprocessConfigs: PreprocessClipConfig[] = clips.map((clip) => ({
-					fileId: clip.fileId,
-					filename: clip.filename,
-					trimStart: clip.trimStart || 0,
-					duration: clip.duration || MODE_RENDER_SETTINGS[editMode]?.defaultClipLength || 5,
-					speed: clip.speed,
-					sharpen: true,
-				}));
-
-				let processedClips: PreprocessedClip[];
+				// Skip FFmpeg pre-processing for Lambda — Lambda workers fetch raw clips
+				// directly from Google Drive via proxy URLs. The Remotion composition
+				// handles trimming via the clip props (trimStart, duration).
+				// This avoids downloading + FFmpeg on the cloud server, which would time out.
 				try {
-					ctx.logger.info('[render-remotion] Pre-processing %d clips...', preprocessConfigs.length);
-					processedClips = await preprocessAllClips(preprocessConfigs, ctx.logger);
-					ctx.logger.info('[render-remotion] Pre-processing complete');
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					ctx.logger.error('[render-remotion] Pre-processing failed: %s', msg);
-					return { success: false, error: 'FFmpeg pre-processing failed: ' + msg };
-				}
-
-				// Submit Remotion Lambda render
-				// Lambda workers fetch preprocessed clips via proxy URLs (same as Shotstack).
-				// Cleanup on a 30-min timer so proxy URLs stay alive during Lambda render.
-				try {
-					const { submitRemotionRender } = await import('./remotion/render');
-					const renderId = await submitRemotionRender(
+					const { submitRemotionRenderDirect } = await import('./remotion/render');
+					const renderId = await submitRemotionRenderDirect(
 						{
 							clips,
 							textOverlays: overlays,
@@ -422,19 +402,11 @@ const agent = createAgent('video-editor', {
 							mode: editMode,
 							platform,
 						},
-						processedClips,
 						appUrl,
 						ctx.logger,
 					);
 
 					ctx.logger.info('[render-remotion] Submitted to Lambda. Render ID: %s', renderId);
-
-					// Schedule cleanup of preprocessed files after 30 minutes
-					// (Lambda needs proxy URLs to stay alive while rendering, typically 2-5 min)
-					setTimeout(async () => {
-						ctx.logger.info('[render-remotion] Cleaning up %d pre-processed files (30min timer)...', processedClips.length);
-						await cleanupProcessedFiles(processedClips);
-					}, 30 * 60 * 1000);
 
 					return {
 						success: true,
@@ -442,10 +414,9 @@ const agent = createAgent('video-editor', {
 						renderStatus: 'queued',
 						renderPlatform: platform,
 						renderMode: editMode,
-						message: `Remotion Lambda render submitted: ${clips.length} clips (pre-processed with sharpening${clips.some(c => c.speed && c.speed !== 1.0) ? ' + speed ramping' : ''})`,
+						message: `Remotion Lambda render submitted: ${clips.length} clips (raw Drive proxy, no pre-processing)`,
 					};
 				} catch (err) {
-					await cleanupProcessedFiles(processedClips);
 					const msg = err instanceof Error ? err.message : String(err);
 					ctx.logger.error('[render-remotion] Lambda submission failed: %s', msg);
 					return { success: false, error: 'Remotion Lambda render failed: ' + msg };

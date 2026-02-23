@@ -30,14 +30,30 @@ export const TextOverlay: React.FC<TextOverlayProps> = ({ text, mode, position, 
 	const { durationInFrames } = useVideoConfig();
 
 	// Fade in/out animation (8 frames fade in, 8 frames fade out)
+	// Guard: if durationInFrames is too short for 4-point interpolation,
+	// use a simple 2-point fade instead (prevents "inputRange not monotonic" errors).
 	const fadeInFrames = 8;
 	const fadeOutFrames = 8;
-	const opacity = interpolate(
-		frame,
-		[0, fadeInFrames, Math.max(fadeInFrames + 1, durationInFrames - fadeOutFrames), durationInFrames],
-		[0, 1, 1, 0],
-		{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
-	);
+
+	let opacity: number;
+	if (durationInFrames <= fadeInFrames + fadeOutFrames + 2) {
+		// Too short for full fade in + hold + fade out — just do a simple fade in/out
+		opacity = durationInFrames <= 1
+			? 1
+			: interpolate(
+				frame,
+				[0, Math.floor(durationInFrames / 2), durationInFrames],
+				[0, 1, 0],
+				{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
+			);
+	} else {
+		opacity = interpolate(
+			frame,
+			[0, fadeInFrames, durationInFrames - fadeOutFrames, durationInFrames],
+			[0, 1, 1, 0],
+			{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
+		);
+	}
 
 	// Position styles
 	const positionStyle: React.CSSProperties = {

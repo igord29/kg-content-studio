@@ -13,6 +13,9 @@ declare global {
 		readonly REMOTION_AWS_ACCESS_KEY_ID: string;
 		readonly REMOTION_AWS_REGION: string;
 		readonly REMOTION_AWS_SECRET_ACCESS_KEY: string;
+		readonly REMOTION_BUCKET_NAME: string;
+		readonly REMOTION_FUNCTION_NAME: string;
+		readonly REMOTION_SERVE_URL: string;
 		readonly SHOTSTACK_API_KEY: string;
 		readonly SHOTSTACK_ENV: string;
 		}

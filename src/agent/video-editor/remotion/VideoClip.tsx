@@ -74,6 +74,9 @@ export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter }) => 
 		<AbsoluteFill>
 			<OffthreadVideo
 				src={src}
+				// Generous timeout for Lambda: videos are fetched from our server → Google Drive.
+				// Default 30s is too short for large clips over this double-hop.
+				delayRenderTimeoutInMilliseconds={120_000}
 				style={{
 					width: '100%',
 					height: '100%',

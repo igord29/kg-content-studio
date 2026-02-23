@@ -325,6 +325,11 @@ function getFFmpegPath() {
 function buildVideoFilter(config) {
   const filters = [];
 
+  // Downscale to 1080p max — preserves aspect ratio, only scales if larger.
+  // Applied FIRST so expensive filters operate on 1080p instead of 4K (~4x speedup).
+  // -2 ensures height is divisible by 2 (required for H.264 encoding).
+  filters.push('scale=min(iw\\\\,1080):-2');
+
   // Stabilization — FFmpeg deshake (single-pass, built-in)
   // Must come BEFORE sharpening so we sharpen the stabilized image
   // rx=32:ry=32 = 32px search radius (generous for phone sports footage)
@@ -423,12 +428,12 @@ exports.handler = async function(event) {
       '-i', inputPath,
     ];
 
-    if (videoFilter) { ffmpegArgs.push('-vf', videoFilter); }
-    if (audioFilter) { ffmpegArgs.push('-af', audioFilter); }
+    if (videoFilter) { ffmpegArgs.push('-vf', "'" + videoFilter + "'"); }
+    if (audioFilter) { ffmpegArgs.push('-af', "'" + audioFilter + "'"); }
 
     ffmpegArgs.push(
       '-c:v', 'libx264',
-      '-preset', 'fast',
+      '-preset', 'ultrafast',
       '-crf', '20',
       '-c:a', 'aac',
       '-b:a', '128k',

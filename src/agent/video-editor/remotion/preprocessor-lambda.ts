@@ -50,7 +50,11 @@ export interface PreprocessResult {
 
 /**
  * Build the video filter chain.
- * Order: stabilize (deshake) → sharpen (unsharp) → speed (setpts)
+ * Order: scale (downscale 4K→1080p) → stabilize (deshake) → sharpen (unsharp) → speed (setpts)
+ *
+ * Scale is applied FIRST so that expensive filters (deshake, unsharp) operate
+ * on 1080p frames instead of 4K — reducing processing time ~4x and memory ~4x.
+ * Output is always mobile content, so 1080p is the maximum useful resolution.
  */
 function buildVideoFilter(config: {
 	stabilize?: boolean;
@@ -58,6 +62,11 @@ function buildVideoFilter(config: {
 	speed?: number;
 }): string {
 	const filters: string[] = [];
+
+	// Downscale to 1080p max — preserves aspect ratio, only scales if larger.
+	// -2 ensures height is divisible by 2 (required for H.264 encoding).
+	// If source is ≤1080p wide, this is a no-op thanks to min().
+	filters.push('scale=min(iw\\,1080):-2');
 
 	// Stabilization — deshake (single-pass, built into FFmpeg)
 	// Must come BEFORE sharpening so we sharpen the stabilized image
@@ -178,15 +187,15 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 		];
 
 		if (videoFilter) {
-			ffmpegArgs.push('-vf', videoFilter);
+			ffmpegArgs.push('-vf', `'${videoFilter}'`);
 		}
 		if (audioFilter) {
-			ffmpegArgs.push('-af', audioFilter);
+			ffmpegArgs.push('-af', `'${audioFilter}'`);
 		}
 
 		ffmpegArgs.push(
 			'-c:v', 'libx264',
-			'-preset', 'fast',
+			'-preset', 'ultrafast',  // Speed over size — this is an intermediate file for Remotion
 			'-crf', '20',
 			'-c:a', 'aac',
 			'-b:a', '128k',

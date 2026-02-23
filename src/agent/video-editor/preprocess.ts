@@ -45,6 +45,11 @@ interface Logger {
 function buildVideoFilter(config: PreprocessClipConfig): string {
 	const filters: string[] = [];
 
+	// Downscale to 1080p max — preserves aspect ratio, only scales if larger.
+	// -2 ensures height is divisible by 2 (required for H.264 encoding).
+	// Applied FIRST so expensive filters operate on 1080p instead of 4K (~4x speedup).
+	filters.push('scale=min(iw\\,1080):-2');
+
 	// Stabilization — deshake (single-pass, built into FFmpeg, no extra library)
 	// Must come BEFORE sharpening so we sharpen the stabilized image, not amplify shake
 	// x/y/w/h=-1 = auto-detect motion region (full frame)
@@ -158,16 +163,16 @@ export async function preprocessClip(
 	];
 
 	if (videoFilter) {
-		ffmpegArgs.push('-vf', `"${videoFilter}"`);
+		ffmpegArgs.push('-vf', `'${videoFilter}'`);
 	}
 	if (audioFilter) {
-		ffmpegArgs.push('-af', `"${audioFilter}"`);
+		ffmpegArgs.push('-af', `'${audioFilter}'`);
 	}
 
 	ffmpegArgs.push(
 		'-c:v', 'libx264',
-		'-preset', 'fast',
-		'-crf', '20',       // high quality (lower = better, 20 is very good)
+		'-preset', 'ultrafast',  // Speed over size — intermediate file for Shotstack/Remotion
+		'-crf', '20',            // high quality (lower = better, 20 is very good)
 		'-c:a', 'aac',
 		'-b:a', '128k',
 		`"${processedPath}"`,

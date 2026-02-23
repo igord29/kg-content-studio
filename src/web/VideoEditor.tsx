@@ -939,14 +939,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						}
 
 						// Record clip usage for freshness tracking
-						// Use setRenderJobs updater to access current state (avoids stale closure)
+						// Read clips from ref (always in sync) — avoids batched setState timing issues
 						try {
-							let planClips: any[] | undefined;
-							setRenderJobs(prev => {
-								const job = prev.find(j => j.platform === platform && j.renderId === renderId);
-								planClips = job?.usedEditPlan?.clips || editPlanDataRef.current?.clips;
-								return prev; // no state change — just reading
-							});
+							const planClips = editPlanDataRef.current?.clips;
 							if (planClips && Array.isArray(planClips) && planClips.length > 0) {
 								await fetch('/api/clip-usage', {
 									method: 'POST',

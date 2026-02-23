@@ -13,6 +13,12 @@ import donorResearcher from '../agent/donor-researcher';
 import venueProspector from '../agent/venue-prospector';
 import { sendToMakeWebhook, getConfiguredWebhooks } from '../agent/content-creator/webhooks';
 import { createDriveProxyToken, verifyDriveProxyToken } from '../agent/video-editor/drive-proxy';
+import {
+	type ClipUsageRecord,
+	type VideoUsageSummary,
+	createClipUsageRecord,
+	buildUsageSummaryMap,
+} from '../agent/video-editor/usage-tracker';
 
 const api = createRouter();
 
@@ -79,7 +85,14 @@ api.post('/video-editor', videoEditor.validator(), async (c) => {
 			origin = new URL(c.req.url).origin;
 		}
 	}
-	return c.json(await videoEditor.run({ ...data, appUrl: origin }));
+	// Load usage summary for freshness-aware edit plan generation
+	let usageSummary: VideoUsageSummary[] = [];
+	if (data.task === 'edit') {
+		try {
+			usageSummary = (await c.var.thread.state.get<VideoUsageSummary[]>('video-usage-summary')) ?? [];
+		} catch { /* best-effort */ }
+	}
+	return c.json(await videoEditor.run({ ...data, appUrl: origin, usageSummary }));
 });
 
 // CORS headers for Drive proxy — required for Remotion Lambda (Chrome at localhost:3000)
@@ -338,6 +351,55 @@ api.delete('/video-library/:id', async (c) => {
 
 	await c.var.thread.state.set('video-library', filtered);
 	return c.json({ success: true, remaining: filtered.length });
+});
+
+// --- Clip Usage Tracking ---
+
+// Get all video usage summaries (for frontend freshness display)
+api.get('/clip-usage', async (c) => {
+	const summary = (await c.var.thread.state.get<VideoUsageSummary[]>('video-usage-summary')) ?? [];
+	return c.json({ entries: summary, count: summary.length });
+});
+
+// Get detailed usage for a specific video
+api.get('/clip-usage/:fileId', async (c) => {
+	const fileId = c.req.param('fileId');
+	const allUsage = (await c.var.thread.state.get<ClipUsageRecord[]>('clip-usage')) ?? [];
+	const videoUsage = allUsage.filter((r) => r.fileId === fileId);
+	const summary = (await c.var.thread.state.get<VideoUsageSummary[]>('video-usage-summary')) ?? [];
+	const videoSummary = summary.find((s) => s.fileId === fileId);
+	return c.json({ fileId, records: videoUsage, summary: videoSummary || null });
+});
+
+// Record clip usage after a render completes
+api.post('/clip-usage', async (c) => {
+	const body = await c.req.json();
+
+	if (!body || !body.clips || !Array.isArray(body.clips) || body.clips.length === 0) {
+		return c.json({ success: false, error: 'Missing or empty clips array' }, 400);
+	}
+
+	// Create usage records for each clip
+	const records: ClipUsageRecord[] = body.clips.map((clip: any) =>
+		createClipUsageRecord(clip, {
+			renderId: body.renderId || `render_${Date.now()}`,
+			renderDate: body.renderDate,
+			editMode: body.editMode,
+			platform: body.platform,
+		}),
+	);
+
+	// Push each record to clip-usage (capped at 500)
+	for (const record of records) {
+		await c.var.thread.state.push('clip-usage', record, 500);
+	}
+
+	// Rebuild video-usage-summary from all records
+	const allUsage = (await c.var.thread.state.get<ClipUsageRecord[]>('clip-usage')) ?? [];
+	const summaryMap = buildUsageSummaryMap(allUsage);
+	await c.var.thread.state.set('video-usage-summary', Array.from(summaryMap.values()));
+
+	return c.json({ success: true, recorded: records.length });
 });
 
 export default api;

@@ -88,6 +88,7 @@ export interface CatalogEntry {
     quietMoments: number[];
     recommendedHooks: number[];
   };
+  semanticTags?: string[];
 }
 
 export interface FolderStructure {

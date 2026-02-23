@@ -67,6 +67,15 @@ import {
 } from './music';
 import { formatSceneAnalysisForPrompt } from './scene-analyzer';
 import { reviewRenderedVideo, generateRevisedEditPlan } from './video-reviewer';
+import {
+	type VideoUsageSummary,
+	type ClipUsageRecord,
+	formatUsageContextForPrompt,
+	validateEditPlanDedup,
+	generateSemanticTags,
+	scoreSearchMatch,
+	buildUsageSummaryMap,
+} from './usage-tracker';
 
 const AgentInput = s.object({
 	// Task type: determines which workflow to run
@@ -132,6 +141,16 @@ const AgentInput = s.object({
 
 	// Internal: passed by API route for proxy URL construction
 	appUrl: s.string().optional(),
+
+	// Usage tracking: passed by API route for freshness-aware edit plans
+	usageSummary: s.array(s.any()).optional(),
+
+	// Search catalog query
+	query: s.string().optional(),
+
+	// Music fields
+	musicUrl: s.string().optional(),
+	musicDisabled: s.boolean().optional(),
 });
 
 const AgentOutput = s.object({
@@ -388,12 +407,58 @@ const agent = createAgent('video-editor', {
 				ctx.logger.info('[render-remotion] Starting Remotion Lambda render: %d clips, platform: %s, mode: %s, total: %ds',
 					clips.length, platform, editMode, totalEditDuration);
 
-				// Skip FFmpeg pre-processing for Lambda — Lambda workers fetch raw clips
-				// directly from Google Drive via proxy URLs. The Remotion composition
-				// handles trimming via the clip props (trimStart, duration).
-				// This avoids downloading + FFmpeg on the cloud server, which would time out.
-				try {
+				// --- Render Pipeline Selection ---
+				// If the preprocessor Lambda is deployed, use it for deshake + sharpen.
+				// Otherwise, fall back to direct S3 upload (raw clips, no FFmpeg).
+				const { isPreprocessorAvailable } = await import('./remotion/preprocessor-invoke');
+				const usePreprocessor = isPreprocessorAvailable();
+
+				if (usePreprocessor) {
+					// --- Preprocessed Pipeline (Drive → S3 → FFmpeg Lambda → S3 → Remotion Lambda) ---
+					// Pre-register render ID immediately so frontend polling works during the
+					// multi-minute pipeline (upload → preprocess → render). The async block runs
+					// independently of the Agentuity 60s session timeout.
+					const {
+						preRegisterRender,
+						submitRemotionRenderWithPreprocessing,
+					} = await import('./remotion/render');
+
+					const renderId = `remotion_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+					preRegisterRender(renderId);
+
+					ctx.logger.info('[render-remotion] Pre-registered render %s. Starting preprocessed pipeline (async)...', renderId);
+
+					// Fire-and-forget: runs asynchronously beyond the session timeout.
+					// The render registry tracks progress; frontend polls via render-status.
+					submitRemotionRenderWithPreprocessing(
+						{
+							clips,
+							textOverlays: overlays,
+							musicUrl,
+							mode: editMode,
+							platform,
+						},
+						renderId,
+						ctx.logger,
+					).catch((err) => {
+						const msg = err instanceof Error ? err.message : String(err);
+						ctx.logger.error('[render-remotion] Async pipeline error: %s', msg);
+					});
+
+					return {
+						success: true,
+						renderId,
+						renderPlatform: platform,
+						renderMode: editMode,
+						message: `Remotion Lambda render submitted: ${clips.length} clips (stabilized + sharpened via preprocessor Lambda)`,
+					};
+
+				} else {
+					// --- Direct Pipeline (Drive → S3 → Remotion Lambda) ---
+					// No preprocessor Lambda deployed. Upload raw clips directly.
+					ctx.logger.info('[render-remotion] Preprocessor Lambda not configured. Using direct S3 upload (no stabilization).');
 					const { submitRemotionRenderDirect } = await import('./remotion/render');
+
 					const renderId = await submitRemotionRenderDirect(
 						{
 							clips,
@@ -405,21 +470,15 @@ const agent = createAgent('video-editor', {
 						appUrl,
 						ctx.logger,
 					);
-
 					ctx.logger.info('[render-remotion] Submitted to Lambda. Render ID: %s', renderId);
 
 					return {
 						success: true,
 						renderId,
-						renderStatus: 'queued',
 						renderPlatform: platform,
 						renderMode: editMode,
-						message: `Remotion Lambda render submitted: ${clips.length} clips (raw Drive proxy, no pre-processing)`,
+						message: `Remotion Lambda render submitted: ${clips.length} clips (raw → S3 → Lambda, no stabilization)`,
 					};
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					ctx.logger.error('[render-remotion] Lambda submission failed: %s', msg);
-					return { success: false, error: 'Remotion Lambda render failed: ' + msg };
 				}
 			}
 
@@ -497,6 +556,7 @@ const agent = createAgent('video-editor', {
 				duration: clip.duration || MODE_RENDER_SETTINGS[editMode]?.defaultClipLength || 5,
 				speed: clip.speed,     // undefined = 1.0 (default)
 				sharpen: true,         // always sharpen phone footage
+				stabilize: false,      // disabled: deshake too slow on 500m CPU
 			}));
 
 			let processedClips: PreprocessedClip[];
@@ -1003,6 +1063,7 @@ const agent = createAgent('video-editor', {
 						suggestedModes: ce?.suggestedModes || [],
 						needsManualReview: ce?.needsManualReview ?? true,
 						reviewNotes: ce?.reviewNotes || '',
+						semanticTags: ce?.semanticTags || [],
 					};
 				}),
 			};
@@ -1168,6 +1229,20 @@ const agent = createAgent('video-editor', {
 			const catalog = loadExistingCatalog();
 			const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
 
+			// Load usage data for freshness context (best-effort — won't block if unavailable)
+			let usageSummaryMap = new Map<string, VideoUsageSummary>();
+			try {
+				// Usage data is passed from the API layer via input, or we build from scratch
+				if (input.usageSummary && Array.isArray(input.usageSummary)) {
+					for (const s of input.usageSummary as VideoUsageSummary[]) {
+						usageSummaryMap.set(s.fileId, s);
+					}
+				}
+				ctx.logger.info('[video-editor] Loaded usage data for %d videos', usageSummaryMap.size);
+			} catch (err) {
+				ctx.logger.warn('[video-editor] Could not load usage data: %s', err);
+			}
+
 			// Gather metadata for selected videos
 			const videoDetails = [];
 			for (const id of videoIds) {
@@ -1210,7 +1285,8 @@ const agent = createAgent('video-editor', {
   - People: ${ce.peopleCount || 'Unknown'}
   - Readable Text: ${readableText}
   - Notable: ${ce.notableMoments || 'None'}
-  - Suggested Modes: ${ce.suggestedModes?.join(', ') || 'None'}${ce.sceneAnalysis ? '\n  SCENE ANALYSIS (use these real timestamps for trim points):\n' + formatSceneAnalysisForPrompt(ce.sceneAnalysis) : '\n  SCENE ANALYSIS: Not available — trim points are estimates, flag for human review'}`;
+  - Suggested Modes: ${ce.suggestedModes?.join(', ') || 'None'}${ce.sceneAnalysis ? '\n  SCENE ANALYSIS (use these real timestamps for trim points):\n' + formatSceneAnalysisForPrompt(ce.sceneAnalysis) : '\n  SCENE ANALYSIS: Not available — trim points are estimates, flag for human review'}
+${formatUsageContextForPrompt(usageSummaryMap.get(v.id || ''), ce)}`;
 				} else {
 					return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr}) - Google Drive fileId: ${v.id} - no catalog data available`;
 				}
@@ -1250,12 +1326,17 @@ EDITING RULES:
 - Hold clips long enough for the viewer to process them. A 4-second clip of a kid concentrating is more powerful than two 2-second flashes of random action.
 - Include quiet/breathing moments between high-energy clips. The contrast makes both stronger.
 - End with intention — the last clip should feel like a resolution, not like you ran out of footage.
-- TARGET DURATION should match platform guidelines:
-  - TikTok/IG Reels: 30-45 seconds
-  - IG Feed: 30-45 seconds
-  - YouTube: 60-120 seconds
-  - Facebook: 45-60 seconds
-  - LinkedIn: 30-45 seconds
+- DURATION IS STORY-DRIVEN, NOT PLATFORM-LOCKED:
+  The video should be as long as the story needs to be told well. Don't artificially truncate a compelling narrative just to hit a short target. Use the MODE-SPECIFIC duration ranges from your system instructions (Game Day, Our Story, Quick Hit, Showcase) as your guide — they vary significantly by mode.
+
+  General minimums to tell a real story:
+  - TikTok/IG Reels: 30-60s (aim for 45s+ when the footage supports a narrative arc)
+  - IG Feed: 30-60s
+  - YouTube: 60-180s (use the space — establish, build, pay off)
+  - Facebook: 45-90s
+  - LinkedIn: 30-60s
+
+  NEVER default to 15 seconds unless the mode is Quick Hit AND the footage only has one moment. A 15-second video is a clip, not a story. CLC's audience engages with narrative — give them a beginning, middle, and end.
 
 Use your knowledge of each clip's content, location, and quality to make intelligent sequencing decisions. Group location-specific clips together. Avoid using poor-quality clips in hero positions. Prioritize moments that show real human connection over generic action.
 
@@ -1294,12 +1375,99 @@ IMPORTANT JSON RULES:
 				}
 			}
 
+			// Validate edit plan for scene deduplication
+			let dedupWarnings: any[] = [];
+			if (structuredPlan?.clips && Array.isArray(structuredPlan.clips)) {
+				const dedupResult = validateEditPlanDedup(structuredPlan.clips);
+				if (!dedupResult.valid) {
+					ctx.logger.warn(
+						'[video-editor] Edit plan has %d duplicate scene(s): %s',
+						dedupResult.duplicates.length,
+						dedupResult.duplicates.map(d =>
+							`Clip ${d.clipA + 1} & ${d.clipB + 1} overlap by ${d.overlapSeconds}s`
+						).join(', ')
+					);
+					dedupWarnings = dedupResult.duplicates;
+					structuredPlan._dedupWarnings = dedupResult.duplicates;
+				}
+			}
+
 			return {
 				success: true,
 				editPlan: result.text,           // human-readable markdown for UI display
 				editPlanData: structuredPlan,    // structured JSON for render engine
 				videoCount: videoDetails.length,
 				videos: videoDetails,
+				dedupWarnings: dedupWarnings.length > 0 ? dedupWarnings : undefined,
+			};
+		}
+
+		// --- Generate semantic tags for all catalog entries ---
+
+		if (task === 'generate-tags') {
+			ctx.logger.info('[video-editor] Generating semantic tags for catalog entries');
+
+			const catalog = loadExistingCatalog();
+			if (catalog.length === 0) {
+				return { success: false, message: 'No catalog entries found' };
+			}
+
+			let tagged = 0;
+			for (const entry of catalog) {
+				const tags = generateSemanticTags(entry);
+				entry.semanticTags = tags;
+				tagged++;
+			}
+
+			// Save updated catalog
+			const { saveCatalog: saveCat } = await import('./google-drive');
+			const saveResult = await saveCat(catalog);
+			ctx.logger.info('[video-editor] Tagged %d entries, saved to: %s', tagged, saveResult);
+
+			return {
+				success: true,
+				message: `Generated semantic tags for ${tagged} catalog entries`,
+				taggedCount: tagged,
+				sampleTags: catalog.slice(0, 3).map(e => ({
+					filename: e.filename,
+					tags: e.semanticTags?.slice(0, 10),
+				})),
+			};
+		}
+
+		// --- Search catalog by semantic query ---
+
+		if (task === 'search-catalog') {
+			const query = input.query || '';
+			if (!query.trim()) {
+				return { success: false, message: 'Search query is required' };
+			}
+
+			ctx.logger.info('[video-editor] Searching catalog for: %s', query);
+
+			const catalog = loadExistingCatalog();
+			const queryTokens = query.toLowerCase().split(/[\s,]+/).filter((t: string) => t.length > 1);
+
+			const scored = catalog
+				.map(entry => ({
+					fileId: entry.fileId,
+					filename: entry.filename,
+					activity: entry.activity,
+					location: entry.suspectedLocation,
+					contentType: entry.contentType,
+					quality: entry.quality,
+					tags: entry.semanticTags || [],
+					score: scoreSearchMatch(entry, queryTokens),
+				}))
+				.filter(r => r.score > 0)
+				.sort((a, b) => b.score - a.score);
+
+			return {
+				success: true,
+				query,
+				tokens: queryTokens,
+				results: scored.slice(0, 20),
+				totalMatches: scored.length,
 			};
 		}
 

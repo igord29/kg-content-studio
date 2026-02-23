@@ -25,6 +25,7 @@ interface DriveVideo {
 	suggestedModes: string[];
 	needsManualReview: boolean;
 	reviewNotes: string;
+	semanticTags?: string[];
 }
 
 interface FolderSummary {
@@ -158,7 +159,7 @@ const CONTENT_TYPE_LABELS: Record<string, string> = {
 const ALL_LOCATIONS = ['US Open', 'Hempstead', 'Brooklyn', 'Long Beach', 'Newark NJ', 'Westchester', 'Connecticut', 'Unknown'];
 const ALL_CONTENT_TYPES = ['tennis_action', 'chess', 'event', 'interview', 'mixed', 'establishing', 'unknown'];
 
-type SortKey = 'name' | 'location' | 'contentType' | 'duration' | 'quality';
+type SortKey = 'name' | 'location' | 'contentType' | 'duration' | 'quality' | 'freshness';
 type SortDirection = 'asc' | 'desc';
 
 // --- Styles ---
@@ -639,6 +640,10 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	const [refreshingThumbnails, setRefreshingThumbnails] = useState(false);
 	const [thumbnailRefreshResult, setThumbnailRefreshResult] = useState<string | null>(null);
 
+	// Clip usage / freshness tracking
+	const [usageSummaryMap, setUsageSummaryMap] = useState<Map<string, { fileId: string; filename: string; totalUses: number; lastUsedDate: string; freshnessScore: number }>>(new Map());
+	const [freshOnlyFilter, setFreshOnlyFilter] = useState(false);
+
 	// --- Catalog summary computed from enriched videos ---
 
 	const catalogSummary = useMemo(() => {
@@ -666,6 +671,19 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 	useEffect(() => {
 		loadVideos();
+		// Load clip usage data for freshness display (best-effort)
+		fetch('/api/clip-usage')
+			.then(r => r.json())
+			.then(data => {
+				if (data.entries && Array.isArray(data.entries)) {
+					const map = new Map<string, typeof data.entries[0]>();
+					for (const entry of data.entries) {
+						map.set(entry.fileId, entry);
+					}
+					setUsageSummaryMap(map);
+				}
+			})
+			.catch(() => {}); // best-effort
 	}, []);
 
 	// Auto-catalog: trigger when uncataloged videos are detected
@@ -917,6 +935,27 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							// best-effort save — don't block the UI
 						}
 
+						// Record clip usage for freshness tracking
+						try {
+							const usedPlan = renderJobs.find(j => j.platform === platform && j.renderId === renderId)?.usedEditPlan;
+							const planClips = usedPlan?.clips || editPlanData?.clips;
+							if (planClips && Array.isArray(planClips) && planClips.length > 0) {
+								await fetch('/api/clip-usage', {
+									method: 'POST',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({
+										renderId,
+										renderDate: new Date().toISOString(),
+										editMode: renderMeta.mode,
+										platform,
+										clips: planClips,
+									}),
+								});
+							}
+						} catch {
+							// best-effort — don't block the UI
+						}
+
 						// Auto-trigger AI review of the rendered video
 						triggerReviewRef.current(data.downloadUrl, platform, renderMeta.mode, method);
 					}
@@ -1043,8 +1082,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					editPlanSummary: editPlan ? editPlan.slice(0, 200) : undefined,
 				};
 
-				// Helper to save completed render to video library
+				// Helper to save completed render to video library + track clip usage
 				const saveToLibrary = async (dlUrl: string, rId?: string) => {
+					const effectiveRenderId = rId || `local_${Date.now()}`;
 					try {
 						await fetch('/api/video-library', {
 							method: 'POST',
@@ -1052,7 +1092,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							body: JSON.stringify({
 								id: `vl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
 								createdAt: new Date().toISOString(),
-								renderId: rId || `local_${Date.now()}`,
+								renderId: effectiveRenderId,
 								downloadUrl: dlUrl,
 								platform,
 								renderMode: renderMeta.mode,
@@ -1063,6 +1103,25 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						});
 					} catch {
 						// best-effort save
+					}
+					// Record clip usage for freshness tracking
+					try {
+						const planClips = editPlanData?.clips;
+						if (planClips && Array.isArray(planClips) && planClips.length > 0) {
+							await fetch('/api/clip-usage', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({
+									renderId: effectiveRenderId,
+									renderDate: new Date().toISOString(),
+									editMode: renderMeta.mode,
+									platform,
+									clips: planClips,
+								}),
+							});
+						}
+					} catch {
+						// best-effort — don't block the UI
 					}
 				};
 
@@ -1471,7 +1530,8 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 				v.description.toLowerCase().includes(q) ||
 				v.readableText.toLowerCase().includes(q) ||
 				v.suspectedLocation.toLowerCase().includes(q) ||
-				v.notableMoments.toLowerCase().includes(q)
+				v.notableMoments.toLowerCase().includes(q) ||
+				v.semanticTags?.some(tag => tag.includes(q))
 			);
 		}
 
@@ -1502,6 +1562,14 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 			}
 		}
 
+		// Freshness filter — only show clips with freshness > 0.3
+		if (freshOnlyFilter) {
+			result = result.filter((v) => {
+				const usage = usageSummaryMap.get(v.id);
+				return !usage || usage.freshnessScore > 0.3;
+			});
+		}
+
 		// Sort
 		const dir = sortDirection === 'desc' ? -1 : 1;
 		result = [...result].sort((a, b) => {
@@ -1519,6 +1587,13 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 				case 'quality':
 					cmp = getQualityOrder(a.quality) - getQualityOrder(b.quality);
 					break;
+				case 'freshness': {
+					// Higher freshness first (never-used = 1.0 goes to top)
+					const aFresh = usageSummaryMap.get(a.id)?.freshnessScore ?? 1.0;
+					const bFresh = usageSummaryMap.get(b.id)?.freshnessScore ?? 1.0;
+					cmp = bFresh - aFresh; // descending by default for freshness
+					break;
+				}
 				default:
 					cmp = a.name.localeCompare(b.name);
 			}
@@ -1526,7 +1601,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		});
 
 		return result;
-	}, [videos, searchQuery, filterLocation, filterContentType, filterQuality, sortBy, sortDirection]);
+	}, [videos, searchQuery, filterLocation, filterContentType, filterQuality, sortBy, sortDirection, freshOnlyFilter, usageSummaryMap]);
 
 	// --- Selected videos for smart suggestions ---
 
@@ -1780,7 +1855,14 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 								<span style={{ fontFamily: S.mono, fontSize: 8, color: S.textMuted, margin: '0 2px' }}>|</span>
 
 								<span style={{ fontFamily: S.mono, fontSize: 8, color: S.textMuted }}>Sort:</span>
-								{(['name', 'location', 'contentType', 'duration', 'quality'] as SortKey[]).map((key) => {
+								<FilterButton
+								label={freshOnlyFilter ? '🟢 Fresh Only' : 'Fresh Only'}
+								active={freshOnlyFilter}
+								onClick={() => setFreshOnlyFilter(!freshOnlyFilter)}
+							/>
+							<span style={{ fontFamily: S.mono, fontSize: 8, color: S.textMuted, margin: '0 2px' }}>|</span>
+
+							{(['name', 'location', 'contentType', 'duration', 'quality', 'freshness'] as SortKey[]).map((key) => {
 									const baseLabel = key === 'contentType' ? 'Type' : key.charAt(0).toUpperCase() + key.slice(1);
 									const dirIndicator = sortBy === key ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : '';
 									return (
@@ -2108,6 +2190,25 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 											<span>{video.size}</span>
 										</div>
 
+										{/* Row 3b: Freshness badge */}
+										{(() => {
+											const usage = usageSummaryMap.get(video.id);
+											if (!usage) return (
+												<span style={{ fontFamily: S.mono, fontSize: 8, color: '#4ade80', fontWeight: 600 }}>
+													FRESH
+												</span>
+											);
+											const score = usage.freshnessScore;
+											const color = score >= 0.8 ? '#4ade80' : score >= 0.5 ? '#facc15' : score >= 0.2 ? '#fb923c' : '#f87171';
+											const label = score >= 0.8 ? 'Fresh' : score >= 0.5 ? `Used ${usage.totalUses}x` : score >= 0.2 ? `Stale (${usage.totalUses}x)` : `Overused (${usage.totalUses}x)`;
+											return (
+												<div style={{ fontFamily: S.mono, fontSize: 8, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 1 }}>
+													<span style={{ width: 5, height: 5, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />
+													<span style={{ color }}>{label}</span>
+												</div>
+											);
+										})()}
+
 										{/* Row 4: Readable text */}
 										{video.readableText && video.readableText !== 'None' && video.readableText !== 'none' && (
 											<div style={{
@@ -2119,6 +2220,43 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 												textOverflow: 'ellipsis',
 											}}>
 												&quot;{video.readableText}&quot;
+											</div>
+										)}
+
+										{/* Row 5: Semantic tags */}
+										{video.semanticTags && video.semanticTags.length > 0 && (
+											<div style={{
+												display: 'flex',
+												flexWrap: 'wrap',
+												gap: 2,
+												marginTop: 1,
+											}}>
+												{video.semanticTags.slice(0, 5).map((tag) => (
+													<span
+														key={tag}
+														style={{
+															fontFamily: S.mono,
+															fontSize: 7,
+															padding: '1px 4px',
+															borderRadius: 3,
+															background: 'rgba(139, 92, 246, 0.15)',
+															color: '#a78bfa',
+															lineHeight: '12px',
+														}}
+													>
+														{tag}
+													</span>
+												))}
+												{video.semanticTags.length > 5 && (
+													<span style={{
+														fontFamily: S.mono,
+														fontSize: 7,
+														color: S.textMuted,
+														lineHeight: '12px',
+													}}>
+														+{video.semanticTags.length - 5}
+													</span>
+												)}
 											</div>
 										)}
 									</div>
@@ -2636,6 +2774,31 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							</button>
 						)}
 					</div>
+
+					{/* Dedup warnings */}
+					{editPlanData?._dedupWarnings && editPlanData._dedupWarnings.length > 0 && (
+						<div style={{
+							padding: '8px 12px',
+							margin: '0 0 8px 0',
+							background: 'rgba(250, 204, 21, 0.1)',
+							border: '1px solid rgba(250, 204, 21, 0.3)',
+							borderRadius: 6,
+							fontFamily: S.mono,
+							fontSize: 9,
+						}}>
+							<div style={{ color: '#facc15', fontWeight: 600, marginBottom: 4 }}>
+								Scene Overlap Warning
+							</div>
+							{(editPlanData._dedupWarnings as Array<{ clipA: number; clipB: number; overlapSeconds: number }>).map((d, i) => (
+								<div key={i} style={{ color: S.textMuted }}>
+									Clip {d.clipA + 1} &amp; Clip {d.clipB + 1} share {d.overlapSeconds}s of the same footage
+								</div>
+							))}
+							<div style={{ color: '#facc15', marginTop: 4, fontSize: 8 }}>
+								Consider regenerating the edit plan for more variety
+							</div>
+						</div>
+					)}
 
 					{/* Generating state */}
 					{generating && (

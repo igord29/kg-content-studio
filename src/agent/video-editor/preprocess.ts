@@ -18,8 +18,9 @@ export interface PreprocessClipConfig {
 	filename?: string;
 	trimStart: number;
 	duration: number;
-	speed?: number;     // Playback speed multiplier. Default 1.0. 0.5 = slow-mo, 2.0 = fast.
-	sharpen?: boolean;  // Apply sharpening filter. Default true.
+	speed?: number;       // Playback speed multiplier. Default 1.0. 0.5 = slow-mo, 2.0 = fast.
+	sharpen?: boolean;    // Apply sharpening filter. Default true.
+	stabilize?: boolean;  // Apply deshake stabilization. Default false.
 }
 
 export interface PreprocessedClip {
@@ -43,6 +44,14 @@ interface Logger {
  */
 function buildVideoFilter(config: PreprocessClipConfig): string {
 	const filters: string[] = [];
+
+	// Stabilization — deshake (single-pass, built into FFmpeg, no extra library)
+	// Must come BEFORE sharpening so we sharpen the stabilized image, not amplify shake
+	// x/y/w/h=-1 = auto-detect motion region (full frame)
+	// rx=32:ry=32 = 32px search radius (generous for phone sports footage)
+	if (config.stabilize) {
+		filters.push('deshake=x=-1:y=-1:w=-1:h=-1:rx=32:ry=32');
+	}
 
 	// Sharpening — moderate settings for phone footage
 	// unsharp=luma_size_x:luma_size_y:luma_amount:chroma_size_x:chroma_size_y:chroma_amount
@@ -118,13 +127,14 @@ export async function preprocessClip(
 	const processedPath = path.join(tempDir, `processed_${processedId}.mp4`);
 
 	logger?.info(
-		'[preprocess] Clip %s: downloading %s (trim=%ds, dur=%ds, speed=%sx, sharpen=%s)',
+		'[preprocess] Clip %s: downloading %s (trim=%ds, dur=%ds, speed=%sx, sharpen=%s, stabilize=%s)',
 		config.filename || config.fileId,
 		config.fileId,
 		config.trimStart,
 		config.duration,
 		speed,
 		config.sharpen !== false ? 'yes' : 'no',
+		config.stabilize ? 'yes' : 'no',
 	);
 
 	// 1. Download raw source from Google Drive

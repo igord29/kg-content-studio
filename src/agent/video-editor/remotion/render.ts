@@ -70,6 +70,44 @@ let cachedInfra: LambdaInfrastructure | null = null;
  */
 const renderRegistry = new Map<string, LambdaRenderEntry>();
 
+/**
+ * Pre-register a render ID in the registry so status polling works
+ * before the Lambda submission completes (during preprocessing).
+ * Status will show as 'queued' until Lambda submission updates it.
+ */
+export function preRegisterRender(renderId: string): void {
+	renderRegistry.set(renderId, {
+		localId: renderId,
+		lambdaRenderId: '',  // Not yet known — set during Lambda submission
+		bucketName: '',
+		functionName: '',
+		region: '',
+		status: 'queued',
+		createdAt: Date.now(),
+	});
+}
+
+/**
+ * Update a pre-registered render entry after Lambda submission.
+ */
+export function updateRenderEntry(renderId: string, update: Partial<LambdaRenderEntry>): void {
+	const entry = renderRegistry.get(renderId);
+	if (entry) {
+		Object.assign(entry, update);
+	}
+}
+
+/**
+ * Mark a pre-registered render as failed.
+ */
+export function failRender(renderId: string, error: string): void {
+	const entry = renderRegistry.get(renderId);
+	if (entry) {
+		entry.status = 'failed';
+		entry.error = error;
+	}
+}
+
 // --- Lambda Infrastructure ---
 
 /**
@@ -494,6 +532,367 @@ export async function submitRemotionRenderDirect(
 		result.renderId, renderId);
 
 	return renderId;
+}
+
+// --- Preprocessed Render (FFmpeg → S3 → Lambda) ---
+
+/**
+ * Submit a Remotion render using preprocessed local clips.
+ *
+ * Pipeline:
+ *   1. FFmpeg preprocess: Drive → download → deshake + sharpen + trim + speed → local .mp4
+ *   2. Upload preprocessed .mp4 files to Remotion S3 bucket
+ *   3. Build Remotion props with S3 URLs (trimStart=0, already trimmed)
+ *   4. Submit renderMediaOnLambda()
+ *   5. Schedule S3 cleanup
+ *
+ * This gives Lambda workers stabilized, sharpened, pre-trimmed clips
+ * instead of raw shaky footage.
+ */
+export async function submitRemotionRenderPreprocessed(
+	config: {
+		clips: Array<{
+			fileId: string;
+			filename?: string;
+			trimStart?: number;
+			duration?: number;
+			purpose?: string;
+			speed?: number;
+		}>;
+		textOverlays?: Array<{
+			text: string;
+			start: number;
+			duration: number;
+			position?: string;
+		}>;
+		musicUrl?: string | null;
+		mode: string;
+		platform: string;
+	},
+	processedClips: PreprocessedClip[],
+	logger?: Logger,
+	existingRenderId?: string,
+): Promise<string> {
+	const renderId = existingRenderId || `remotion_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+	logger?.info('[remotion-lambda] Render %s: getting infrastructure config...', renderId);
+
+	// Step 1: Get Lambda infrastructure config
+	const infra = await getInfra(logger);
+
+	// Step 2: Upload preprocessed local files to S3
+	const { uploadPreprocessedClipsToS3, cleanupS3Clips } = await import('./s3-upload');
+
+	const clipsForUpload = processedClips.map(pc => ({
+		processedId: pc.processedId,
+		localPath: pc.localPath,
+	}));
+
+	logger?.info('[remotion-lambda] Uploading %d preprocessed clips to S3 bucket %s...',
+		clipsForUpload.length, infra.bucketName);
+
+	const s3Clips = await uploadPreprocessedClipsToS3(
+		clipsForUpload,
+		infra.bucketName,
+		infra.region,
+		logger,
+	);
+
+	// Step 3: Build props with S3 URLs (clips are already trimmed/processed)
+	const platformSettings = PLATFORM_SETTINGS[config.platform] || PLATFORM_SETTINGS['youtube']!;
+	const fps = 30;
+
+	const REMOTION_MODE_SETTINGS: Record<string, { transitionDuration: number; bgColor: string }> = {
+		game_day:  { transitionDuration: 0.5, bgColor: '#000000' },
+		our_story: { transitionDuration: 1.0, bgColor: '#0a0a0a' },
+		quick_hit: { transitionDuration: 0.3, bgColor: '#000000' },
+		showcase:  { transitionDuration: 0.8, bgColor: '#0a0a0a' },
+	};
+	const remotionMode = REMOTION_MODE_SETTINGS[config.mode] || REMOTION_MODE_SETTINGS['game_day']!;
+	const transitionDurationFrames = Math.round(remotionMode.transitionDuration * fps);
+
+	// Build clip props using S3 URLs for preprocessed files
+	// trimStart=0 because FFmpeg already trimmed during preprocessing
+	const clipProps: CLCVideoProps['clips'] = processedClips.map((pc) => {
+		const s3Info = s3Clips.get(pc.processedId);
+		if (!s3Info) {
+			throw new Error(`S3 upload missing for preprocessed clip ${pc.processedId}`);
+		}
+		return {
+			src: s3Info.s3Url,
+			length: pc.effectiveDuration,
+			trimStart: 0, // Already trimmed by FFmpeg
+		};
+	});
+
+	// Build text overlay props
+	const textOverlays: CLCVideoProps['textOverlays'] = (config.textOverlays || []).map((overlay, index, arr) => {
+		const startFrame = Math.round(overlay.start * fps);
+		const durationFrames = Math.round(overlay.duration * fps);
+		return {
+			text: overlay.text,
+			startFrame,
+			durationFrames,
+			position: (overlay.position as 'top' | 'center' | 'bottom') || 'bottom',
+			isFirst: index === 0,
+			isLast: index === arr.length - 1,
+		};
+	});
+
+	const props: CLCVideoProps = {
+		clips: clipProps,
+		mode: config.mode,
+		width: platformSettings.width,
+		height: platformSettings.height,
+		fps,
+		textOverlays,
+		musicSrc: config.musicUrl || undefined,
+		musicVolume: 0.3,
+		bgColor: remotionMode.bgColor,
+		transitionDurationFrames,
+	};
+
+	logger?.info('[remotion-lambda] Submitting render (preprocessed): %d clips, %dx%d, mode=%s, platform=%s',
+		props.clips.length, props.width, props.height, config.mode, config.platform);
+
+	// Step 4: Submit to Lambda
+	const { renderMediaOnLambda } = await import('@remotion/lambda/client');
+
+	const totalDuration = clipProps.reduce((sum, c) => sum + c.length, 0);
+	const totalFrames = Math.ceil(totalDuration * fps);
+	const maxRendererLambdas = 4;
+	const framesPerLambda = Math.max(200, Math.ceil(totalFrames / maxRendererLambdas));
+
+	logger?.info('[remotion-lambda] totalFrames=%d, framesPerLambda=%d (max %d renderer Lambdas)',
+		totalFrames, framesPerLambda, maxRendererLambdas);
+
+	const result = await renderMediaOnLambda({
+		region: infra.region as any,
+		functionName: infra.functionName,
+		serveUrl: infra.serveUrl,
+		composition: 'CLCVideo',
+		codec: 'h264',
+		inputProps: props as unknown as Record<string, unknown>,
+		privacy: 'public',
+		framesPerLambda,
+		timeoutInMilliseconds: 120_000,
+	});
+
+	// Step 5: Store mapping in registry
+	const entry: LambdaRenderEntry = {
+		localId: renderId,
+		lambdaRenderId: result.renderId,
+		bucketName: result.bucketName,
+		functionName: infra.functionName,
+		region: infra.region,
+		status: 'queued',
+		createdAt: Date.now(),
+	};
+	renderRegistry.set(renderId, entry);
+
+	// Schedule S3 cleanup after 30 minutes
+	const s3ClipsList = [...s3Clips.values()];
+	setTimeout(async () => {
+		logger?.info('[remotion-lambda] Cleaning up %d temp S3 clips for render %s...',
+			s3ClipsList.length, renderId);
+		await cleanupS3Clips(s3ClipsList, infra.bucketName, infra.region, logger);
+	}, 30 * 60 * 1000);
+
+	logger?.info('[remotion-lambda] Submitted (preprocessed). Lambda renderId: %s → our renderId: %s',
+		result.renderId, renderId);
+
+	return renderId;
+}
+
+// --- Preprocessor Lambda Render (Drive → S3 → FFmpeg Lambda → S3 → Remotion Lambda) ---
+
+/**
+ * Submit a Remotion render with FFmpeg preprocessing via a dedicated Lambda.
+ *
+ * Full pipeline:
+ *   1. Upload raw clips from Google Drive → S3 (existing uploadClipsToS3)
+ *   2. Invoke preprocessor Lambda for each clip (deshake + sharpen + trim + speed)
+ *   3. Build Remotion props with processed S3 URLs (trimStart=0, already trimmed)
+ *   4. Submit renderMediaOnLambda() with processed clips
+ *   5. Schedule cleanup of all S3 clips (raw + processed)
+ *
+ * This is designed to run in a fire-and-forget async block:
+ *   - Render ID is pre-registered before calling this function
+ *   - On success: render registry is updated with Lambda render ID
+ *   - On failure: render registry is updated with error
+ *
+ * The caller should NOT await this if running under Agentuity's 60s timeout.
+ * Instead: pre-register, fire async, return render ID immediately.
+ */
+export async function submitRemotionRenderWithPreprocessing(
+	config: {
+		clips: Array<{
+			fileId: string;
+			filename?: string;
+			trimStart?: number;
+			duration?: number;
+			purpose?: string;
+			speed?: number;
+		}>;
+		textOverlays?: Array<{
+			text: string;
+			start: number;
+			duration: number;
+			position?: string;
+		}>;
+		musicUrl?: string | null;
+		mode: string;
+		platform: string;
+	},
+	renderId: string,
+	logger?: Logger,
+): Promise<void> {
+	try {
+		logger?.info('[remotion-lambda] Render %s: starting preprocessed pipeline...', renderId);
+
+		// Step 1: Get Lambda infrastructure config
+		const infra = await getInfra(logger);
+
+		// Step 2: Upload raw clips from Google Drive to S3
+		const { uploadClipsToS3, cleanupS3Clips } = await import('./s3-upload');
+		const {
+			invokePreprocessorForClips,
+			buildPreprocessorConfigs,
+		} = await import('./preprocessor-invoke');
+
+		const fileIds = config.clips.map(c => c.fileId);
+		logger?.info('[remotion-lambda] Uploading %d raw clips from Drive to S3 bucket %s...',
+			fileIds.length, infra.bucketName);
+
+		const s3Clips = await uploadClipsToS3(
+			fileIds,
+			infra.bucketName,
+			infra.region,
+			logger,
+		);
+
+		// Update status: raw upload complete, starting preprocessing
+		updateRenderEntry(renderId, { status: 'rendering' });
+
+		// Step 3: Build preprocessor configs and invoke Lambda for each clip
+		const preprocessorConfigs = buildPreprocessorConfigs(config.clips, s3Clips);
+
+		logger?.info('[remotion-lambda] Invoking preprocessor Lambda for %d clips...', preprocessorConfigs.length);
+
+		const processedClips = await invokePreprocessorForClips(
+			preprocessorConfigs,
+			infra.bucketName,
+			infra.region,
+			logger,
+		);
+
+		// Step 4: Build Remotion props with processed S3 URLs
+		const platformSettings = PLATFORM_SETTINGS[config.platform] || PLATFORM_SETTINGS['youtube']!;
+		const fps = 30;
+
+		const REMOTION_MODE_SETTINGS: Record<string, { transitionDuration: number; bgColor: string }> = {
+			game_day:  { transitionDuration: 0.5, bgColor: '#000000' },
+			our_story: { transitionDuration: 1.0, bgColor: '#0a0a0a' },
+			quick_hit: { transitionDuration: 0.3, bgColor: '#000000' },
+			showcase:  { transitionDuration: 0.8, bgColor: '#0a0a0a' },
+		};
+		const remotionMode = REMOTION_MODE_SETTINGS[config.mode] || REMOTION_MODE_SETTINGS['game_day']!;
+		const transitionDurationFrames = Math.round(remotionMode.transitionDuration * fps);
+
+		// Build clip props using processed S3 URLs
+		// trimStart=0 because FFmpeg already trimmed during preprocessing
+		const clipProps: CLCVideoProps['clips'] = processedClips.map((pc) => ({
+			src: pc.outputS3Url,
+			length: pc.effectiveDuration,
+			trimStart: 0,
+		}));
+
+		// Build text overlay props
+		const textOverlays: CLCVideoProps['textOverlays'] = (config.textOverlays || []).map((overlay, index, arr) => {
+			const startFrame = Math.round(overlay.start * fps);
+			const durationFrames = Math.round(overlay.duration * fps);
+			return {
+				text: overlay.text,
+				startFrame,
+				durationFrames,
+				position: (overlay.position as 'top' | 'center' | 'bottom') || 'bottom',
+				isFirst: index === 0,
+				isLast: index === arr.length - 1,
+			};
+		});
+
+		const props: CLCVideoProps = {
+			clips: clipProps,
+			mode: config.mode,
+			width: platformSettings.width,
+			height: platformSettings.height,
+			fps,
+			textOverlays,
+			musicSrc: config.musicUrl || undefined,
+			musicVolume: 0.3,
+			bgColor: remotionMode.bgColor,
+			transitionDurationFrames,
+		};
+
+		logger?.info('[remotion-lambda] Submitting render (preprocessed via Lambda): %d clips, %dx%d, mode=%s',
+			props.clips.length, props.width, props.height, config.mode);
+
+		// Step 5: Submit to Remotion Lambda
+		const { renderMediaOnLambda } = await import('@remotion/lambda/client');
+
+		const totalDuration = clipProps.reduce((sum, c) => sum + c.length, 0);
+		const totalFrames = Math.ceil(totalDuration * fps);
+		const maxRendererLambdas = 4;
+		const framesPerLambda = Math.max(200, Math.ceil(totalFrames / maxRendererLambdas));
+
+		logger?.info('[remotion-lambda] totalFrames=%d, framesPerLambda=%d',
+			totalFrames, framesPerLambda);
+
+		const result = await renderMediaOnLambda({
+			region: infra.region as any,
+			functionName: infra.functionName,
+			serveUrl: infra.serveUrl,
+			composition: 'CLCVideo',
+			codec: 'h264',
+			inputProps: props as unknown as Record<string, unknown>,
+			privacy: 'public',
+			framesPerLambda,
+			timeoutInMilliseconds: 120_000,
+		});
+
+		// Step 6: Update render registry with Lambda render ID
+		updateRenderEntry(renderId, {
+			lambdaRenderId: result.renderId,
+			bucketName: result.bucketName,
+			functionName: infra.functionName,
+			region: infra.region,
+			status: 'rendering',
+		});
+
+		// Schedule cleanup of both raw AND processed S3 clips after 30 minutes
+		const rawClipsList = [...s3Clips.values()];
+		const processedS3Keys = processedClips.map(pc => ({
+			fileId: pc.fileId,
+			s3Key: pc.outputS3Key,
+			s3Url: pc.outputS3Url,
+			sizeBytes: pc.outputSizeBytes,
+		}));
+		const allClips = [...rawClipsList, ...processedS3Keys];
+
+		setTimeout(async () => {
+			logger?.info('[remotion-lambda] Cleaning up %d S3 clips (raw + processed) for render %s...',
+				allClips.length, renderId);
+			await cleanupS3Clips(allClips, infra.bucketName, infra.region, logger);
+		}, 30 * 60 * 1000);
+
+		logger?.info('[remotion-lambda] Submitted (preprocessed via Lambda). Lambda renderId: %s → our renderId: %s',
+			result.renderId, renderId);
+
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		logger?.error?.('[remotion-lambda] Preprocessed render pipeline failed for %s: %s', renderId, msg);
+		failRender(renderId, msg);
+	}
 }
 
 // --- Status Check ---

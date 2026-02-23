@@ -240,6 +240,24 @@ declare module '@agentuity/frontend' {
 	 * Maps route keys (METHOD /path) to their input/output schemas
 	 */
 	export interface RouteRegistry {
+	'GET /api/clip-usage': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/clip-usage': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'GET /api/clip-usage/:fileId': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: { fileId: string };
+			};
 	'POST /api/content-creator': {
 				inputSchema: POSTApiContentCreatorInputSchema;
 				outputSchema: POSTApiContentCreatorOutputSchema;
@@ -381,6 +399,22 @@ declare module '@agentuity/frontend' {
 	 * Used by createClient() from @agentuity/frontend for type-safe RPC calls.
 	 */
 	export interface RPCRouteRegistry {
+		clipUsage: {
+			fileId: {
+				/**
+				 * Route: GET /api/clip-usage/:fileId
+				 */
+				get: { input: never; output: never; type: 'api'; params: { fileId: string }; paramsTuple: [string] };
+			};
+			/**
+			 * Route: GET /api/clip-usage
+			 */
+			get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			/**
+			 * Route: POST /api/clip-usage
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
 		contentCreator: {
 			/**
 			 * Route: POST /api/content-creator
@@ -506,6 +540,24 @@ declare module '@agentuity/frontend' {
 // that define RouteRegistry locally instead of re-exporting from @agentuity/frontend
 declare module '@agentuity/react' {
 	export interface RouteRegistry {
+	'GET /api/clip-usage': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/clip-usage': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'GET /api/clip-usage/:fileId': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: { fileId: string };
+			};
 	'POST /api/content-creator': {
 				inputSchema: POSTApiContentCreatorInputSchema;
 				outputSchema: POSTApiContentCreatorOutputSchema;
@@ -628,6 +680,22 @@ declare module '@agentuity/react' {
 
 	}
 	export interface RPCRouteRegistry {
+		clipUsage: {
+			fileId: {
+				/**
+				 * Route: GET /api/clip-usage/:fileId
+				 */
+				get: { input: never; output: never; type: 'api'; params: { fileId: string }; paramsTuple: [string] };
+			};
+			/**
+			 * Route: GET /api/clip-usage
+			 */
+			get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			/**
+			 * Route: POST /api/clip-usage
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
 		contentCreator: {
 			/**
 			 * Route: POST /api/content-creator
@@ -755,6 +823,25 @@ declare module '@agentuity/react' {
  * @internal
  */
 const _rpcRouteMetadata = {
+		"clipUsage": {
+				"fileId": {
+						"get": {
+								"type": "api",
+								"path": "/api/clip-usage/:fileId",
+								"pathParams": [
+										"fileId"
+								]
+						}
+				},
+				"get": {
+						"type": "api",
+						"path": "/api/clip-usage"
+				},
+				"post": {
+						"type": "api",
+						"path": "/api/clip-usage"
+				}
+		},
 		"contentCreator": {
 				"post": {
 						"type": "api",

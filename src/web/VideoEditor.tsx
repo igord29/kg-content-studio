@@ -856,12 +856,13 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	// --- Render handlers ---
 
 	// Ref to hold latest triggerReview so pollRenderStatus can call it stably
-	const triggerReviewRef = useRef<(downloadUrl: string, platform: string, mode: string) => void>(() => {});
+	const triggerReviewRef = useRef<(downloadUrl: string, platform: string, mode: string, method?: RenderJob['method']) => void>(() => {});
 
 	const pollRenderStatus = useCallback(async (
 		renderId: string,
 		platform: string,
 		renderMeta?: { mode: string; topic: string; clipCount: number; editPlanSummary?: string },
+		method: RenderJob['method'] = 'shotstack',
 	) => {
 		const pollInterval = 5000;
 		const maxAttempts = 120; // 10 minutes max
@@ -917,7 +918,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						}
 
 						// Auto-trigger AI review of the rendered video
-						triggerReviewRef.current(data.downloadUrl, platform, renderMeta.mode);
+						triggerReviewRef.current(data.downloadUrl, platform, renderMeta.mode, method);
 					}
 
 					if (newStatus !== 'done' && newStatus !== 'failed') {
@@ -936,14 +937,14 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 	// --- AI Review ---
 
-	const triggerReview = useCallback(async (downloadUrl: string, platform: string, mode: string) => {
+	const triggerReview = useCallback(async (downloadUrl: string, platform: string, mode: string, method: RenderJob['method'] = 'shotstack') => {
 		// Get the edit plan that was actually used for this render (stored on the job)
 		let planForReview: any = null;
 		setRenderJobs(prev => {
-			const job = prev.find(j => j.platform === platform && j.method === 'shotstack' && j.status === 'done');
+			const job = prev.find(j => j.platform === platform && j.method === method && j.status === 'done');
 			planForReview = job?.usedEditPlan || editPlanData || null;
 			return prev.map(j =>
-				j.platform === platform && j.method === 'shotstack' && j.status === 'done'
+				j.platform === platform && j.method === method && j.status === 'done'
 					? { ...j, reviewStatus: 'reviewing' as const }
 					: j
 			);
@@ -967,7 +968,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 			if (data.success && data.review) {
 				setRenderJobs(prev => prev.map(j =>
-					j.platform === platform && j.method === 'shotstack' && j.reviewStatus === 'reviewing'
+					j.platform === platform && j.method === method && j.reviewStatus === 'reviewing'
 						? {
 							...j,
 							reviewStatus: 'done' as const,
@@ -978,14 +979,14 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 				));
 			} else {
 				setRenderJobs(prev => prev.map(j =>
-					j.platform === platform && j.method === 'shotstack' && j.reviewStatus === 'reviewing'
+					j.platform === platform && j.method === method && j.reviewStatus === 'reviewing'
 						? { ...j, reviewStatus: 'failed' as const, reviewError: data.error || 'Review failed' }
 						: j
 				));
 			}
 		} catch (err) {
 			setRenderJobs(prev => prev.map(j =>
-				j.platform === platform && j.method === 'shotstack' && j.reviewStatus === 'reviewing'
+				j.platform === platform && j.method === method && j.reviewStatus === 'reviewing'
 					? { ...j, reviewStatus: 'failed' as const, reviewError: err instanceof Error ? err.message : 'Network error' }
 					: j
 			));
@@ -1077,7 +1078,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						saveToLibrary(`/api/video-editor/download?path=${encodeURIComponent(data.localOutputPath)}`);
 					}
 				} else {
-					// Shotstack render - may already be done or needs polling
+					// Shotstack/Remotion render - may already be done or needs polling
 					if (data.downloadUrl) {
 						setRenderJobs(prev => prev.map(j =>
 							j.platform === platform && j.method === method
@@ -1087,14 +1088,14 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						// Immediately done — save to library now
 						saveToLibrary(data.downloadUrl, data.renderId);
 						// Auto-trigger AI review
-						triggerReviewRef.current(data.downloadUrl, platform, renderMeta.mode);
+						triggerReviewRef.current(data.downloadUrl, platform, renderMeta.mode, method);
 					} else if (data.renderId) {
 						setRenderJobs(prev => prev.map(j =>
 							j.platform === platform && j.method === method
 								? { ...j, status: 'queued' as const, renderId: data.renderId }
 								: j
 						));
-						pollRenderStatus(data.renderId, platform, renderMeta);
+						pollRenderStatus(data.renderId, platform, renderMeta, method);
 					}
 				}
 			} else {
@@ -1116,9 +1117,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		}
 	}, [selectedIds, selectedMode, editPlan, editPlanData, topic, pollRenderStatus, triggerReview]);
 
-	const handleReviseAndRerender = useCallback(async (platform: string) => {
+	const handleReviseAndRerender = useCallback(async (platform: string, method: RenderJob['method'] = 'shotstack') => {
 		// Find the job with a revised edit plan
-		const job = renderJobs.find(j => j.platform === platform && j.method === 'shotstack' && j.revisedEditPlan);
+		const job = renderJobs.find(j => j.platform === platform && j.method === method && j.revisedEditPlan);
 		if (!job?.revisedEditPlan) return;
 
 		// Enforce revision cap
@@ -1138,7 +1139,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 		// Clear the old review state and reset render status — store revised plan as the one being used
 		setRenderJobs(prev => prev.map(j =>
-			j.platform === platform && j.method === 'shotstack'
+			j.platform === platform && j.method === method
 				? {
 					...j,
 					status: 'submitting' as const,
@@ -1157,7 +1158,8 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 				: j
 		));
 
-		// Re-submit the render with the revised edit plan
+		// Re-submit the render with the revised edit plan (use correct render engine)
+		const renderEngine = method === 'remotion' ? 'remotion' : undefined;
 		try {
 			const resp = await fetch('/api/video-editor', {
 				method: 'POST',
@@ -1168,6 +1170,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					editPlan: job.revisedEditPlan,
 					platform,
 					editMode: selectedMode === 'auto' ? 'game_day' : selectedMode,
+					renderEngine,
 					musicUrl: musicEnabled ? (customMusicUrl.trim() || undefined) : undefined,
 					musicDisabled: !musicEnabled,
 				}),
@@ -1184,22 +1187,22 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 				};
 
 				setRenderJobs(prev => prev.map(j =>
-					j.platform === platform && j.method === 'shotstack'
+					j.platform === platform && j.method === method
 						? { ...j, status: 'queued' as const, renderId: data.renderId }
 						: j
 				));
 
-				pollRenderStatus(data.renderId, platform, renderMeta);
+				pollRenderStatus(data.renderId, platform, renderMeta, method);
 			} else {
 				setRenderJobs(prev => prev.map(j =>
-					j.platform === platform && j.method === 'shotstack'
+					j.platform === platform && j.method === method
 						? { ...j, status: 'failed' as const, error: data.error || 'Re-render failed' }
 						: j
 				));
 			}
 		} catch (err) {
 			setRenderJobs(prev => prev.map(j =>
-				j.platform === platform && j.method === 'shotstack'
+				j.platform === platform && j.method === method
 					? { ...j, status: 'failed' as const, error: err instanceof Error ? err.message : 'Network error' }
 					: j
 			));
@@ -3364,6 +3367,273 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 														Download (Enhanced)
 													</a>
 												)}
+
+												{/* Enhanced AI Review section */}
+												{remotionJob?.reviewStatus === 'reviewing' && (
+													<div style={{
+														marginTop: 6,
+														padding: '6px 8px',
+														borderRadius: 4,
+														background: '#7c3aed10',
+														border: '1px solid #7c3aed40',
+														fontFamily: S.mono,
+														fontSize: 9,
+														color: '#a78bfa',
+													}}>
+														⟳ AI reviewing enhanced render...
+													</div>
+												)}
+
+												{remotionJob?.reviewStatus === 'failed' && (
+													<div style={{
+														marginTop: 6,
+														fontFamily: S.mono,
+														fontSize: 8,
+														color: S.red,
+													}}>
+														Review failed: {remotionJob.reviewError}
+													</div>
+												)}
+
+												{remotionJob?.reviewStatus === 'done' && remotionJob.review && (() => {
+													const r = remotionJob.review;
+													const revisionCount = remotionJob.revisionCount || 0;
+													const previousScores = remotionJob.previousScores || [];
+													const lastPrevScore: number | null = previousScores.length > 0 ? (previousScores[previousScores.length - 1] ?? null) : null;
+													const scoreRegressed = lastPrevScore !== null && r.overallScore < lastPrevScore;
+													const maxRevisionsReached = revisionCount >= 2;
+													const scoreColor = (score: number) =>
+														score >= 8 ? '#a78bfa' : score >= 5 ? S.orange : S.red;
+													const severityColor = (sev: string) =>
+														sev === 'critical' ? S.red : sev === 'warning' ? S.orange : S.textMuted;
+													const hasCritical = r.issues.some(i => i.severity === 'critical' || i.severity === 'warning');
+
+													return (
+														<div style={{
+															marginTop: 8,
+															padding: '8px',
+															borderRadius: 6,
+															border: `1px solid ${hasCritical ? '#92400e' : '#7c3aed'}`,
+															background: hasCritical ? '#92400e10' : '#7c3aed10',
+														}}>
+															{/* Revision tracking header */}
+															{revisionCount > 0 && (
+																<div style={{
+																	fontFamily: S.mono,
+																	fontSize: 8,
+																	color: S.textMuted,
+																	marginBottom: 4,
+																	display: 'flex',
+																	justifyContent: 'space-between',
+																}}>
+																	<span>Revision {revisionCount} of 2</span>
+																	{lastPrevScore !== null && (
+																		<span>
+																			Previous: <span style={{ color: scoreColor(lastPrevScore), fontWeight: 700 }}>{lastPrevScore}/10</span>
+																			{' → '}
+																			<span style={{ color: scoreColor(r.overallScore), fontWeight: 700 }}>{r.overallScore}/10</span>
+																			{scoreRegressed && <span style={{ color: S.red, marginLeft: 4 }}>↓</span>}
+																		</span>
+																	)}
+																</div>
+															)}
+
+															{/* Score regression warning */}
+															{scoreRegressed && remotionJob.originalDownloadUrl && (
+																<div style={{
+																	padding: '4px 8px',
+																	borderRadius: 4,
+																	border: `1px solid ${S.red}`,
+																	background: '#7f1d1d20',
+																	marginBottom: 6,
+																	fontFamily: S.mono,
+																	fontSize: 8,
+																	color: S.red,
+																	display: 'flex',
+																	justifyContent: 'space-between',
+																	alignItems: 'center',
+																}}>
+																	<span>Score dropped from {lastPrevScore}/10 to {r.overallScore}/10</span>
+																	<a
+																		href={remotionJob.originalDownloadUrl}
+																		target="_blank"
+																		rel="noopener noreferrer"
+																		style={{
+																			color: S.orange,
+																			textDecoration: 'underline',
+																			fontSize: 8,
+																			fontWeight: 700,
+																		}}
+																	>
+																		Download Original
+																	</a>
+																</div>
+															)}
+
+															{/* Score row */}
+															<div style={{
+																display: 'flex',
+																gap: 10,
+																marginBottom: 6,
+																flexWrap: 'wrap',
+															}}>
+																{[
+																	{ label: 'Overall', score: r.overallScore },
+																	{ label: 'Story', score: r.storytellingScore },
+																	{ label: 'Pacing', score: r.pacingScore },
+																	{ label: 'Platform', score: r.platformFitScore },
+																].map(({ label: lbl, score }) => (
+																	<div key={lbl} style={{
+																		fontFamily: S.mono,
+																		fontSize: 9,
+																		color: S.textMuted,
+																	}}>
+																		{lbl}:{' '}
+																		<span style={{
+																			color: scoreColor(score),
+																			fontWeight: 700,
+																		}}>
+																			{score}/10
+																		</span>
+																	</div>
+																))}
+															</div>
+
+															{/* Story arc */}
+															<div style={{
+																fontFamily: S.mono,
+																fontSize: 8,
+																color: S.textMuted,
+																marginBottom: 4,
+															}}>
+																Arc: <span style={{
+																	color: r.storyArc === 'clear' ? '#a78bfa'
+																		: r.storyArc === 'weak' ? S.orange : S.red,
+																}}>{r.storyArc}</span>
+																{' · '}Hook: {r.hookEffectiveness}
+																{' · '}End: {r.endingQuality}
+															</div>
+
+															{/* Summary */}
+															<div style={{
+																fontFamily: S.serif,
+																fontSize: 10,
+																color: S.textPrimary,
+																lineHeight: 1.4,
+																marginBottom: r.issues.length > 0 ? 6 : 0,
+															}}>
+																{r.summary}
+															</div>
+
+															{/* Issues */}
+															{r.issues.length > 0 && (
+																<div style={{ marginBottom: 6 }}>
+																	<div style={{
+																		fontFamily: S.mono,
+																		fontSize: 8,
+																		color: S.textMuted,
+																		letterSpacing: 1,
+																		textTransform: 'uppercase' as const,
+																		marginBottom: 3,
+																	}}>
+																		Issues ({r.issues.length})
+																	</div>
+																	{r.issues.slice(0, 5).map((issue, idx) => (
+																		<div key={idx} style={{
+																			fontFamily: S.mono,
+																			fontSize: 8,
+																			color: severityColor(issue.severity),
+																			padding: '2px 0',
+																			borderBottom: idx < Math.min(r.issues.length, 5) - 1
+																				? `1px solid ${S.borderColor}` : 'none',
+																		}}>
+																			<span style={{ textTransform: 'uppercase' as const, fontWeight: 700 }}>
+																				{issue.severity}
+																			</span>
+																			{' '}[{issue.category}] {issue.description}
+																			<div style={{ color: S.textMuted, paddingLeft: 8 }}>
+																				Fix: {issue.fix}
+																			</div>
+																		</div>
+																	))}
+																	{r.issues.length > 5 && (
+																		<div style={{
+																			fontFamily: S.mono,
+																			fontSize: 8,
+																			color: S.textDim,
+																			marginTop: 2,
+																		}}>
+																			+{r.issues.length - 5} more issues
+																		</div>
+																	)}
+																</div>
+															)}
+
+															{/* Strengths */}
+															{r.strengths.length > 0 && (
+																<div style={{ marginBottom: 6 }}>
+																	<div style={{
+																		fontFamily: S.mono,
+																		fontSize: 8,
+																		color: S.textMuted,
+																		letterSpacing: 1,
+																		textTransform: 'uppercase' as const,
+																		marginBottom: 3,
+																	}}>
+																		Strengths
+																	</div>
+																	{r.strengths.slice(0, 3).map((s_item, idx) => (
+																		<div key={idx} style={{
+																			fontFamily: S.mono,
+																			fontSize: 8,
+																			color: '#a78bfa',
+																			padding: '1px 0',
+																		}}>
+																			+ {s_item}
+																		</div>
+																	))}
+																</div>
+															)}
+
+															{/* Revise & Re-render button or max reached message */}
+															{maxRevisionsReached ? (
+																<div style={{
+																	width: '100%',
+																	padding: '6px 10px',
+																	borderRadius: 4,
+																	border: `1px solid ${S.borderColor}`,
+																	background: '#1a1f2e',
+																	color: S.textMuted,
+																	fontFamily: S.mono,
+																	fontSize: 9,
+																	textAlign: 'center' as const,
+																}}>
+																	Maximum revisions reached (2/2)
+																</div>
+															) : hasCritical && remotionJob.revisedEditPlan && (
+																<button
+																	onClick={() => handleReviseAndRerender(platformId, 'remotion')}
+																	style={{
+																		width: '100%',
+																		padding: '6px 10px',
+																		borderRadius: 4,
+																		border: '1px solid #7c3aed',
+																		background: '#7c3aed20',
+																		color: '#a78bfa',
+																		cursor: 'pointer',
+																		fontFamily: S.mono,
+																		fontSize: 9,
+																		fontWeight: 700,
+																		letterSpacing: 0.5,
+																	}}
+																	type="button"
+																>
+																	Revise &amp; Re-render (Enhanced){revisionCount > 0 ? ` (${revisionCount + 1}/2)` : ''}
+																</button>
+															)}
+														</div>
+													);
+												})()}
 											</div>
 										);
 									})}

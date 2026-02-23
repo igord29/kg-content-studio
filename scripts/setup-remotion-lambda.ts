@@ -193,29 +193,21 @@ async function main() {
 	}
 
 	// Step 3: Site (composition bundle)
-	console.log('[3/4] Checking for existing site...');
-	const existingSites = await getSites({ region, bucketName });
-
-	let serveUrl: string;
-	if (existingSites.sites.length > 0) {
-		serveUrl = existingSites.sites[0]!.serveUrl;
-		console.log(`  Reusing existing site: ${serveUrl}`);
-	} else {
-		console.log('  No site found. Deploying composition bundle...');
-		const entryPoint = resolve(
-			process.cwd(),
-			'src/agent/video-editor/remotion/entry.tsx',
-		);
-		console.log(`  Entry point: ${entryPoint}`);
-		const site = await deploySite({
-			entryPoint,
-			bucketName,
-			region,
-			siteName: 'clc-video',
-		});
-		serveUrl = site.serveUrl;
-		console.log(`  Deployed site: ${serveUrl}`);
-	}
+	// Always redeploy to ensure the site matches the current Remotion version
+	console.log('[3/4] Deploying composition bundle (always redeploy for version consistency)...');
+	const entryPoint = resolve(
+		process.cwd(),
+		'src/agent/video-editor/remotion/entry.tsx',
+	);
+	console.log(`  Entry point: ${entryPoint}`);
+	const site = await deploySite({
+		entryPoint,
+		bucketName,
+		region,
+		siteName: 'clc-video',
+	});
+	const serveUrl = site.serveUrl;
+	console.log(`  Deployed site: ${serveUrl}`);
 
 	// Print results
 	console.log('');

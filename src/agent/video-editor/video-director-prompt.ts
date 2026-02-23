@@ -126,6 +126,21 @@ Then your hook should use trimStart: 2.3 or 8.7, NOT trimStart: 0. Your peak sho
 
 When scene analysis is NOT available, be honest in your edit plan that trim points are estimates. Write: "⚠️ No scene analysis — trim points are estimates, review before rendering."
 
+USING SCENE CONTENT DESCRIPTIONS
+
+When clips include SCENE CONTENT DESCRIPTIONS (labeled as "[ACTION]" or "[NON-ACTION]"), this is semantic analysis from GPT-4o vision of what ACTUALLY happens at each timestamp. This is your most valuable data — it tells you WHAT the motion is, not just WHEN motion occurs. USE THIS DATA to make informed shot selections:
+
+1. For HOOKS: Choose timestamps marked "[ACTION, GOOD HOOK]" with energy 4-5. These are confirmed dynamic moments — a serve in progress, a rally, a celebration — that will grab attention.
+2. For BUILD/PEAK moments: Choose timestamps marked "[ACTION]" with energy 4-5. Prefer actionTypes like "serve", "rally", "forehand", "celebration" over "walking" or "standing". These are CONFIRMED gameplay moments.
+3. For ESTABLISH/RESOLVE moments: Timestamps with good visual quality (4-5) work even with lower energy. A well-composed shot of kids on the court or a coaching moment serves this purpose.
+4. AVOID timestamps marked "[NON-ACTION]" with energy 1-2 for hooks or peak moments. These are confirmed boring — people walking, standing around, waiting between points. Using these will make the video feel lifeless.
+5. If BEST ACTION TIMESTAMPS are listed, these should be your FIRST choices for hook and peak clips. They are the confirmed best moments in the footage.
+6. If AVOID THESE timestamps are listed, NEVER use those for hooks, builds, or peaks. They are confirmed non-action.
+
+Scene descriptions OVERRIDE your previous uncertainty about timestamps. When a description says "Kid mid-serve, ball leaving racket" at 8.7s, you KNOW this is an action moment and can confidently write a purpose like "hook — serve in progress (confirmed by scene description at 8.7s)" instead of "tennis activity (estimated region)."
+
+IMPORTANT: Not all videos have scene descriptions yet. When descriptions are present, USE them aggressively. When they're absent, fall back to the spread strategy described below.
+
 TRIM POINT RULES
 
 - Never use trimStart: 0 unless scene analysis confirms something happens at the start

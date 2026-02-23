@@ -406,6 +406,21 @@ async function analyzeVideoFrames(
 			console.warn(`[cataloger] Scene analysis skipped for ${video.name}: ${err}`);
 		}
 
+		// Step 7b: Semantic scene descriptions (optional — adds GPT-4o vision analysis at scene timestamps)
+		if (sceneAnalysisResult && sceneAnalysisResult.sceneChanges.length > 0) {
+			try {
+				const { describeSceneTimestamps } = await import('./scene-analyzer');
+				const descriptions = await describeSceneTimestamps(videoPath, sceneAnalysisResult as any, 6);
+				if (descriptions.length > 0) {
+					(sceneAnalysisResult as any).sceneDescriptions = descriptions;
+					const actionCount = descriptions.filter(d => d.isAction).length;
+					console.log(`[cataloger] Scene descriptions: ${descriptions.length} timestamps described, ${actionCount} action moments, ${descriptions.length - actionCount} non-action`);
+				}
+			} catch (err) {
+				console.warn(`[cataloger] Scene descriptions skipped for ${video.name}: ${err}`);
+			}
+		}
+
 		// Step 8: Clean up temp files
 		cleanupTempFiles(video.id);
 

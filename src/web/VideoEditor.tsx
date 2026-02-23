@@ -84,6 +84,7 @@ interface RenderJob {
 	revisionCount?: number;          // 0 = original, 1 = first revision, 2 = max
 	previousScores?: number[];       // overall scores from prior renders
 	originalDownloadUrl?: string;    // preserves the original render's download URL
+	requestingRevision?: boolean;    // true while on-demand revision is being generated
 }
 
 const RENDER_STATUS_MESSAGES: Record<string, string> = {
@@ -1194,13 +1195,62 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	}, [selectedIds, selectedMode, editPlan, editPlanData, topic, pollRenderStatus, triggerReview]);
 
 	const handleReviseAndRerender = useCallback(async (platform: string, method: RenderJob['method'] = 'shotstack') => {
-		// Find the job with a revised edit plan
-		const job = renderJobs.find(j => j.platform === platform && j.method === method && j.revisedEditPlan);
-		if (!job?.revisedEditPlan) return;
+		// Find the job for this platform/method
+		const job = renderJobs.find(j => j.platform === platform && j.method === method);
+		if (!job) return;
 
 		// Enforce revision cap
 		const currentRevision = job.revisionCount || 0;
 		if (currentRevision >= 2) return;
+
+		// If no revised plan exists yet, request one on-demand from the backend
+		if (!job.revisedEditPlan) {
+			setRenderJobs(prev => prev.map(j =>
+				j.platform === platform && j.method === method
+					? { ...j, requestingRevision: true }
+					: j
+			));
+
+			try {
+				const resp = await fetch('/api/video-editor', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						task: 'generate-revision',
+						platform,
+						editMode: selectedMode === 'auto' ? 'game_day' : selectedMode,
+						originalEditPlan: job.usedEditPlan || editPlanData,
+						review: job.review,
+					}),
+				});
+
+				const data = await resp.json();
+
+				if (data.success && data.revisedEditPlanData) {
+					// Store the revised plan and clear loading state
+					setRenderJobs(prev => prev.map(j =>
+						j.platform === platform && j.method === method
+							? { ...j, revisedEditPlan: data.revisedEditPlanData, requestingRevision: false }
+							: j
+					));
+					// Re-call ourselves — now revisedEditPlan exists and we'll proceed to render
+					setTimeout(() => handleReviseAndRerender(platform, method), 100);
+				} else {
+					setRenderJobs(prev => prev.map(j =>
+						j.platform === platform && j.method === method
+							? { ...j, requestingRevision: false, reviewError: data.error || 'Could not generate revision' }
+							: j
+					));
+				}
+			} catch (err) {
+				setRenderJobs(prev => prev.map(j =>
+					j.platform === platform && j.method === method
+						? { ...j, requestingRevision: false, reviewError: err instanceof Error ? err.message : 'Network error' }
+						: j
+				));
+			}
+			return;
+		}
 
 		// Swap the edit plan data to the revised version
 		setEditPlanData(job.revisedEditPlan);
@@ -1283,7 +1333,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					: j
 			));
 		}
-	}, [renderJobs, selectedIds, selectedMode, topic, musicEnabled, customMusicUrl, pollRenderStatus]);
+	}, [renderJobs, selectedIds, selectedMode, editPlanData, topic, musicEnabled, customMusicUrl, pollRenderStatus]);
 
 	const handleRenderAll = useCallback(async (method: 'shotstack' | 'ffmpeg' | 'remotion') => {
 		setRenderingAll(true);
@@ -3444,9 +3494,10 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 																}}>
 																	Maximum revisions reached (2/2)
 																</div>
-															) : hasCritical && shotstackJob.revisedEditPlan && (
+															) : r.overallScore < 8 && (
 																<button
 																	onClick={() => handleReviseAndRerender(platformId)}
+																	disabled={shotstackJob.requestingRevision}
 																	style={{
 																		width: '100%',
 																		padding: '6px 10px',
@@ -3454,15 +3505,16 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 																		border: `1px solid ${S.orange}`,
 																		background: '#92400e20',
 																		color: S.orange,
-																		cursor: 'pointer',
+																		cursor: shotstackJob.requestingRevision ? 'wait' : 'pointer',
 																		fontFamily: S.mono,
 																		fontSize: 9,
 																		fontWeight: 700,
 																		letterSpacing: 0.5,
+																		opacity: shotstackJob.requestingRevision ? 0.6 : 1,
 																	}}
 																	type="button"
 																>
-																	Revise &amp; Re-render{revisionCount > 0 ? ` (${revisionCount + 1}/2)` : ''}
+																	{shotstackJob.requestingRevision ? 'Generating revision...' : `Revise & Re-render${revisionCount > 0 ? ` (${revisionCount + 1}/2)` : ''}`}
 																</button>
 															)}
 														</div>
@@ -3790,9 +3842,10 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 																}}>
 																	Maximum revisions reached (2/2)
 																</div>
-															) : hasCritical && remotionJob.revisedEditPlan && (
+															) : r.overallScore < 8 && (
 																<button
 																	onClick={() => handleReviseAndRerender(platformId, 'remotion')}
+																	disabled={remotionJob.requestingRevision}
 																	style={{
 																		width: '100%',
 																		padding: '6px 10px',
@@ -3800,15 +3853,16 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 																		border: '1px solid #7c3aed',
 																		background: '#7c3aed20',
 																		color: '#a78bfa',
-																		cursor: 'pointer',
+																		cursor: remotionJob.requestingRevision ? 'wait' : 'pointer',
 																		fontFamily: S.mono,
 																		fontSize: 9,
 																		fontWeight: 700,
 																		letterSpacing: 0.5,
+																		opacity: remotionJob.requestingRevision ? 0.6 : 1,
 																	}}
 																	type="button"
 																>
-																	Revise &amp; Re-render (Enhanced){revisionCount > 0 ? ` (${revisionCount + 1}/2)` : ''}
+																	{remotionJob.requestingRevision ? 'Generating revision...' : `Revise & Re-render (Enhanced)${revisionCount > 0 ? ` (${revisionCount + 1}/2)` : ''}`}
 																</button>
 															)}
 														</div>

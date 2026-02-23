@@ -66,7 +66,7 @@ import {
 	type MusicTrack,
 } from './music';
 import { formatSceneAnalysisForPrompt } from './scene-analyzer';
-import { reviewRenderedVideo, generateRevisedEditPlan } from './video-reviewer';
+import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
 import {
 	type VideoUsageSummary,
 	type ClipUsageRecord,
@@ -138,6 +138,7 @@ const AgentInput = s.object({
 	reviewUrl: s.string().optional(), // Shotstack download URL of rendered video
 	originalEditPlan: s.any().optional(), // The edit plan that produced this render
 	autoRevise: s.boolean().optional(), // Whether to auto-generate a revised edit plan
+	review: s.any().optional(), // Previous review data for generate-revision task
 
 	// Internal: passed by API route for proxy URL construction
 	appUrl: s.string().optional(),
@@ -702,14 +703,16 @@ const agent = createAgent('video-editor', {
 
 				let revisedPlan: Record<string, unknown> | null = null;
 
-				// Auto-revise if requested and there are critical/warning issues
+				// Auto-revise if requested and score is below threshold or has significant issues
 				if (autoRevise && originalPlan) {
 					const hasSignificantIssues = review.issues.some(
 						i => i.severity === 'critical' || i.severity === 'warning'
 					);
+					const scoreBelowThreshold = review.overallScore < 8;
 
-					if (hasSignificantIssues) {
-						ctx.logger.info('[video-editor] Auto-revising edit plan based on %d issues...', review.issues.length);
+					if (hasSignificantIssues || scoreBelowThreshold) {
+						ctx.logger.info('[video-editor] Auto-revising edit plan: score=%d/10, issues=%d (significant=%s)...',
+							review.overallScore, review.issues.length, hasSignificantIssues);
 
 						// Build footage context from catalog for the original clips
 						const catalog = loadExistingCatalog();
@@ -731,6 +734,22 @@ const agent = createAgent('video-editor', {
       * Scene Changes: [${sceneChanges}]
       * High-Action Moments: [${highMotion}]
       * Recommended Hooks: [${hooks}]`;
+
+									// Include scene descriptions if available
+									if (sa.sceneDescriptions && Array.isArray(sa.sceneDescriptions)) {
+										const descLines = sa.sceneDescriptions.map((d: any) =>
+											`      * ${d.timestamp.toFixed(1)}s: [${d.isAction ? 'ACTION' : 'NON-ACTION'}] ${d.description} (energy: ${d.energyLevel}/5, type: ${d.actionType || '?'})`
+										).join('\n');
+										sceneTimestamps += `\n    Content at timestamps (GPT-4o confirmed):\n${descLines}`;
+
+										// Highlight best action timestamps
+										const bestAction = sa.sceneDescriptions
+											.filter((d: any) => d.isAction && d.energyLevel >= 4)
+											.map((d: any) => `${d.timestamp.toFixed(1)}s`);
+										if (bestAction.length > 0) {
+											sceneTimestamps += `\n    ⭐ BEST ACTION for trimStart: [${bestAction.join(', ')}]`;
+										}
+									}
 								}
 
 								return `Clip ${index + 1}: ${clip.filename || clip.fileId}
@@ -756,7 +775,7 @@ const agent = createAgent('video-editor', {
 							ctx.logger.warn('[video-editor] Failed to generate revised edit plan');
 						}
 					} else {
-						ctx.logger.info('[video-editor] No critical/warning issues — skipping auto-revise');
+						ctx.logger.info('[video-editor] Score %d/10 >= 8 and no critical/warning issues — skipping auto-revise', review.overallScore);
 					}
 				}
 
@@ -770,6 +789,90 @@ const agent = createAgent('video-editor', {
 				const msg = err instanceof Error ? err.message : String(err);
 				ctx.logger.error('[video-editor] Review failed: %s', msg);
 				return { success: false, error: 'Video review failed: ' + msg };
+			}
+		}
+
+		// --- Generate revision on demand (when auto-revise didn't produce one) ---
+		if (task === 'generate-revision') {
+			const platform = input.platform || 'tiktok';
+			const editMode = input.editMode || 'game_day';
+			const originalPlan = (input.originalEditPlan && typeof input.originalEditPlan === 'object')
+				? input.originalEditPlan as Record<string, unknown>
+				: null;
+			const reviewData = (input.review && typeof input.review === 'object')
+				? input.review as VideoReview
+				: null;
+
+			if (!reviewData || !originalPlan) {
+				return { success: false, error: 'review and originalEditPlan are required for generate-revision' };
+			}
+
+			ctx.logger.info('[video-editor] On-demand revision: platform=%s, mode=%s, score=%d/10',
+				platform, editMode, reviewData.overallScore);
+
+			try {
+				// Build footage context from catalog for the original clips
+				const catalog = loadExistingCatalog();
+				const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
+				const originalClips = Array.isArray(originalPlan.clips) ? originalPlan.clips as Array<{ fileId: string; filename?: string; trimStart?: number; duration?: number; purpose?: string }> : [];
+
+				const footageContext = originalClips.map((clip, index) => {
+					const ce = catalogMap.get(clip.fileId);
+					if (ce) {
+						let sceneTimestamps = '';
+						if (ce.sceneAnalysis) {
+							const sa = ce.sceneAnalysis;
+							const sceneChanges = sa.sceneChanges?.map((sc: any) => typeof sc === 'number' ? `${sc.toFixed(1)}s` : `${(sc.timestamp || sc).toFixed?.(1) || sc}s`).join(', ') || 'none';
+							const highMotion = sa.highMotionMoments?.map((hm: any) => typeof hm === 'number' ? `${hm.toFixed(1)}s` : `${(hm.timestamp || hm).toFixed?.(1) || hm}s`).join(', ') || 'none';
+							const hooks = sa.recommendedHooks?.map((h: any) => typeof h === 'number' ? `${h.toFixed(1)}s` : `${(h.timestamp || h).toFixed?.(1) || h}s`).join(', ') || 'none';
+							sceneTimestamps = `
+    Available trim points (USE THESE for trimStart changes):
+      * Scene Changes: [${sceneChanges}]
+      * High-Action Moments: [${highMotion}]
+      * Recommended Hooks: [${hooks}]`;
+
+							// Include scene descriptions if available
+							if ((sa as any).sceneDescriptions && Array.isArray((sa as any).sceneDescriptions)) {
+								const descs = (sa as any).sceneDescriptions as Array<{ timestamp: number; description: string; isAction: boolean; actionType?: string; energyLevel: number }>;
+								const descLines = descs.map(d =>
+									`      * ${d.timestamp.toFixed(1)}s: [${d.isAction ? 'ACTION' : 'NON-ACTION'}] ${d.description} (energy: ${d.energyLevel}/5, type: ${d.actionType || '?'})`
+								).join('\n');
+								sceneTimestamps += `\n    Content at timestamps:\n${descLines}`;
+							}
+						}
+
+						return `Clip ${index + 1}: ${clip.filename || clip.fileId}
+  - Current: trimStart=${clip.trimStart || 0}s, duration=${clip.duration || 'default'}s, purpose="${clip.purpose || 'unspecified'}"
+  - Source Duration: ${ce.duration || 'unknown'}
+  - Description: ${ce.activity}
+  - Location: ${ce.suspectedLocation}
+  - Content Type: ${ce.contentType}
+  - Quality: ${ce.quality}
+  - Notable: ${ce.notableMoments || 'None'}${sceneTimestamps}`;
+					}
+					return `Clip ${index + 1}: ${clip.filename || clip.fileId}
+  - Current: trimStart=${clip.trimStart || 0}s, duration=${clip.duration || 'default'}s
+  — no catalog data`;
+				}).join('\n\n');
+
+				const revisedPlan = await generateRevisedEditPlan(reviewData, originalPlan, footageContext, editMode, platform);
+
+				if (revisedPlan) {
+					ctx.logger.info('[video-editor] On-demand revision generated with %d clips',
+						Array.isArray(revisedPlan.clips) ? revisedPlan.clips.length : 0);
+					return {
+						success: true,
+						revisedEditPlanData: revisedPlan,
+						message: `Revision generated: ${Array.isArray(revisedPlan.clips) ? revisedPlan.clips.length : 0} clips`,
+					};
+				} else {
+					ctx.logger.warn('[video-editor] On-demand revision failed to generate');
+					return { success: false, error: 'Failed to generate revised edit plan — GPT-4o did not return valid JSON' };
+				}
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.logger.error('[video-editor] On-demand revision failed: %s', msg);
+				return { success: false, error: 'Revision generation failed: ' + msg };
 			}
 		}
 
@@ -1454,6 +1557,127 @@ IMPORTANT JSON RULES:
 					tags: e.semanticTags?.slice(0, 10),
 				})),
 			};
+		}
+
+		// --- Describe scene timestamps with GPT-4o vision ---
+		if (task === 'describe-scenes') {
+			const videoId = input.videoId;
+			const catalog = loadExistingCatalog();
+
+			if (videoId) {
+				// Single video mode
+				const entry = catalog.find(e => e.fileId === videoId);
+				if (!entry) {
+					return { success: false, error: `Video ${videoId} not found in catalog` };
+				}
+				if (!entry.sceneAnalysis || entry.sceneAnalysis.sceneChanges.length === 0) {
+					return { success: false, error: `Video ${videoId} has no scene analysis data. Run analyze-scenes first.` };
+				}
+				if (entry.sceneAnalysis.sceneDescriptions && entry.sceneAnalysis.sceneDescriptions.length > 0) {
+					return { success: true, message: `Video ${entry.filename} already has ${entry.sceneAnalysis.sceneDescriptions.length} scene descriptions`, catalog: [entry] };
+				}
+
+				ctx.logger.info('[video-editor] Describing scenes for: %s (%s)', entry.filename, videoId);
+
+				try {
+					const { describeSceneTimestamps } = await import('./scene-analyzer');
+					const { downloadVideo } = await import('./google-drive');
+					const fs = await import('fs');
+					const path = await import('path');
+
+					const tempDir = path.join(process.cwd(), '.temp-cataloger');
+					if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+					const videoPath = path.join(tempDir, `describe_${videoId}.mp4`);
+
+					await downloadVideo(videoId, videoPath);
+					const descriptions = await describeSceneTimestamps(videoPath, entry.sceneAnalysis as any, 6);
+
+					// Clean up
+					try { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); } catch { /* best effort */ }
+
+					if (descriptions.length > 0) {
+						(entry.sceneAnalysis as any).sceneDescriptions = descriptions;
+						const { saveCatalog: saveCat } = await import('./google-drive');
+						await saveCat(catalog);
+
+						const actionCount = descriptions.filter(d => d.isAction).length;
+						ctx.logger.info('[video-editor] Scene descriptions for %s: %d total, %d action, %d non-action',
+							entry.filename, descriptions.length, actionCount, descriptions.length - actionCount);
+
+						return {
+							success: true,
+							message: `Described ${descriptions.length} scene timestamps for ${entry.filename}: ${actionCount} action, ${descriptions.length - actionCount} non-action`,
+							descriptions,
+						};
+					} else {
+						return { success: false, error: 'Could not generate scene descriptions — GPT-4o returned no valid data' };
+					}
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					ctx.logger.error('[video-editor] Scene description failed for %s: %s', entry.filename, msg);
+					return { success: false, error: 'Scene description failed: ' + msg };
+				}
+			} else {
+				// Batch mode — describe all videos that have scene analysis but no descriptions
+				const needsDescription = catalog.filter(e =>
+					e.sceneAnalysis &&
+					e.sceneAnalysis.sceneChanges.length > 0 &&
+					(!e.sceneAnalysis.sceneDescriptions || e.sceneAnalysis.sceneDescriptions.length === 0)
+				);
+
+				if (needsDescription.length === 0) {
+					const alreadyDone = catalog.filter(e => e.sceneAnalysis?.sceneDescriptions && e.sceneAnalysis.sceneDescriptions.length > 0).length;
+					return { success: true, message: `All ${alreadyDone} videos with scene analysis already have descriptions. Nothing to do.` };
+				}
+
+				ctx.logger.info('[video-editor] Batch describing scenes for %d videos', needsDescription.length);
+
+				let described = 0;
+				let failed = 0;
+				for (const entry of needsDescription) {
+					try {
+						const { describeSceneTimestamps } = await import('./scene-analyzer');
+						const { downloadVideo } = await import('./google-drive');
+						const fs = await import('fs');
+						const path = await import('path');
+
+						const tempDir = path.join(process.cwd(), '.temp-cataloger');
+						if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+						const videoPath = path.join(tempDir, `describe_${entry.fileId}.mp4`);
+
+						await downloadVideo(entry.fileId, videoPath);
+						const descriptions = await describeSceneTimestamps(videoPath, entry.sceneAnalysis as any, 6);
+
+						try { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); } catch { /* best effort */ }
+
+						if (descriptions.length > 0) {
+							(entry.sceneAnalysis as any).sceneDescriptions = descriptions;
+							described++;
+							ctx.logger.info('[video-editor] Described %s: %d timestamps (%d/%d)',
+								entry.filename, descriptions.length, described, needsDescription.length);
+						} else {
+							failed++;
+						}
+					} catch (err) {
+						failed++;
+						ctx.logger.warn('[video-editor] Scene description failed for %s: %s', entry.filename, err);
+					}
+				}
+
+				// Save all at once
+				if (described > 0) {
+					const { saveCatalog: saveCat } = await import('./google-drive');
+					await saveCat(catalog);
+				}
+
+				return {
+					success: true,
+					message: `Described scenes for ${described}/${needsDescription.length} videos (${failed} failed)`,
+					described,
+					failed,
+					total: needsDescription.length,
+				};
+			}
 		}
 
 		// --- Search catalog by semantic query ---

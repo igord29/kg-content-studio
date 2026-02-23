@@ -87,6 +87,15 @@ export interface CatalogEntry {
     highMotionMoments: number[];
     quietMoments: number[];
     recommendedHooks: number[];
+    sceneDescriptions?: Array<{
+      timestamp: number;
+      description: string;
+      isAction: boolean;
+      actionType?: string;
+      energyLevel: number;
+      visualQuality: number;
+      hookPotential: boolean;
+    }>;
   };
   semanticTags?: string[];
 }

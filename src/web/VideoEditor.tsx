@@ -876,6 +876,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	// Ref to hold latest triggerReview so pollRenderStatus can call it stably
 	const triggerReviewRef = useRef<(downloadUrl: string, platform: string, mode: string, method?: RenderJob['method']) => void>(() => {});
 
+	// Ref to hold latest editPlanData so pollRenderStatus can access current clips for usage tracking
+	const editPlanDataRef = useRef<any>(null);
+
 	const pollRenderStatus = useCallback(async (
 		renderId: string,
 		platform: string,
@@ -936,9 +939,14 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						}
 
 						// Record clip usage for freshness tracking
+						// Use setRenderJobs updater to access current state (avoids stale closure)
 						try {
-							const usedPlan = renderJobs.find(j => j.platform === platform && j.renderId === renderId)?.usedEditPlan;
-							const planClips = usedPlan?.clips || editPlanData?.clips;
+							let planClips: any[] | undefined;
+							setRenderJobs(prev => {
+								const job = prev.find(j => j.platform === platform && j.renderId === renderId);
+								planClips = job?.usedEditPlan?.clips || editPlanDataRef.current?.clips;
+								return prev; // no state change — just reading
+							});
 							if (planClips && Array.isArray(planClips) && planClips.length > 0) {
 								await fetch('/api/clip-usage', {
 									method: 'POST',
@@ -951,6 +959,18 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 										clips: planClips,
 									}),
 								});
+								// Refresh usage summary state after recording
+								try {
+									const usageResp = await fetch('/api/clip-usage');
+									const usageData = await usageResp.json();
+									if (usageData.entries && Array.isArray(usageData.entries)) {
+										const map = new Map<string, typeof usageData.entries[0]>();
+										for (const entry of usageData.entries) {
+											map.set(entry.fileId, entry);
+										}
+										setUsageSummaryMap(map);
+									}
+								} catch { /* best-effort refresh */ }
 							}
 						} catch {
 							// best-effort — don't block the UI
@@ -1034,6 +1054,8 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 	// Keep the ref in sync with the latest triggerReview
 	triggerReviewRef.current = triggerReview;
+	// Keep editPlanData ref in sync so pollRenderStatus can access current clips
+	editPlanDataRef.current = editPlanData;
 
 	const handleRenderPlatform = useCallback(async (platform: string, method: 'shotstack' | 'ffmpeg' | 'remotion') => {
 		// Capture the current edit plan at the moment of render submission

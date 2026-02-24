@@ -1049,25 +1049,36 @@ const agent = createAgent('video-editor', {
 				const { analyzeVideoScenes } = await import('./scene-analyzer');
 				const analysis = await analyzeVideoScenes(videoId, videoId);
 
-				// Update catalog entry with scene data
-				const updatedEntry = updateCatalogEntry(videoId, {} as any);
-				if (updatedEntry) {
-					// Directly update the scene analysis on the entry and re-persist
+				// Update catalog entry with scene data and persist to Google Drive
+				const catalog = loadExistingCatalog();
+				const idx = catalog.findIndex(e => e.fileId === videoId);
+				let updatedEntry = idx !== -1 ? catalog[idx] : undefined;
+				if (updatedEntry && idx !== -1) {
 					updatedEntry.sceneAnalysis = analysis;
-					const catalog = loadExistingCatalog();
-					const idx = catalog.findIndex(e => e.fileId === videoId);
-					if (idx !== -1) {
-						catalog[idx] = updatedEntry;
-						const fs = await import('fs');
-						const catalogPath = await import('path');
-						const resultsPath = catalogPath.join(process.cwd(), 'catalog-results.json');
-						fs.writeFileSync(resultsPath, JSON.stringify(catalog, null, 2), 'utf-8');
+
+					// Also generate named segments immediately
+					const { generateNamedSegments: genSegs } = await import('./scene-analyzer');
+					const segments = genSegs(
+						analysis as any,
+						updatedEntry.activity || '',
+						updatedEntry.contentType || 'unknown',
+					);
+					if (segments.length > 0) {
+						(updatedEntry.sceneAnalysis as any).namedSegments = segments;
 					}
+
+					catalog[idx] = updatedEntry;
+
+					// Save to Google Drive (persistent storage)
+					const { saveCatalog: saveCat } = await import('./google-drive');
+					await saveCat(catalog);
+					ctx.logger.info('[video-editor] Scene analysis saved to Google Drive for: %s', videoId);
 				}
 
+				const segCount = (updatedEntry?.sceneAnalysis as any)?.namedSegments?.length || 0;
 				return {
 					success: true,
-					message: `Scene analysis complete: ${analysis.sceneChanges.length} scene changes, ${analysis.highMotionMoments.length} action moments, ${analysis.recommendedHooks.length} recommended hooks`,
+					message: `Scene analysis complete: ${analysis.sceneChanges.length} scene changes, ${analysis.highMotionMoments.length} action moments, ${analysis.recommendedHooks.length} recommended hooks, ${segCount} named segments`,
 					catalog: updatedEntry ? [updatedEntry] : [],
 				};
 			} catch (err) {
@@ -1718,7 +1729,7 @@ IMPORTANT JSON RULES:
 			let skipped = 0;
 
 			for (const entry of catalog) {
-				if (!entry.sceneAnalysis || entry.sceneAnalysis.sceneChanges.length === 0) {
+				if (!entry.sceneAnalysis || !entry.sceneAnalysis.duration || entry.sceneAnalysis.duration <= 0) {
 					skipped++;
 					continue;
 				}

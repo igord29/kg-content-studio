@@ -422,7 +422,7 @@ async function analyzeVideoFrames(
 		}
 
 		// Step 7c: Generate named segments (pure computation, no API calls)
-		if (sceneAnalysisResult && sceneAnalysisResult.sceneChanges.length > 0) {
+		if (sceneAnalysisResult && sceneAnalysisResult.duration > 0) {
 			try {
 				const { generateNamedSegments } = await import('./scene-analyzer');
 				const segments = generateNamedSegments(

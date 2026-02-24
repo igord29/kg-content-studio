@@ -601,3 +601,113 @@ export async function testConnection(): Promise<{ success: boolean; message: str
     return { success: false, message: `Connection failed: ${errorMsg}` };
   }
 }
+
+// --- Render Library (date-organized uploads) ---
+
+/**
+ * Find an existing subfolder by name, or create it if missing.
+ */
+async function findOrCreateFolder(name: string, parentId: string): Promise<string> {
+  const drive = getDrive();
+  const q = `'${parentId}' in parents and name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const res = await drive.files.list({ q, fields: 'files(id)', pageSize: 1 });
+  const existing = res.data.files?.[0]?.id;
+  if (existing) {
+    return existing;
+  }
+  return createFolder(name, parentId);
+}
+
+/**
+ * Get or create a date-organized folder: Renders/YYYY/MM
+ * Returns the month folder ID.
+ */
+export async function getOrCreateDateFolder(rootFolderId?: string): Promise<{ folderId: string; path: string }> {
+  const root = rootFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+  if (!root) throw new Error('GOOGLE_DRIVE_FOLDER_ID not set');
+
+  const now = new Date();
+  const year = String(now.getFullYear());
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+
+  const rendersFolderId = await findOrCreateFolder('Renders', root);
+  const yearFolderId = await findOrCreateFolder(year, rendersFolderId);
+  const monthFolderId = await findOrCreateFolder(month, yearFolderId);
+
+  return { folderId: monthFolderId, path: `Renders/${year}/${month}` };
+}
+
+/**
+ * Download a video from a URL and upload it to Google Drive.
+ * Used for saving rendered videos from S3 back to Drive.
+ */
+export async function uploadVideoFromUrl(
+  url: string,
+  filename: string,
+  parentFolderId: string,
+): Promise<{ fileId: string; webViewLink: string }> {
+  // Fetch the video from the remote URL
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to fetch video: ${response.status} ${response.statusText}`);
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const { Readable } = await import('stream');
+  const stream = Readable.from(buffer);
+
+  const drive = getDrive();
+  const driveRes = await drive.files.create({
+    requestBody: {
+      name: filename,
+      mimeType: 'video/mp4',
+      parents: [parentFolderId],
+    },
+    media: {
+      mimeType: 'video/mp4',
+      body: stream,
+    },
+    fields: 'id, webViewLink',
+  });
+
+  return {
+    fileId: driveRes.data.id!,
+    webViewLink: driveRes.data.webViewLink || `https://drive.google.com/file/d/${driveRes.data.id}/view`,
+  };
+}
+
+/**
+ * Upload a video file (Buffer) directly to Google Drive.
+ * Used for user-uploaded videos via the Quick Edit feature.
+ */
+export async function uploadVideoFile(
+  buffer: Buffer,
+  filename: string,
+  parentFolderId?: string,
+): Promise<{ fileId: string; filename: string; webViewLink: string }> {
+  const root = parentFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+  if (!root) throw new Error('GOOGLE_DRIVE_FOLDER_ID not set');
+
+  const uploadsFolderId = await findOrCreateFolder('Quick Uploads', root);
+
+  const { Readable } = await import('stream');
+  const stream = Readable.from(buffer);
+
+  const drive = getDrive();
+  const driveRes = await drive.files.create({
+    requestBody: {
+      name: filename,
+      mimeType: 'video/mp4',
+      parents: [uploadsFolderId],
+    },
+    media: {
+      mimeType: 'video/mp4',
+      body: stream,
+    },
+    fields: 'id, webViewLink',
+  });
+
+  return {
+    fileId: driveRes.data.id!,
+    filename,
+    webViewLink: driveRes.data.webViewLink || `https://drive.google.com/file/d/${driveRes.data.id}/view`,
+  };
+}

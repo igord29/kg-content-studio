@@ -13,6 +13,7 @@ import donorResearcher from '../agent/donor-researcher';
 import venueProspector from '../agent/venue-prospector';
 import { sendToMakeWebhook, getConfiguredWebhooks } from '../agent/content-creator/webhooks';
 import { createDriveProxyToken, verifyDriveProxyToken } from '../agent/video-editor/drive-proxy';
+import { uploadVideoFile } from '../agent/video-editor/google-drive';
 import {
 	type ClipUsageRecord,
 	type VideoUsageSummary,
@@ -351,6 +352,36 @@ api.delete('/video-library/:id', async (c) => {
 
 	await c.var.thread.state.set('video-library', filtered);
 	return c.json({ success: true, remaining: filtered.length });
+});
+
+// --- Upload Video (Quick Edit) ---
+
+// Upload a video file directly to Google Drive for instant editing
+api.post('/upload-video', async (c) => {
+	try {
+		const formData = await c.req.formData();
+		const file = formData.get('video');
+
+		if (!file || !(file instanceof File)) {
+			return c.json({ success: false, error: 'No video file provided' }, 400);
+		}
+
+		const buffer = Buffer.from(await file.arrayBuffer());
+		const filename = file.name || `upload_${Date.now()}.mp4`;
+
+		const result = await uploadVideoFile(buffer, filename);
+
+		return c.json({
+			success: true,
+			fileId: result.fileId,
+			filename: result.filename,
+			webViewLink: result.webViewLink,
+		});
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error('[upload-video] Error: %s', msg);
+		return c.json({ success: false, error: 'Upload failed: ' + msg }, 500);
+	}
 });
 
 // --- Clip Usage Tracking ---

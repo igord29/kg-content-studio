@@ -627,6 +627,12 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	// Render state
 	const [renderJobs, setRenderJobs] = useState<RenderJob[]>([]);
 	const [renderingAll, setRenderingAll] = useState(false);
+	// Save-to-Drive state: tracks which renders are being saved / already saved
+	const [driveSaveStatus, setDriveSaveStatus] = useState<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({});
+	const [driveSaveLinks, setDriveSaveLinks] = useState<Record<string, string>>({});
+	// Quick Edit upload state
+	const [quickEditStatus, setQuickEditStatus] = useState<'idle' | 'uploading' | 'analyzing' | 'ready' | 'error'>('idle');
+	const [quickEditError, setQuickEditError] = useState<string | null>(null);
 	const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
 	const [shotstackConnected, setShotstackConnected] = useState<boolean | null>(null);
 	const [remotionAvailable, setRemotionAvailable] = useState<boolean | null>(null);
@@ -1402,6 +1408,92 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		}
 	}, []);
 
+	// --- Save to Google Drive handler ---
+
+	const handleSaveToDrive = useCallback(async (downloadUrl: string, renderId: string, platform: string, editMode: string) => {
+		const key = renderId || downloadUrl;
+		setDriveSaveStatus(prev => ({ ...prev, [key]: 'saving' }));
+		try {
+			const res = await fetch('/api/video-editor', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					task: 'save-render-to-drive',
+					downloadUrl,
+					renderId,
+					platform,
+					editMode,
+					topic: topic || 'CLC',
+				}),
+			});
+			const data = await res.json();
+			if (data.success && data.webViewLink) {
+				setDriveSaveStatus(prev => ({ ...prev, [key]: 'saved' }));
+				setDriveSaveLinks(prev => ({ ...prev, [key]: data.webViewLink }));
+			} else {
+				console.error('[VideoEditor] Save to Drive failed:', data.error);
+				setDriveSaveStatus(prev => ({ ...prev, [key]: 'error' }));
+			}
+		} catch (err) {
+			console.error('[VideoEditor] Save to Drive error:', err);
+			setDriveSaveStatus(prev => ({ ...prev, [key]: 'error' }));
+		}
+	}, [topic]);
+
+	// --- Quick Edit upload handler ---
+
+	const handleQuickEditUpload = useCallback(async (file: File) => {
+		setQuickEditStatus('uploading');
+		setQuickEditError(null);
+
+		try {
+			// Step 1: Upload video to Google Drive
+			const formData = new FormData();
+			formData.append('video', file);
+
+			const uploadRes = await fetch('/api/upload-video', {
+				method: 'POST',
+				body: formData,
+			});
+			const uploadData = await uploadRes.json();
+
+			if (!uploadData.success || !uploadData.fileId) {
+				throw new Error(uploadData.error || 'Upload failed');
+			}
+
+			// Step 2: Run instant-edit pipeline (analyze + segment + catalog)
+			setQuickEditStatus('analyzing');
+
+			const platformArr = Array.from(enabledPlatforms);
+			const editRes = await fetch('/api/video-editor', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					task: 'instant-edit',
+					videoId: uploadData.fileId,
+					topic: topic || 'Quick Edit',
+					platform: platformArr[0] || 'tiktok',
+					editMode: selectedMode === 'auto' ? 'game_day' : selectedMode,
+				}),
+			});
+			const editData = await editRes.json();
+
+			if (!editData.success) {
+				throw new Error(editData.error || 'Analysis failed');
+			}
+
+			// Step 3: Add to selected videos and refresh the library
+			setQuickEditStatus('ready');
+			setSelectedIds(prev => new Set([...prev, uploadData.fileId]));
+			await loadVideos(); // refresh to show new video in library
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			console.error('[VideoEditor] Quick edit error:', msg);
+			setQuickEditError(msg);
+			setQuickEditStatus('error');
+		}
+	}, [topic, selectedMode, enabledPlatforms, loadVideos]);
+
 	// --- Catalog handlers ---
 
 	const handleRunFullCatalog = useCallback(async () => {
@@ -1872,6 +1964,71 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 								)}
 							</div>
 						)}
+
+						{/* Quick Edit Upload Zone */}
+						<div
+							onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+							onDrop={(e) => {
+								e.preventDefault();
+								e.stopPropagation();
+								const file = e.dataTransfer.files[0];
+								if (file && file.type.startsWith('video/')) handleQuickEditUpload(file);
+							}}
+							style={{
+								marginBottom: 8,
+								padding: quickEditStatus === 'idle' ? '10px' : '8px 10px',
+								borderRadius: 6,
+								border: `1px dashed ${quickEditStatus === 'error' ? '#b71414' : quickEditStatus === 'ready' ? S.accent : '#1a73e8'}`,
+								background: quickEditStatus === 'error' ? '#b7141410' : quickEditStatus === 'ready' ? '#2D6A4F10' : '#1a73e808',
+								textAlign: 'center',
+								cursor: quickEditStatus === 'idle' ? 'pointer' : 'default',
+							}}
+							onClick={() => {
+								if (quickEditStatus !== 'idle' && quickEditStatus !== 'error') return;
+								const input = document.createElement('input');
+								input.type = 'file';
+								input.accept = 'video/*';
+								input.onchange = () => {
+									const file = input.files?.[0];
+									if (file) handleQuickEditUpload(file);
+								};
+								input.click();
+							}}
+						>
+							{quickEditStatus === 'idle' && (
+								<div style={{ fontFamily: S.mono, fontSize: 9, color: '#8ab4f8' }}>
+									Quick Edit — Drop video or click to upload
+								</div>
+							)}
+							{quickEditStatus === 'uploading' && (
+								<div style={{ fontFamily: S.mono, fontSize: 9, color: '#8ab4f8' }}>
+									Uploading to Drive...
+								</div>
+							)}
+							{quickEditStatus === 'analyzing' && (
+								<div style={{ fontFamily: S.mono, fontSize: 9, color: S.orange }}>
+									Analyzing scenes & generating segments...
+								</div>
+							)}
+							{quickEditStatus === 'ready' && (
+								<div style={{ fontFamily: S.mono, fontSize: 9, color: S.accentLight }}>
+									Video analyzed & added to selection — generate an edit plan!
+									<span
+										style={{ marginLeft: 6, cursor: 'pointer', color: S.textMuted }}
+										onClick={(e) => { e.stopPropagation(); setQuickEditStatus('idle'); }}
+									>dismiss</span>
+								</div>
+							)}
+							{quickEditStatus === 'error' && (
+								<div style={{ fontFamily: S.mono, fontSize: 9, color: '#ff6b6b' }}>
+									{quickEditError || 'Upload failed'} —{' '}
+									<span
+										style={{ cursor: 'pointer', textDecoration: 'underline' }}
+										onClick={(e) => { e.stopPropagation(); setQuickEditStatus('idle'); setQuickEditError(null); }}
+									>try again</span>
+								</div>
+							)}
+						</div>
 
 						{/* Search + Smart Select */}
 						<div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
@@ -3341,25 +3498,56 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 													</div>
 												)}
 												{shotstackJob?.downloadUrl && (
-													<a
-														href={shotstackJob.downloadUrl}
-														target="_blank"
-														rel="noopener noreferrer"
-														style={{
-															display: 'inline-block',
-															padding: '4px 10px',
-															borderRadius: 4,
-															background: '#2D6A4F20',
-															border: `1px solid ${S.accent}`,
-															color: S.accentLight,
-															fontFamily: S.mono,
-															fontSize: 9,
-															textDecoration: 'none',
-															marginRight: 6,
-														}}
-													>
-														Download
-													</a>
+													<>
+														<a
+															href={shotstackJob.downloadUrl}
+															target="_blank"
+															rel="noopener noreferrer"
+															style={{
+																display: 'inline-block',
+																padding: '4px 10px',
+																borderRadius: 4,
+																background: '#2D6A4F20',
+																border: `1px solid ${S.accent}`,
+																color: S.accentLight,
+																fontFamily: S.mono,
+																fontSize: 9,
+																textDecoration: 'none',
+																marginRight: 6,
+															}}
+														>
+															Download
+														</a>
+														{(() => {
+															const key = shotstackJob.renderId || shotstackJob.downloadUrl || '';
+															const status = driveSaveStatus[key] || 'idle';
+															const link = driveSaveLinks[key];
+															if (status === 'saved' && link) {
+																return (
+																	<a href={link} target="_blank" rel="noopener noreferrer" style={{
+																		display: 'inline-block', padding: '4px 10px', borderRadius: 4,
+																		background: '#1a73e820', border: '1px solid #1a73e8', color: '#8ab4f8',
+																		fontFamily: S.mono, fontSize: 9, textDecoration: 'none', marginRight: 6,
+																	}}>Saved to Drive</a>
+																);
+															}
+															return (
+																<button
+																	onClick={() => handleSaveToDrive(shotstackJob.downloadUrl!, shotstackJob.renderId || '', platformId, selectedMode === 'auto' ? 'game_day' : selectedMode)}
+																	disabled={status === 'saving'}
+																	style={{
+																		padding: '4px 10px', borderRadius: 4, cursor: status === 'saving' ? 'wait' : 'pointer',
+																		background: status === 'error' ? '#b7141420' : '#1a73e815',
+																		border: `1px solid ${status === 'error' ? '#b71414' : '#1a73e8'}`,
+																		color: status === 'error' ? '#ff6b6b' : '#8ab4f8',
+																		fontFamily: S.mono, fontSize: 9, marginRight: 6,
+																	}}
+																>
+																	{status === 'saving' ? 'Saving...' : status === 'error' ? 'Retry Save' : 'Save to Drive'}
+																</button>
+															);
+														})()}
+													</>
 												)}
 
 												{/* AI Review section */}
@@ -3689,25 +3877,56 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 													</div>
 												)}
 												{remotionJob?.downloadUrl && (
-													<a
-														href={remotionJob.downloadUrl}
-														target="_blank"
-														rel="noopener noreferrer"
-														style={{
-															display: 'inline-block',
-															padding: '4px 10px',
-															borderRadius: 4,
-															background: '#7c3aed20',
-															border: '1px solid #7c3aed',
-															color: '#a78bfa',
-															fontFamily: S.mono,
-															fontSize: 9,
-															textDecoration: 'none',
-															marginRight: 6,
-														}}
-													>
-														Download (Enhanced)
-													</a>
+													<>
+														<a
+															href={remotionJob.downloadUrl}
+															target="_blank"
+															rel="noopener noreferrer"
+															style={{
+																display: 'inline-block',
+																padding: '4px 10px',
+																borderRadius: 4,
+																background: '#7c3aed20',
+																border: '1px solid #7c3aed',
+																color: '#a78bfa',
+																fontFamily: S.mono,
+																fontSize: 9,
+																textDecoration: 'none',
+																marginRight: 6,
+															}}
+														>
+															Download (Enhanced)
+														</a>
+														{(() => {
+															const key = remotionJob.renderId || remotionJob.downloadUrl || '';
+															const status = driveSaveStatus[key] || 'idle';
+															const link = driveSaveLinks[key];
+															if (status === 'saved' && link) {
+																return (
+																	<a href={link} target="_blank" rel="noopener noreferrer" style={{
+																		display: 'inline-block', padding: '4px 10px', borderRadius: 4,
+																		background: '#1a73e820', border: '1px solid #1a73e8', color: '#8ab4f8',
+																		fontFamily: S.mono, fontSize: 9, textDecoration: 'none', marginRight: 6,
+																	}}>Saved to Drive</a>
+																);
+															}
+															return (
+																<button
+																	onClick={() => handleSaveToDrive(remotionJob.downloadUrl!, remotionJob.renderId || '', platformId, selectedMode === 'auto' ? 'game_day' : selectedMode)}
+																	disabled={status === 'saving'}
+																	style={{
+																		padding: '4px 10px', borderRadius: 4, cursor: status === 'saving' ? 'wait' : 'pointer',
+																		background: status === 'error' ? '#b7141420' : '#1a73e815',
+																		border: `1px solid ${status === 'error' ? '#b71414' : '#1a73e8'}`,
+																		color: status === 'error' ? '#ff6b6b' : '#8ab4f8',
+																		fontFamily: S.mono, fontSize: 9, marginRight: 6,
+																	}}
+																>
+																	{status === 'saving' ? 'Saving...' : status === 'error' ? 'Retry Save' : 'Save to Drive'}
+																</button>
+															);
+														})()}
+													</>
 												)}
 
 												{/* Enhanced AI Review section */}

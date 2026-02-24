@@ -30,6 +30,9 @@ import {
 	saveCatalog,
 	createCatalogFolderStructure,
 	testConnection,
+	getOrCreateDateFolder,
+	uploadVideoFromUrl,
+	uploadVideoFile,
 	type VideoFile,
 	type CatalogEntry,
 } from './google-drive';
@@ -79,7 +82,7 @@ import {
 
 const AgentInput = s.object({
 	// Task type: determines which workflow to run
-	task: s.string().optional(), // 'list-videos' | 'folder-summary' | 'catalog' | 'edit' | 'render' | 'render-status' | 'render-local' | 'download-render' | 'test-connection' | 'test-shotstack' | 'legacy'
+	task: s.string().optional(), // 'list-videos' | 'folder-summary' | 'catalog' | 'edit' | 'render' | 'render-status' | 'save-render-to-drive' | 'instant-edit' | 'render-local' | 'download-render' | 'test-connection' | 'test-shotstack' | 'legacy'
 
 	// Legacy fields (original video-editor interface)
 	videoType: s.string().optional(), // 'highlight', 'intro', 'recap', 'testimonial', 'promo', 'story'
@@ -156,6 +159,9 @@ const AgentInput = s.object({
 	// Music fields
 	musicUrl: s.string().optional(),
 	musicDisabled: s.boolean().optional(),
+
+	// Save-render-to-drive fields
+	downloadUrl: s.string().optional(),
 });
 
 const AgentOutput = s.object({
@@ -196,6 +202,11 @@ const AgentOutput = s.object({
 	// Review output fields
 	review: s.any().optional(),
 	revisedEditPlanData: s.any().optional(),
+
+	// Drive save output fields
+	fileId: s.string().optional(),
+	webViewLink: s.string().optional(),
+	folderPath: s.string().optional(),
 
 	// Legacy output fields
 	videoScript: s.string().optional(),
@@ -680,6 +691,137 @@ const agent = createAgent('video-editor', {
 					success: false,
 					error: 'Status check failed: ' + (err instanceof Error ? err.message : String(err)),
 				};
+			}
+		}
+
+		// --- Save render to Google Drive ---
+		if (task === 'save-render-to-drive') {
+			const url = input.downloadUrl as string | undefined;
+			const renderId = input.renderId || `render_${Date.now()}`;
+			const platform = input.platform || 'tiktok';
+			const editMode = input.editMode || 'game_day';
+			const topic = input.topic || 'CLC';
+
+			if (!url) {
+				return { success: false, error: 'downloadUrl is required' };
+			}
+
+			ctx.logger.info('[save-render-to-drive] Saving render %s to Drive: platform=%s, mode=%s', renderId, platform, editMode);
+
+			try {
+				const { folderId, path: folderPath } = await getOrCreateDateFolder();
+				const now = new Date();
+				const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+				const safeTopic = topic.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 40);
+				const filename = `CLC_${safeTopic}_${platform}_${editMode}_${ts}.mp4`;
+
+				const result = await uploadVideoFromUrl(url, filename, folderId);
+
+				ctx.logger.info('[save-render-to-drive] Saved to Drive: fileId=%s, folder=%s', result.fileId, folderPath);
+
+				return {
+					success: true,
+					message: `Video saved to Google Drive: ${folderPath}/${filename}`,
+					fileId: result.fileId,
+					webViewLink: result.webViewLink,
+					folderPath,
+					filename,
+				};
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.logger.error('[save-render-to-drive] Failed: %s', msg);
+				return { success: false, error: 'Failed to save render to Drive: ' + msg };
+			}
+		}
+
+		// --- Instant edit: upload → analyze → segment → generate edit plan ---
+		if (task === 'instant-edit') {
+			const videoId = input.videoId;
+			const platform = input.platform || 'tiktok';
+			const editMode = input.editMode || 'game_day';
+			const topic = input.topic || 'CLC Quick Edit';
+
+			if (!videoId) {
+				return { success: false, error: 'videoId is required for instant-edit' };
+			}
+
+			ctx.logger.info('[instant-edit] Starting pipeline for video %s: platform=%s, mode=%s', videoId, platform, editMode);
+
+			try {
+				// Step 1: Run scene analysis (FFmpeg-based)
+				ctx.logger.info('[instant-edit] Step 1/4: Analyzing scenes...');
+				const { analyzeVideoScenes } = await import('./scene-analyzer');
+				const analysis = await analyzeVideoScenes(videoId, videoId);
+				ctx.logger.info('[instant-edit] Scene analysis done: %d changes, %d hooks', analysis.sceneChanges.length, analysis.recommendedHooks.length);
+
+				// Step 2: Generate named segments
+				ctx.logger.info('[instant-edit] Step 2/4: Generating named segments...');
+				const meta = await getVideoMetadata(videoId);
+				const vmm = (meta as any).videoMediaMetadata;
+				const segments = generateNamedSegments(
+					analysis as any,
+					topic,
+					'mixed',
+				);
+				ctx.logger.info('[instant-edit] Generated %d named segments', segments.length);
+
+				// Step 3: Save to catalog
+				ctx.logger.info('[instant-edit] Step 3/4: Saving to catalog...');
+				const catalog = loadExistingCatalog();
+				let entry = catalog.find(e => e.fileId === videoId);
+				if (!entry) {
+					// Create a minimal catalog entry for this video
+					const sugMode = (['game_day', 'our_story', 'quick_hit', 'showcase'].includes(editMode) ? editMode : 'game_day') as 'game_day' | 'our_story' | 'quick_hit' | 'showcase';
+					entry = {
+						fileId: videoId,
+						filename: meta.name || videoId,
+						suspectedLocation: 'Unknown',
+						locationConfidence: 'low' as const,
+						locationClues: '',
+						contentType: 'mixed' as const,
+						activity: `Quick edit video: ${topic}`,
+						quality: 'good' as const,
+						indoorOutdoor: 'unknown' as const,
+						duration: vmm?.durationMillis ? String(Math.round(parseInt(vmm.durationMillis) / 1000)) + 's' : 'unknown',
+						peopleCount: 'unknown',
+						readableText: '',
+						notableMoments: '',
+						suggestedModes: [sugMode],
+						needsManualReview: false,
+						reviewNotes: 'Auto-created by instant-edit',
+						sceneAnalysis: analysis as any,
+					};
+					entry.sceneAnalysis!.namedSegments = segments as any;
+					catalog.push(entry);
+				} else {
+					entry.sceneAnalysis = analysis as any;
+					entry.sceneAnalysis!.namedSegments = segments as any;
+				}
+				await saveCatalog(catalog);
+				ctx.logger.info('[instant-edit] Catalog saved with %d entries', catalog.length);
+
+				// Step 4: Return the analyzed video info so the frontend can generate an edit plan
+				ctx.logger.info('[instant-edit] Step 4/4: Pipeline complete — returning video data');
+
+				return {
+					success: true,
+					message: `Video analyzed: ${segments.length} segments found. Ready for edit plan generation.`,
+					catalog: [entry],
+					videos: [{
+						id: videoId,
+						name: meta.name || videoId,
+						mimeType: meta.mimeType,
+						size: meta.size,
+						duration: vmm?.durationMillis,
+						width: vmm?.width,
+						height: vmm?.height,
+					}],
+					count: 1,
+				};
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.logger.error('[instant-edit] Pipeline failed: %s', msg);
+				return { success: false, error: 'Instant edit failed: ' + msg };
 			}
 		}
 

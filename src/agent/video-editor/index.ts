@@ -65,7 +65,7 @@ import {
 	createCustomMusicSelection,
 	type MusicTrack,
 } from './music';
-import { formatSceneAnalysisForPrompt } from './scene-analyzer';
+import { formatSceneAnalysisForPrompt, formatSegmentTimelineForPrompt, generateNamedSegments } from './scene-analyzer';
 import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
 import {
 	type VideoUsageSummary,
@@ -148,6 +148,10 @@ const AgentInput = s.object({
 
 	// Search catalog query
 	query: s.string().optional(),
+
+	// Smart select / generate-segments
+	count: s.number().optional(),
+	force: s.boolean().optional(),
 
 	// Music fields
 	musicUrl: s.string().optional(),
@@ -1167,6 +1171,18 @@ const agent = createAgent('video-editor', {
 						needsManualReview: ce?.needsManualReview ?? true,
 						reviewNotes: ce?.reviewNotes || '',
 						semanticTags: ce?.semanticTags || [],
+						// Named segments summary for timeline visualization
+						namedSegments: ce?.sceneAnalysis?.namedSegments
+							? (ce.sceneAnalysis.namedSegments as any[]).map((s: any) => ({
+								id: s.id,
+								label: s.label,
+								startTime: s.startTime,
+								endTime: s.endTime,
+								type: s.type,
+								energy: s.energy,
+								hookPotential: s.hookPotential,
+							}))
+							: undefined,
 					};
 				}),
 			};
@@ -1380,7 +1396,7 @@ const agent = createAgent('video-editor', {
 						: (ce.readableText || 'None');
 					const totalDurSec = v.duration ? Math.round(parseInt(v.duration) / 1000) : (ce.duration ? parseInt(ce.duration) : 0);
 					const sceneSection = ce.sceneAnalysis
-						? '\n  SCENE ANALYSIS (use these real timestamps for trim points):\n' + formatSceneAnalysisForPrompt(ce.sceneAnalysis)
+						? '\n  SCENE ANALYSIS (use segment IDs and cut safety for trim points):\n' + formatSegmentTimelineForPrompt(ce.sceneAnalysis as any)
 						: `\n  ⚠️ SCENE ANALYSIS: NOT AVAILABLE — you do NOT know what happens at specific timestamps. All trim points are ESTIMATES. Spread them across the ${totalDurSec}s duration. Do NOT invent specific actions.`;
 					return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr})
   - Google Drive fileId: ${v.id}
@@ -1424,7 +1440,14 @@ Your clip purposes MUST use language directly from the catalog's Description, No
 - If catalog says "Kids participating in a tennis event" → your purpose should say "tennis event activity (estimated region)"
 - NEVER write "close-up of forehand" or "winning point celebration" unless the catalog explicitly mentions those specific moments.
 
-When scene analysis IS available (timestamps listed under SCENE ANALYSIS), you can reference high-action vs quiet moments at those specific timestamps. When it's NOT available, all trim points are ESTIMATES and you must say so.
+When NAMED SCENE SEGMENTS are available (SCENE TIMELINE with S1, S2, S3...), you MUST:
+- Reference segment IDs in your clip purposes (e.g., "hook — serve action (S2)")
+- Use each segment's bestEntryPoint as your trimStart
+- Calculate duration to reach the segment's bestExitPoint
+- Include "segment" and "editNote" fields in your clips JSON
+- NEVER violate cut safety warnings — if it says "Let action complete", your clip must not end mid-action
+- NEVER cut during dialogue without letting the speaker finish
+When segments are NOT available, fall back to timestamp-based editing. When it's NOT available, all trim points are ESTIMATES and you must say so.
 
 The user's topic "${topic}" describes what they WANT the video to be about. Select clips whose catalog descriptions MATCH that topic. If the catalog says "Kids playing tennis" and the topic asks for "redball tennis tournament", that's a reasonable match — but you still can't invent specific gameplay moments that aren't in the catalog description.
 
@@ -1471,7 +1494,7 @@ Generate:
 5. Music approach
 6. Text overlay content (aligned with Kimberly's voice, use real location names and readable text from clips)
 7. Review summary for approval
-8. REQUIRED: A structured JSON block wrapped in \`\`\`json fences containing: mode, clips (with fileId, filename, trimStart, duration, purpose), textOverlays (with text, start, duration, position), transitions, totalDuration, musicTier, and musicDirection. The render engine depends on this JSON — the edit plan is incomplete without it.
+8. REQUIRED: A structured JSON block wrapped in \`\`\`json fences containing: mode, clips (with fileId, filename, trimStart, duration, purpose, and when segments are available: segment, editNote), textOverlays (with text, start, duration, position), transitions, totalDuration, musicTier, and musicDirection. The render engine depends on this JSON — the edit plan is incomplete without it.
 
 IMPORTANT JSON RULES:
 - clips[].fileId must be the Google Drive fileId provided for each clip (a long alphanumeric string like "1aBcDeFg..."), NOT the filename.
@@ -1680,6 +1703,66 @@ IMPORTANT JSON RULES:
 			}
 		}
 
+		// --- Generate named segments for catalog entries ---
+
+		if (task === 'generate-segments') {
+			ctx.logger.info('[video-editor] Generating named segments for catalog entries');
+
+			const catalog = loadExistingCatalog();
+			if (catalog.length === 0) {
+				return { success: false, message: 'No catalog entries found' };
+			}
+
+			const forceRegenerate = input.force === true;
+			let segmented = 0;
+			let skipped = 0;
+
+			for (const entry of catalog) {
+				if (!entry.sceneAnalysis || entry.sceneAnalysis.sceneChanges.length === 0) {
+					skipped++;
+					continue;
+				}
+				// Skip if already has segments (unless force regenerate)
+				if (!forceRegenerate && entry.sceneAnalysis.namedSegments && entry.sceneAnalysis.namedSegments.length > 0) {
+					skipped++;
+					continue;
+				}
+
+				const segments = generateNamedSegments(
+					entry.sceneAnalysis as any,
+					entry.activity || '',
+					entry.contentType || 'unknown',
+				);
+				if (segments.length > 0) {
+					(entry.sceneAnalysis as any).namedSegments = segments;
+					segmented++;
+				}
+			}
+
+			// Save updated catalog
+			if (segmented > 0) {
+				const { saveCatalog: saveCat } = await import('./google-drive');
+				await saveCat(catalog);
+			}
+
+			ctx.logger.info('[video-editor] Named segments: %d generated, %d skipped', segmented, skipped);
+
+			return {
+				success: true,
+				message: `Generated named segments for ${segmented} videos (${skipped} skipped${forceRegenerate ? ', force mode' : ''})`,
+				segmentedCount: segmented,
+				skippedCount: skipped,
+				sampleSegments: catalog
+					.filter(e => e.sceneAnalysis?.namedSegments && e.sceneAnalysis.namedSegments.length > 0)
+					.slice(0, 2)
+					.map(e => ({
+						filename: e.filename,
+						segmentCount: e.sceneAnalysis!.namedSegments!.length,
+						segments: e.sceneAnalysis!.namedSegments!.map(s => `${s.id} [${s.startTime.toFixed(1)}-${s.endTime.toFixed(1)}s] ${s.type.toUpperCase()} — ${s.label.substring(0, 50)}`),
+					})),
+			};
+		}
+
 		// --- Search catalog by semantic query ---
 
 		if (task === 'search-catalog') {
@@ -1713,6 +1796,47 @@ IMPORTANT JSON RULES:
 				tokens: queryTokens,
 				results: scored.slice(0, 20),
 				totalMatches: scored.length,
+			};
+		}
+
+		// --- Smart select: AI-powered clip selection by concept ---
+
+		if (task === 'smart-select') {
+			const query = input.query || '';
+			const count = input.count || 5;
+
+			if (!query.trim()) {
+				return { success: false, message: 'Search query is required. Describe the concept (e.g., "high-energy tennis action with kids")' };
+			}
+
+			ctx.logger.info('[video-editor] Smart select: "%s" (top %d)', query, count);
+
+			const catalog = loadExistingCatalog();
+			const queryTokens = query.toLowerCase().split(/[\s,]+/).filter((t: string) => t.length > 1);
+
+			const scored = catalog
+				.map(entry => ({
+					fileId: entry.fileId,
+					filename: entry.filename,
+					activity: entry.activity,
+					location: entry.suspectedLocation,
+					contentType: entry.contentType,
+					quality: entry.quality,
+					tags: entry.semanticTags || [],
+					segmentCount: entry.sceneAnalysis?.namedSegments?.length || 0,
+					hasSegments: !!(entry.sceneAnalysis?.namedSegments && entry.sceneAnalysis.namedSegments.length > 0),
+					score: scoreSearchMatch(entry, queryTokens),
+				}))
+				.filter(r => r.score > 0)
+				.sort((a, b) => b.score - a.score)
+				.slice(0, count);
+
+			return {
+				success: true,
+				query,
+				selectedIds: scored.map(s => s.fileId),
+				selectedCount: scored.length,
+				results: scored,
 			};
 		}
 

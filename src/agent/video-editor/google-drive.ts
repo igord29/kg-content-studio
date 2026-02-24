@@ -96,6 +96,24 @@ export interface CatalogEntry {
       visualQuality: number;
       hookPotential: boolean;
     }>;
+    namedSegments?: Array<{
+      id: string;
+      label: string;
+      startTime: number;
+      endTime: number;
+      duration: number;
+      type: 'action' | 'dialogue' | 'transition' | 'establishing' | 'quiet';
+      energy: number;
+      hookPotential: boolean;
+      actionType?: string;
+      cutSafety: {
+        canCutAtStart: boolean;
+        canCutAtEnd: boolean;
+        bestEntryPoint: number;
+        bestExitPoint: number;
+        reason: string;
+      };
+    }>;
   };
   semanticTags?: string[];
 }

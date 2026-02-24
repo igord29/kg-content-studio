@@ -421,6 +421,26 @@ async function analyzeVideoFrames(
 			}
 		}
 
+		// Step 7c: Generate named segments (pure computation, no API calls)
+		if (sceneAnalysisResult && sceneAnalysisResult.sceneChanges.length > 0) {
+			try {
+				const { generateNamedSegments } = await import('./scene-analyzer');
+				const segments = generateNamedSegments(
+					sceneAnalysisResult as any,
+					analysis.activity || '',
+					mapContentType(analysis.contentType),
+				);
+				if (segments.length > 0) {
+					(sceneAnalysisResult as any).namedSegments = segments;
+					const actionSegs = segments.filter(s => s.type === 'action').length;
+					const dialogueSegs = segments.filter(s => s.type === 'dialogue').length;
+					console.log(`[cataloger] Named segments: ${segments.length} segments (${actionSegs} action, ${dialogueSegs} dialogue), full timeline coverage`);
+				}
+			} catch (err) {
+				console.warn(`[cataloger] Named segments skipped for ${video.name}: ${err}`);
+			}
+		}
+
 		// Step 8: Clean up temp files
 		cleanupTempFiles(video.id);
 
@@ -937,10 +957,11 @@ async function analyzeVideoScenesFromPath(
 	// Scene detection using FFmpeg — same logic as scene-analyzer.ts
 	// but operates on a local path instead of downloading from Drive
 
+	// Use metadata=print to capture actual scene scores instead of hardcoding
 	let sceneOutput = '';
 	try {
 		sceneOutput = execSync(
-			`ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.3)',showinfo" -f null - 2>&1`,
+			`ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.3)',metadata=print:key=lavfi.scene_score" -f null - 2>&1`,
 			{ encoding: 'utf-8', timeout: 120000 },
 		);
 	} catch (err: any) {
@@ -952,13 +973,27 @@ async function analyzeVideoScenesFromPath(
 	}
 
 	const sceneChanges: Array<{ timestamp: number; score: number }> = [];
-	const sceneRegex = /pts_time:\s*(\d+\.?\d*)/g;
+	// Parse timestamps and scores from FFmpeg output
+	const ptsRegex = /pts_time:\s*(\d+\.?\d*)/g;
+	const scoreRegex = /lavfi\.scene_score=(\d+\.?\d*)/g;
+	const timestamps: number[] = [];
+	const scores: number[] = [];
+
 	let match;
-	while ((match = sceneRegex.exec(sceneOutput)) !== null) {
+	while ((match = ptsRegex.exec(sceneOutput)) !== null) {
 		const ts = parseFloat(match[1]!);
-		if (!isNaN(ts)) {
-			sceneChanges.push({ timestamp: ts, score: 0.5 });
-		}
+		if (!isNaN(ts)) timestamps.push(ts);
+	}
+	while ((match = scoreRegex.exec(sceneOutput)) !== null) {
+		const sc = parseFloat(match[1]!);
+		if (!isNaN(sc)) scores.push(sc);
+	}
+
+	for (let i = 0; i < timestamps.length; i++) {
+		sceneChanges.push({
+			timestamp: Math.round(timestamps[i]! * 10) / 10,
+			score: Math.round((scores[i] ?? 0.5) * 1000) / 1000, // real score or fallback
+		});
 	}
 
 	const highMotionMoments = sceneChanges

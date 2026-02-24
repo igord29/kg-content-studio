@@ -30,6 +30,28 @@ export interface SceneAnalysis {
 	quietMoments: number[];          // timestamps of calm (interviews, establishing)
 	recommendedHooks: number[];      // best timestamps for opening hooks
 	sceneDescriptions?: SceneDescription[];  // GPT-4o vision descriptions at key timestamps
+	namedSegments?: NamedSegment[];  // complete timeline coverage with editorial intelligence
+}
+
+export interface CutSafety {
+	canCutAtStart: boolean;          // safe to enter this segment with a cut
+	canCutAtEnd: boolean;            // safe to exit this segment with a cut
+	bestEntryPoint: number;          // ideal trimStart within segment (seconds)
+	bestExitPoint: number;           // ideal end point within segment (seconds)
+	reason: string;                  // "action completes at 12.3s" or "speaker finishes sentence"
+}
+
+export interface NamedSegment {
+	id: string;                      // "S1", "S2", etc.
+	label: string;                   // "Coach instruction — two kids listening on court"
+	startTime: number;               // seconds
+	endTime: number;                 // seconds
+	duration: number;                // endTime - startTime
+	type: 'action' | 'dialogue' | 'transition' | 'establishing' | 'quiet';
+	energy: number;                  // 1-5
+	hookPotential: boolean;
+	actionType?: string;             // from SceneDescription if available
+	cutSafety: CutSafety;
 }
 
 /**
@@ -59,10 +81,11 @@ export async function analyzeVideoScenes(fileId: string, filename: string): Prom
 		const duration = parseFloat(durationOutput) || 0;
 
 		// Detect scene changes (threshold 0.3 = moderate sensitivity)
+		// Use metadata=print to capture actual scene scores instead of hardcoding
 		let sceneOutput = '';
 		try {
 			sceneOutput = execSync(
-				`ffmpeg -i "${localPath}" -vf "select='gt(scene,0.3)',showinfo" -f null - 2>&1`,
+				`ffmpeg -i "${localPath}" -vf "select='gt(scene,0.3)',metadata=print:key=lavfi.scene_score" -f null - 2>&1`,
 				{ stdio: 'pipe', timeout: 120000 }
 			).toString();
 		} catch (err: any) {
@@ -71,16 +94,28 @@ export async function analyzeVideoScenes(fileId: string, filename: string): Prom
 		}
 
 		const sceneChanges: SceneChange[] = [];
-		const sceneRegex = /pts_time:(\d+\.?\d*)/g;
+		// Parse timestamps and scores from FFmpeg output
+		// pts_time lines are followed by lavfi.scene_score lines
+		const ptsRegex = /pts_time:(\d+\.?\d*)/g;
+		const scoreRegex = /lavfi\.scene_score=(\d+\.?\d*)/g;
+		const timestamps: number[] = [];
+		const scores: number[] = [];
+
 		let match;
-		while ((match = sceneRegex.exec(sceneOutput)) !== null) {
+		while ((match = ptsRegex.exec(sceneOutput)) !== null) {
 			const ts = parseFloat(match[1]!);
-			if (!isNaN(ts)) {
-				sceneChanges.push({
-					timestamp: Math.round(ts * 10) / 10,
-					score: 0.5,
-				});
-			}
+			if (!isNaN(ts)) timestamps.push(ts);
+		}
+		while ((match = scoreRegex.exec(sceneOutput)) !== null) {
+			const sc = parseFloat(match[1]!);
+			if (!isNaN(sc)) scores.push(sc);
+		}
+
+		for (let i = 0; i < timestamps.length; i++) {
+			sceneChanges.push({
+				timestamp: Math.round(timestamps[i]! * 10) / 10,
+				score: Math.round((scores[i] ?? 0.5) * 1000) / 1000, // real score or fallback to 0.5
+			});
 		}
 
 		// High motion moments: scene changes in the first 80% of the video
@@ -357,4 +392,381 @@ export function formatSceneAnalysisForPrompt(analysis: SceneAnalysis): string {
 	}
 
 	return base;
+}
+
+// --- Named Scene Segments ---
+
+/**
+ * Map a SceneDescription actionType to a segment type.
+ */
+function actionTypeToSegmentType(actionType?: string, isAction?: boolean): NamedSegment['type'] {
+	if (!actionType) return isAction ? 'action' : 'quiet';
+	switch (actionType) {
+		case 'serve':
+		case 'rally':
+		case 'forehand':
+		case 'backhand':
+		case 'volley':
+		case 'celebration':
+		case 'chess_move':
+			return 'action';
+		case 'instruction':
+		case 'talking':
+			return 'dialogue';
+		case 'walking':
+		case 'standing':
+			return 'transition';
+		case 'warmup':
+		case 'group_activity':
+			return isAction ? 'action' : 'quiet';
+		default:
+			return isAction ? 'action' : 'quiet';
+	}
+}
+
+/**
+ * Generate cut safety metadata for a segment based on its type.
+ * This encodes professional editorial grammar — when it's safe to cut in/out.
+ */
+function generateCutSafety(
+	type: NamedSegment['type'],
+	startTime: number,
+	endTime: number,
+	segDuration: number,
+): CutSafety {
+	switch (type) {
+		case 'action':
+			return {
+				canCutAtStart: true,
+				canCutAtEnd: false,
+				bestEntryPoint: Math.round(startTime * 10) / 10,
+				bestExitPoint: Math.round(Math.max(startTime + 0.5, endTime - 0.3) * 10) / 10,
+				reason: 'Action segment — let the action complete before cutting. Exit after the peak, not during.',
+			};
+		case 'dialogue':
+			return {
+				canCutAtStart: false,
+				canCutAtEnd: false,
+				bestEntryPoint: Math.round(Math.min(startTime + 0.5, endTime - 0.5) * 10) / 10,
+				bestExitPoint: Math.round(Math.max(startTime + 0.5, endTime - 0.5) * 10) / 10,
+				reason: 'Dialogue segment — let the speaker finish. Do not cut mid-sentence.',
+			};
+		case 'transition':
+			return {
+				canCutAtStart: true,
+				canCutAtEnd: true,
+				bestEntryPoint: Math.round(startTime * 10) / 10,
+				bestExitPoint: Math.round(endTime * 10) / 10,
+				reason: 'Transition segment — safe to cut freely (walking, panning, setup).',
+			};
+		case 'establishing':
+			return {
+				canCutAtStart: true,
+				canCutAtEnd: true,
+				bestEntryPoint: Math.round(startTime * 10) / 10,
+				bestExitPoint: Math.round(Math.min(startTime + Math.max(segDuration, 2.5), endTime) * 10) / 10,
+				reason: 'Establishing segment — hold for at least 2-3 seconds to orient the viewer.',
+			};
+		case 'quiet':
+		default:
+			return {
+				canCutAtStart: true,
+				canCutAtEnd: true,
+				bestEntryPoint: Math.round(Math.min(startTime + 0.5, endTime) * 10) / 10,
+				bestExitPoint: Math.round(Math.max(startTime, endTime - 0.5) * 10) / 10,
+				reason: 'Quiet segment — safe to cut after natural pauses.',
+			};
+	}
+}
+
+/**
+ * Infer segment type from catalog-level metadata when no scene description is available.
+ */
+function inferSegmentType(
+	index: number,
+	totalSegments: number,
+	relativePosition: number, // 0-1 position in video
+	catalogContentType: string,
+): NamedSegment['type'] {
+	// First segment is usually establishing
+	if (index === 0) return 'establishing';
+	// Last segment is usually quiet (wrap-up)
+	if (index === totalSegments - 1 && totalSegments > 2) return 'quiet';
+	// Infer from catalog content type for middle segments
+	switch (catalogContentType) {
+		case 'interview':
+			return 'dialogue';
+		case 'tennis_action':
+		case 'chess':
+			return relativePosition < 0.2 || relativePosition > 0.85 ? 'transition' : 'action';
+		case 'event':
+		case 'establishing':
+			return relativePosition < 0.3 ? 'establishing' : 'transition';
+		default:
+			return 'quiet';
+	}
+}
+
+/**
+ * Infer energy level from segment type when no scene description is available.
+ */
+function inferEnergy(type: NamedSegment['type']): number {
+	switch (type) {
+		case 'action': return 4;
+		case 'dialogue': return 2;
+		case 'transition': return 2;
+		case 'establishing': return 2;
+		case 'quiet': return 1;
+		default: return 2;
+	}
+}
+
+/**
+ * Generate a positional label when no GPT-4o scene description is available.
+ */
+function generatePositionalLabel(
+	relativePosition: number,
+	catalogActivity: string,
+	segType: NamedSegment['type'],
+): string {
+	const positionName = relativePosition < 0.2
+		? 'Early'
+		: relativePosition < 0.4
+			? 'Early-mid'
+			: relativePosition < 0.6
+				? 'Mid-video'
+				: relativePosition < 0.8
+					? 'Late-mid'
+					: 'Late';
+
+	// Shorten catalog activity to ~50 chars
+	const shortActivity = catalogActivity.length > 50
+		? catalogActivity.substring(0, 47) + '...'
+		: catalogActivity;
+
+	return `${positionName} — ${shortActivity} (${segType}, estimated)`;
+}
+
+/**
+ * Generate named segments from scene analysis data.
+ * Converts sparse scene change timestamps into a complete timeline
+ * where every second of the video is covered by a labeled segment
+ * with editorial cut safety metadata.
+ *
+ * This is a pure function — no API calls, no file I/O.
+ * Runs on existing scene analysis data from the catalog.
+ */
+export function generateNamedSegments(
+	sceneAnalysis: SceneAnalysis,
+	catalogActivity: string,
+	catalogContentType: string,
+): NamedSegment[] {
+	const { duration, sceneChanges, sceneDescriptions } = sceneAnalysis;
+
+	if (duration <= 0) return [];
+
+	// 1. Build boundaries: [0, ...sorted scene change timestamps, duration]
+	const sortedTimestamps = [...new Set(
+		sceneChanges.map(sc => sc.timestamp)
+	)].sort((a, b) => a - b);
+
+	const boundaries = [0, ...sortedTimestamps, duration];
+	// Remove duplicates and ensure sorted
+	const uniqueBoundaries = [...new Set(boundaries)].sort((a, b) => a - b);
+
+	// 2. Create segments from consecutive boundary pairs
+	const rawSegments: NamedSegment[] = [];
+	for (let i = 0; i < uniqueBoundaries.length - 1; i++) {
+		const startTime = uniqueBoundaries[i]!;
+		const endTime = uniqueBoundaries[i + 1]!;
+		const segDuration = endTime - startTime;
+
+		// Skip tiny segments (< 0.5s) — merge with previous
+		if (segDuration < 0.5 && rawSegments.length > 0) {
+			const prev = rawSegments[rawSegments.length - 1]!;
+			prev.endTime = endTime;
+			prev.duration = prev.endTime - prev.startTime;
+			// Recalculate cut safety with new bounds
+			prev.cutSafety = generateCutSafety(prev.type, prev.startTime, prev.endTime, prev.duration);
+			continue;
+		}
+		if (segDuration < 0.5 && rawSegments.length === 0) {
+			// First segment is too tiny, extend to next boundary
+			continue;
+		}
+
+		const segIndex = rawSegments.length;
+		const relativePosition = startTime / duration;
+
+		// 3. Find matching scene description (any description whose timestamp falls in this segment)
+		const matchingDesc = sceneDescriptions?.find(
+			d => d.timestamp >= startTime && d.timestamp < endTime
+		);
+
+		// 4. Assign segment properties
+		let type: NamedSegment['type'];
+		let label: string;
+		let energy: number;
+		let hookPotential: boolean;
+		let actionType: string | undefined;
+
+		if (matchingDesc) {
+			// We have a GPT-4o confirmed description for this segment
+			type = actionTypeToSegmentType(matchingDesc.actionType, matchingDesc.isAction);
+			label = matchingDesc.description;
+			energy = matchingDesc.energyLevel;
+			hookPotential = matchingDesc.hookPotential;
+			actionType = matchingDesc.actionType;
+		} else {
+			// No description — infer from position + catalog metadata
+			type = inferSegmentType(segIndex, uniqueBoundaries.length - 1, relativePosition, catalogContentType);
+			label = generatePositionalLabel(relativePosition, catalogActivity, type);
+			energy = inferEnergy(type);
+			hookPotential = type === 'action' && energy >= 4 && relativePosition < 0.3;
+			actionType = undefined;
+		}
+
+		const cutSafety = generateCutSafety(type, startTime, endTime, segDuration);
+
+		rawSegments.push({
+			id: `S${segIndex + 1}`,
+			label,
+			startTime: Math.round(startTime * 10) / 10,
+			endTime: Math.round(endTime * 10) / 10,
+			duration: Math.round(segDuration * 10) / 10,
+			type,
+			energy,
+			hookPotential,
+			actionType,
+			cutSafety,
+		});
+	}
+
+	// 5. Merge if too many segments (keep prompt manageable)
+	let segments = rawSegments;
+	if (segments.length > 25) {
+		segments = mergeAdjacentSegments(segments, 25);
+	}
+
+	// 6. Re-number segment IDs after merge
+	segments.forEach((seg, i) => {
+		seg.id = `S${i + 1}`;
+	});
+
+	return segments;
+}
+
+/**
+ * Merge adjacent segments of the same type until segment count <= maxSegments.
+ */
+function mergeAdjacentSegments(segments: NamedSegment[], maxSegments: number): NamedSegment[] {
+	const result = [...segments];
+
+	while (result.length > maxSegments) {
+		// Find the best pair to merge: adjacent segments with same type, smallest combined duration
+		let bestIdx = -1;
+		let bestScore = Infinity;
+
+		for (let i = 0; i < result.length - 1; i++) {
+			const a = result[i]!;
+			const b = result[i + 1]!;
+			if (a.type === b.type) {
+				const combined = a.duration + b.duration;
+				if (combined < bestScore) {
+					bestScore = combined;
+					bestIdx = i;
+				}
+			}
+		}
+
+		if (bestIdx === -1) {
+			// No same-type adjacent pairs — merge smallest adjacent pair regardless of type
+			for (let i = 0; i < result.length - 1; i++) {
+				const combined = result[i]!.duration + result[i + 1]!.duration;
+				if (combined < bestScore) {
+					bestScore = combined;
+					bestIdx = i;
+				}
+			}
+		}
+
+		if (bestIdx === -1) break; // shouldn't happen
+
+		const a = result[bestIdx]!;
+		const b = result[bestIdx + 1]!;
+
+		// Merge b into a
+		a.endTime = b.endTime;
+		a.duration = Math.round((a.endTime - a.startTime) * 10) / 10;
+		a.label = a.label.includes('(estimated)')
+			? a.label  // keep first label if both are estimated
+			: `${a.label} / ${b.label}`;
+		a.energy = Math.round((a.energy + b.energy) / 2);
+		a.hookPotential = a.hookPotential || b.hookPotential;
+		a.cutSafety = generateCutSafety(a.type, a.startTime, a.endTime, a.duration);
+
+		// Remove b
+		result.splice(bestIdx + 1, 1);
+	}
+
+	return result;
+}
+
+/**
+ * Format named segments as a timeline for AI edit plan prompts.
+ * Falls back to the original sparse format if no segments are available.
+ */
+export function formatSegmentTimelineForPrompt(analysis: SceneAnalysis): string {
+	if (!analysis.namedSegments || analysis.namedSegments.length === 0) {
+		return formatSceneAnalysisForPrompt(analysis);
+	}
+
+	const lines = analysis.namedSegments.map(seg => {
+		const typeLabel = seg.type.toUpperCase();
+		const hookStar = seg.hookPotential ? ', HOOK ⭐' : '';
+		const entryStr = `Safe entry: ${seg.cutSafety.bestEntryPoint.toFixed(1)}s`;
+		const exitStr = `Safe exit: ${seg.cutSafety.bestExitPoint.toFixed(1)}s`;
+
+		let warning: string;
+		if (!seg.cutSafety.canCutAtEnd && !seg.cutSafety.canCutAtStart) {
+			warning = `⚠️ ${seg.cutSafety.reason}`;
+		} else if (!seg.cutSafety.canCutAtEnd) {
+			warning = `⚠️ ${seg.cutSafety.reason}`;
+		} else {
+			warning = 'Can cut freely';
+		}
+
+		return `  ${seg.id} [${seg.startTime.toFixed(1)}-${seg.endTime.toFixed(1)}s] ${typeLabel} — ${seg.label} (energy ${seg.energy}/5${hookStar})
+     → ${entryStr} | ${exitStr} | ${warning}`;
+	}).join('\n');
+
+	let result = `  - Video Duration: ${analysis.duration.toFixed(1)}s
+  SCENE TIMELINE (${analysis.namedSegments.length} segments — reference by ID in your edit plan):
+${lines}`;
+
+	// Highlight best action segments
+	const bestAction = analysis.namedSegments
+		.filter(s => s.type === 'action' && s.energy >= 4)
+		.map(s => s.id);
+	if (bestAction.length > 0) {
+		result += `\n  ⭐ BEST ACTION SEGMENTS: [${bestAction.join(', ')}]`;
+	}
+
+	// Highlight recommended hooks
+	const hooks = analysis.namedSegments
+		.filter(s => s.hookPotential)
+		.map(s => s.id);
+	if (hooks.length > 0) {
+		result += `\n  🎯 RECOMMENDED HOOK SEGMENTS: [${hooks.join(', ')}]`;
+	}
+
+	// Warn about low-energy segments to avoid for hooks/peaks
+	const avoid = analysis.namedSegments
+		.filter(s => (s.type === 'transition' || s.type === 'quiet') && s.energy <= 1)
+		.map(s => s.id);
+	if (avoid.length > 0) {
+		result += `\n  ⚠️ AVOID FOR HOOKS/PEAKS (low energy): [${avoid.join(', ')}]`;
+	}
+
+	return result;
 }

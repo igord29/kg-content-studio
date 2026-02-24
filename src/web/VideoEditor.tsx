@@ -26,6 +26,15 @@ interface DriveVideo {
 	needsManualReview: boolean;
 	reviewNotes: string;
 	semanticTags?: string[];
+	namedSegments?: Array<{
+		id: string;
+		label: string;
+		startTime: number;
+		endTime: number;
+		type: 'action' | 'dialogue' | 'transition' | 'establishing' | 'quiet';
+		energy: number;
+		hookPotential: boolean;
+	}>;
 }
 
 interface FolderSummary {
@@ -636,6 +645,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	const [autoCatalogDetected, setAutoCatalogDetected] = useState(false);
 	const [uncatalogedCount, setUncatalogedCount] = useState(0);
 	const [autoCatalogDismissed, setAutoCatalogDismissed] = useState(false);
+
+	// Smart select
+	const [smartSelecting, setSmartSelecting] = useState(false);
 
 	// Thumbnail refresh
 	const [refreshingThumbnails, setRefreshingThumbnails] = useState(false);
@@ -1483,6 +1495,27 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		}
 	}, [videos]);
 
+	const handleSmartSelect = useCallback(async () => {
+		if (!searchQuery.trim() || smartSelecting) return;
+		setSmartSelecting(true);
+		try {
+			const resp = await fetch('/api/video-editor', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ task: 'smart-select', query: searchQuery, count: 5 }),
+			});
+			const data = await resp.json();
+			if (data.success && data.selectedIds?.length > 0) {
+				setSelectedIds(prev => {
+					const next = new Set(prev);
+					for (const id of data.selectedIds) next.add(id);
+					return next;
+				});
+			}
+		} catch { /* best effort */ }
+		setSmartSelecting(false);
+	}, [searchQuery, smartSelecting]);
+
 	const handleAnalyzeSingle = useCallback(async (videoId: string) => {
 		setAnalyzingSingle(videoId);
 		setCatalogError(null);
@@ -1840,25 +1873,45 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							</div>
 						)}
 
-						{/* Search */}
-						<input
-							type="text"
-							value={searchQuery}
-							onChange={(e) => setSearchQuery(e.target.value)}
-							placeholder="Search descriptions, text, locations..."
-							style={{
-								width: '100%',
-								padding: '7px 10px',
-								borderRadius: 6,
-								border: `1px solid ${S.borderColor}`,
-								background: S.bg,
-								color: S.textPrimary,
-								fontSize: 11,
-								fontFamily: S.mono,
-								outline: 'none',
-								marginBottom: 8,
-							}}
-						/>
+						{/* Search + Smart Select */}
+						<div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+							<input
+								type="text"
+								value={searchQuery}
+								onChange={(e) => setSearchQuery(e.target.value)}
+								placeholder="Search descriptions, text, locations..."
+								style={{
+									flex: 1,
+									padding: '7px 10px',
+									borderRadius: 6,
+									border: `1px solid ${S.borderColor}`,
+									background: S.bg,
+									color: S.textPrimary,
+									fontSize: 11,
+									fontFamily: S.mono,
+									outline: 'none',
+								}}
+							/>
+							{searchQuery.trim() && (
+								<div
+									onClick={handleSmartSelect}
+									style={{
+										padding: '7px 10px',
+										borderRadius: 6,
+										border: `1px solid ${smartSelecting ? S.accent : '#6d28d9'}`,
+										background: smartSelecting ? 'rgba(109, 40, 217, 0.1)' : 'transparent',
+										color: smartSelecting ? S.accent : '#a78bfa',
+										cursor: smartSelecting ? 'wait' : 'pointer',
+										fontFamily: S.mono,
+										fontSize: 10,
+										whiteSpace: 'nowrap',
+										letterSpacing: 0.3,
+									}}
+								>
+									{smartSelecting ? '...' : '⚡ Smart Select'}
+								</div>
+							)}
+						</div>
 
 						{/* Filter controls */}
 						<div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -2326,6 +2379,63 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 												)}
 											</div>
 										)}
+
+										{/* Row 6: Segment timeline bar */}
+										{video.namedSegments && video.namedSegments.length > 0 && (() => {
+											const totalDur = video.namedSegments[video.namedSegments.length - 1]!.endTime;
+											const segColors: Record<string, string> = {
+												action: '#ef4444',
+												dialogue: '#3b82f6',
+												transition: '#6b7280',
+												establishing: '#22c55e',
+												quiet: '#9ca3af',
+											};
+											return (
+												<div style={{ marginTop: 3 }} title="Scene segments — hover for details">
+													<div style={{
+														display: 'flex',
+														width: '100%',
+														height: 6,
+														borderRadius: 3,
+														overflow: 'hidden',
+														background: '#1a1a2e',
+													}}>
+														{video.namedSegments.map(seg => (
+															<div
+																key={seg.id}
+																title={`${seg.id} [${seg.startTime.toFixed(1)}-${seg.endTime.toFixed(1)}s] ${seg.type.toUpperCase()} — ${seg.label}${seg.hookPotential ? ' ⭐' : ''}`}
+																style={{
+																	width: `${((seg.endTime - seg.startTime) / totalDur) * 100}%`,
+																	height: '100%',
+																	background: segColors[seg.type] || '#6b7280',
+																	opacity: 0.4 + (seg.energy / 5) * 0.6,
+																	position: 'relative',
+																}}
+															>
+																{seg.hookPotential && (
+																	<span style={{
+																		position: 'absolute',
+																		top: -3,
+																		left: '50%',
+																		transform: 'translateX(-50%)',
+																		fontSize: 6,
+																		lineHeight: '6px',
+																	}}>⭐</span>
+																)}
+															</div>
+														))}
+													</div>
+													<div style={{
+														fontFamily: S.mono,
+														fontSize: 7,
+														color: S.textMuted,
+														marginTop: 1,
+													}}>
+														{video.namedSegments.length} segments · {video.namedSegments.filter(s => s.type === 'action').length} action · {video.namedSegments.filter(s => s.type === 'dialogue').length} dialogue
+													</div>
+												</div>
+											);
+										})()}
 									</div>
 
 									{/* Analyze single button */}

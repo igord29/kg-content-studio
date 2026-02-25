@@ -330,6 +330,18 @@ declare module '@agentuity/frontend' {
 				stream: false;
 				params: never;
 			};
+	'POST /api/upload-video': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/upload-video-supabase': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'POST /api/venue-prospector': {
 				inputSchema: POSTApiVenueProspectorInputSchema;
 				outputSchema: POSTApiVenueProspectorOutputSchema;
@@ -359,6 +371,12 @@ declare module '@agentuity/frontend' {
 				outputSchema: never;
 				stream: false;
 				params: { id: string };
+			};
+	'GET /api/video-library/search': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
 			};
 	'GET /api/webhook/config': {
 				inputSchema: never;
@@ -491,6 +509,18 @@ declare module '@agentuity/frontend' {
 			 */
 			post: { input: POSTApiTranslateInput; output: POSTApiTranslateOutput; type: 'api'; params: never; paramsTuple: [] };
 		};
+		uploadVideo: {
+			/**
+			 * Route: POST /api/upload-video
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
+		uploadVideoSupabase: {
+			/**
+			 * Route: POST /api/upload-video-supabase
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
 		venueProspector: {
 			/**
 			 * Route: POST /api/venue-prospector
@@ -518,6 +548,12 @@ declare module '@agentuity/frontend' {
 			 * Route: POST /api/video-library
 			 */
 			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			search: {
+				/**
+				 * Route: GET /api/video-library/search
+				 */
+				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
 		};
 		webhook: {
 			config: {
@@ -630,6 +666,18 @@ declare module '@agentuity/react' {
 				stream: false;
 				params: never;
 			};
+	'POST /api/upload-video': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/upload-video-supabase': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'POST /api/venue-prospector': {
 				inputSchema: POSTApiVenueProspectorInputSchema;
 				outputSchema: POSTApiVenueProspectorOutputSchema;
@@ -659,6 +707,12 @@ declare module '@agentuity/react' {
 				outputSchema: never;
 				stream: false;
 				params: { id: string };
+			};
+	'GET /api/video-library/search': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
 			};
 	'GET /api/webhook/config': {
 				inputSchema: never;
@@ -772,6 +826,18 @@ declare module '@agentuity/react' {
 			 */
 			post: { input: POSTApiTranslateInput; output: POSTApiTranslateOutput; type: 'api'; params: never; paramsTuple: [] };
 		};
+		uploadVideo: {
+			/**
+			 * Route: POST /api/upload-video
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
+		uploadVideoSupabase: {
+			/**
+			 * Route: POST /api/upload-video-supabase
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
 		venueProspector: {
 			/**
 			 * Route: POST /api/venue-prospector
@@ -799,6 +865,12 @@ declare module '@agentuity/react' {
 			 * Route: POST /api/video-library
 			 */
 			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			search: {
+				/**
+				 * Route: GET /api/video-library/search
+				 */
+				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
 		};
 		webhook: {
 			config: {
@@ -930,6 +1002,18 @@ const _rpcRouteMetadata = {
 						"path": "/api/translate"
 				}
 		},
+		"uploadVideo": {
+				"post": {
+						"type": "api",
+						"path": "/api/upload-video"
+				}
+		},
+		"uploadVideoSupabase": {
+				"post": {
+						"type": "api",
+						"path": "/api/upload-video-supabase"
+				}
+		},
 		"venueProspector": {
 				"post": {
 						"type": "api",
@@ -959,6 +1043,12 @@ const _rpcRouteMetadata = {
 				"post": {
 						"type": "api",
 						"path": "/api/video-library"
+				},
+				"search": {
+						"get": {
+								"type": "api",
+								"path": "/api/video-library/search"
+						}
 				}
 		},
 		"webhook": {

@@ -444,10 +444,10 @@ if (isDevelopment()) {
 	app.get('/', prodHtmlHandler);
 
 	// Serve static assets from /assets/* (Vite bundled output)
-	app.use('/assets/*', serveStatic({ root: import.meta.dir + '/client' }));
+	app.use('/assets/*', serveStatic({ root: import.meta.dir + '/client'}));
 
 	// Serve static public assets (favicon.ico, robots.txt, etc.)
-	app.use('/*', serveStatic({ root: import.meta.dir + '/client', rewriteRequestPath: (path) => path }));
+	app.use('/*', serveStatic({ root: import.meta.dir + '/client', rewriteRequestPath: (path) => path}));
 
 	// 404 for unmatched API/system routes (IMPORTANT: comes before SPA fallback)
 	app.all('/_agentuity/*', (c: Context) => c.notFound());

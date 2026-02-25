@@ -1,6 +1,6 @@
 /**
  * Video Reviewer
- * Downloads a rendered video, extracts frames, and sends them to GPT-4o vision
+ * Downloads a rendered video, extracts frames, and sends them to GPT-5-mini vision
  * for a professional editorial review. Evaluates storytelling, pacing, and
  * platform fit, then returns actionable feedback.
  *
@@ -335,7 +335,7 @@ async function cleanupReviewFiles(videoPath: string, framePaths: string[]): Prom
 // --- Main Review Function ---
 
 /**
- * Review a rendered video by extracting frames and sending to GPT-4o vision.
+ * Review a rendered video by extracting frames and sending to GPT-5-mini vision.
  */
 export async function reviewRenderedVideo(
 	downloadUrl: string,
@@ -354,7 +354,7 @@ export async function reviewRenderedVideo(
 	}
 
 	try {
-		// Build multi-image content for GPT-4o vision
+		// Build multi-image content for GPT-5-mini vision
 		const contentParts: Array<{ type: 'image'; image: Uint8Array } | { type: 'text'; text: string }> = [];
 
 		for (let i = 0; i < framePaths.length; i++) {
@@ -405,9 +405,9 @@ ${editPlanContext}
 Return your review as JSON following the format specified in your instructions.`,
 		});
 
-		// Send to GPT-4o
+		// Send to GPT-5-mini
 		const result = await generateText({
-			model: openai('gpt-4o'),
+			model: openai('gpt-5-mini'),
 			system: buildReviewPrompt(mode, platform),
 			messages: [{
 				role: 'user',
@@ -434,7 +434,7 @@ Return your review as JSON following the format specified in your instructions.`
 /**
  * Generate a revised edit plan based on review feedback.
  * Takes the review issues, original edit plan, and footage context,
- * then asks GPT-4o to produce a corrected edit plan.
+ * then asks GPT-5-mini to produce a corrected edit plan.
  */
 export async function generateRevisedEditPlan(
 	review: VideoReview,
@@ -534,7 +534,7 @@ ADDITIONAL RULES:
 Return ONLY the revised JSON edit plan (same format as the original) wrapped in \`\`\`json fences. Include a "revisionNotes" field explaining what you changed and why for each clip.`;
 
 	const result = await generateText({
-		model: openai('gpt-4o'),
+		model: openai('gpt-5.1'),
 		system: videoDirectorPrompt,
 		prompt,
 	});

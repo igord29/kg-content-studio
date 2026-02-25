@@ -2055,213 +2055,6 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							</div>
 						)}
 
-						{/* Auto-Pipeline Upload Zone */}
-						<div
-							onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-							onDrop={(e) => {
-								e.preventDefault();
-								e.stopPropagation();
-								const file = e.dataTransfer.files[0];
-								if (file) handleAutoPipelineUpload(file);
-							}}
-							style={{
-								marginBottom: 8,
-								padding: '10px',
-								borderRadius: 6,
-								border: `1px dashed ${
-									autoPipelineStatus === 'error' ? S.red
-									: autoPipelineStatus === 'done' ? S.accent
-									: ['uploading', 'analyzing', 'rendering', 'grading'].includes(autoPipelineStatus) ? S.orange
-									: S.accentLight
-								}`,
-								background:
-									autoPipelineStatus === 'error' ? `${S.red}10`
-									: autoPipelineStatus === 'done' ? `${S.accent}10`
-									: ['uploading', 'analyzing', 'rendering', 'grading'].includes(autoPipelineStatus) ? `${S.orange}10`
-									: `${S.accent}08`,
-								textAlign: 'center',
-								cursor: (autoPipelineStatus === 'idle' || autoPipelineStatus === 'error' || autoPipelineStatus === 'done') ? 'pointer' : 'default',
-							}}
-							onClick={() => {
-								if (autoPipelineStatus !== 'idle' && autoPipelineStatus !== 'error' && autoPipelineStatus !== 'done') return;
-								const input = document.createElement('input');
-								input.type = 'file';
-								input.accept = 'video/*';
-								input.onchange = () => {
-									const file = input.files?.[0];
-									if (file) handleAutoPipelineUpload(file);
-								};
-								input.click();
-							}}
-						>
-							{autoPipelineStatus === 'idle' && (
-								<div>
-									<div style={{ fontFamily: S.mono, fontSize: 10, color: S.accentLight, fontWeight: 600, marginBottom: 2 }}>
-										Upload Raw Video
-									</div>
-									<div style={{ fontFamily: S.mono, fontSize: 8, color: S.textMuted }}>
-										Drop video or click — AI auto-edits using your config above
-									</div>
-								</div>
-							)}
-							{autoPipelineStatus === 'uploading' && (
-								<div>
-									<div style={{ fontFamily: S.mono, fontSize: 9, color: S.orange }}>
-										Uploading to Supabase + Drive...
-									</div>
-									<div style={{ marginTop: 4, height: 3, borderRadius: 2, background: '#1e2538', overflow: 'hidden' }}>
-										<div style={{ width: '20%', height: '100%', background: S.orange, borderRadius: 2, transition: 'width 0.3s' }} />
-									</div>
-								</div>
-							)}
-							{autoPipelineStatus === 'analyzing' && (
-								<div>
-									<div style={{ fontFamily: S.mono, fontSize: 9, color: S.orange }}>
-										Cataloging + Generating Edit Plan...
-									</div>
-									<div style={{ marginTop: 4, height: 3, borderRadius: 2, background: '#1e2538', overflow: 'hidden' }}>
-										<div style={{ width: '40%', height: '100%', background: S.orange, borderRadius: 2, transition: 'width 0.3s' }} />
-									</div>
-								</div>
-							)}
-							{autoPipelineStatus === 'rendering' && (
-								<div>
-									<div style={{ fontFamily: S.mono, fontSize: 9, color: S.orange }}>
-										Rendering with Remotion Lambda...
-									</div>
-									<div style={{ marginTop: 4, height: 3, borderRadius: 2, background: '#1e2538', overflow: 'hidden' }}>
-										<div style={{ width: '65%', height: '100%', background: S.orange, borderRadius: 2, transition: 'width 0.3s' }} />
-									</div>
-								</div>
-							)}
-							{autoPipelineStatus === 'grading' && (
-								<div>
-									<div style={{ fontFamily: S.mono, fontSize: 9, color: S.orange }}>
-										AI Grading + Revising if needed...
-									</div>
-									<div style={{ marginTop: 4, height: 3, borderRadius: 2, background: '#1e2538', overflow: 'hidden' }}>
-										<div style={{ width: '85%', height: '100%', background: S.orange, borderRadius: 2, transition: 'width 0.3s' }} />
-									</div>
-								</div>
-							)}
-							{autoPipelineStatus === 'done' && autoPipelineResult && (
-								<div style={{ textAlign: 'left' }}>
-									<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-										<div style={{ fontFamily: S.mono, fontSize: 10, color: S.accentLight, fontWeight: 600 }}>
-											Pipeline Complete
-										</div>
-										<span
-											style={{
-												fontFamily: S.mono, fontSize: 10, fontWeight: 700,
-												padding: '1px 6px', borderRadius: 4,
-												background: (autoPipelineResult.score ?? 0) >= 8 ? '#16653430' : (autoPipelineResult.score ?? 0) >= 6 ? '#92400e30' : '#7f1d1d30',
-												color: (autoPipelineResult.score ?? 0) >= 8 ? '#4ade80' : (autoPipelineResult.score ?? 0) >= 6 ? '#fbbf24' : '#f87171',
-											}}
-										>
-											{autoPipelineResult.score}/10
-										</span>
-									</div>
-									<div style={{ fontFamily: S.mono, fontSize: 8, color: S.textMuted, marginBottom: 4 }}>
-										{autoPipelineResult.attempts} attempt{(autoPipelineResult.attempts ?? 0) !== 1 ? 's' : ''} · Saved to Supabase
-									</div>
-									{autoPipelineResult.downloadUrl && (
-										<a
-											href={autoPipelineResult.downloadUrl}
-											target="_blank"
-											rel="noopener noreferrer"
-											onClick={(e) => e.stopPropagation()}
-											style={{
-												fontFamily: S.mono, fontSize: 9, color: S.accentLight,
-												textDecoration: 'none', display: 'inline-block', marginRight: 8,
-											}}
-										>
-											Download
-										</a>
-									)}
-									<span
-										style={{ fontFamily: S.mono, fontSize: 8, color: S.textMuted, cursor: 'pointer' }}
-										onClick={(e) => { e.stopPropagation(); setAutoPipelineStatus('idle'); setAutoPipelineResult(null); }}
-									>
-										Upload another
-									</span>
-								</div>
-							)}
-							{autoPipelineStatus === 'error' && (
-								<div style={{ fontFamily: S.mono, fontSize: 9, color: S.red }}>
-									{autoPipelineError || 'Pipeline failed'} —{' '}
-									<span
-										style={{ cursor: 'pointer', textDecoration: 'underline' }}
-										onClick={(e) => { e.stopPropagation(); setAutoPipelineStatus('idle'); setAutoPipelineError(null); }}
-									>try again</span>
-								</div>
-							)}
-						</div>
-
-						{/* Quick Edit Upload Zone */}
-						<div
-							onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-							onDrop={(e) => {
-								e.preventDefault();
-								e.stopPropagation();
-								const file = e.dataTransfer.files[0];
-								if (file && file.type.startsWith('video/')) handleQuickEditUpload(file);
-							}}
-							style={{
-								marginBottom: 8,
-								padding: quickEditStatus === 'idle' ? '10px' : '8px 10px',
-								borderRadius: 6,
-								border: `1px dashed ${quickEditStatus === 'error' ? '#b71414' : quickEditStatus === 'ready' ? S.accent : '#1a73e8'}`,
-								background: quickEditStatus === 'error' ? '#b7141410' : quickEditStatus === 'ready' ? '#2D6A4F10' : '#1a73e808',
-								textAlign: 'center',
-								cursor: quickEditStatus === 'idle' ? 'pointer' : 'default',
-							}}
-							onClick={() => {
-								if (quickEditStatus !== 'idle' && quickEditStatus !== 'error') return;
-								const input = document.createElement('input');
-								input.type = 'file';
-								input.accept = 'video/*';
-								input.onchange = () => {
-									const file = input.files?.[0];
-									if (file) handleQuickEditUpload(file);
-								};
-								input.click();
-							}}
-						>
-							{quickEditStatus === 'idle' && (
-								<div style={{ fontFamily: S.mono, fontSize: 9, color: '#8ab4f8' }}>
-									Quick Edit — Drop video or click (manual control)
-								</div>
-							)}
-							{quickEditStatus === 'uploading' && (
-								<div style={{ fontFamily: S.mono, fontSize: 9, color: '#8ab4f8' }}>
-									Uploading to Drive...
-								</div>
-							)}
-							{quickEditStatus === 'analyzing' && (
-								<div style={{ fontFamily: S.mono, fontSize: 9, color: S.orange }}>
-									Analyzing scenes & generating segments...
-								</div>
-							)}
-							{quickEditStatus === 'ready' && (
-								<div style={{ fontFamily: S.mono, fontSize: 9, color: S.accentLight }}>
-									Video analyzed & added to selection — generate an edit plan!
-									<span
-										style={{ marginLeft: 6, cursor: 'pointer', color: S.textMuted }}
-										onClick={(e) => { e.stopPropagation(); setQuickEditStatus('idle'); }}
-									>dismiss</span>
-								</div>
-							)}
-							{quickEditStatus === 'error' && (
-								<div style={{ fontFamily: S.mono, fontSize: 9, color: '#ff6b6b' }}>
-									{quickEditError || 'Upload failed'} —{' '}
-									<span
-										style={{ cursor: 'pointer', textDecoration: 'underline' }}
-										onClick={(e) => { e.stopPropagation(); setQuickEditStatus('idle'); setQuickEditError(null); }}
-									>try again</span>
-								</div>
-							)}
-						</div>
-
 						{/* Search + Smart Select */}
 						<div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
 							<input
@@ -3272,6 +3065,148 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							</div>
 						</div>
 					)}
+
+					{/* Upload Raw Video — Auto Pipeline */}
+					<div style={{
+						marginBottom: 16,
+						padding: '16px',
+						borderRadius: 8,
+						border: `1px dashed ${
+							autoPipelineStatus === 'error' ? S.red
+							: autoPipelineStatus === 'done' ? S.accent
+							: ['uploading', 'analyzing', 'rendering', 'grading'].includes(autoPipelineStatus) ? S.orange
+							: S.accentLight
+						}`,
+						background:
+							autoPipelineStatus === 'error' ? `${S.red}10`
+							: autoPipelineStatus === 'done' ? `${S.accent}10`
+							: ['uploading', 'analyzing', 'rendering', 'grading'].includes(autoPipelineStatus) ? `${S.orange}10`
+							: `${S.accent}08`,
+						textAlign: 'center',
+						cursor: (autoPipelineStatus === 'idle' || autoPipelineStatus === 'error' || autoPipelineStatus === 'done') ? 'pointer' : 'default',
+						transition: 'border-color 0.2s, background 0.2s',
+					}}
+						onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+						onDrop={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							const file = e.dataTransfer.files[0];
+							if (file) handleAutoPipelineUpload(file);
+						}}
+						onClick={() => {
+							if (autoPipelineStatus !== 'idle' && autoPipelineStatus !== 'error' && autoPipelineStatus !== 'done') return;
+							const input = document.createElement('input');
+							input.type = 'file';
+							input.accept = 'video/*';
+							input.onchange = () => {
+								const file = input.files?.[0];
+								if (file) handleAutoPipelineUpload(file);
+							};
+							input.click();
+						}}
+					>
+						{autoPipelineStatus === 'idle' && (
+							<div>
+								<div style={{ fontFamily: S.mono, fontSize: 12, color: S.accentLight, fontWeight: 700, marginBottom: 4, letterSpacing: 0.5 }}>
+									↑ Upload Raw Video
+								</div>
+								<div style={{ fontFamily: S.mono, fontSize: 10, color: S.textMuted }}>
+									Drop video or click — AI auto-edits using config above
+								</div>
+							</div>
+						)}
+						{autoPipelineStatus === 'uploading' && (
+							<div>
+								<div style={{ fontFamily: S.mono, fontSize: 11, color: S.orange, marginBottom: 6 }}>
+									Uploading to Supabase + Drive...
+								</div>
+								<div style={{ height: 4, borderRadius: 2, background: '#1e2538', overflow: 'hidden' }}>
+									<div style={{ width: '20%', height: '100%', background: S.orange, borderRadius: 2, transition: 'width 0.5s' }} />
+								</div>
+							</div>
+						)}
+						{autoPipelineStatus === 'analyzing' && (
+							<div>
+								<div style={{ fontFamily: S.mono, fontSize: 11, color: S.orange, marginBottom: 6 }}>
+									Cataloging + Generating Edit Plan...
+								</div>
+								<div style={{ height: 4, borderRadius: 2, background: '#1e2538', overflow: 'hidden' }}>
+									<div style={{ width: '40%', height: '100%', background: S.orange, borderRadius: 2, transition: 'width 0.5s' }} />
+								</div>
+							</div>
+						)}
+						{autoPipelineStatus === 'rendering' && (
+							<div>
+								<div style={{ fontFamily: S.mono, fontSize: 11, color: S.orange, marginBottom: 6 }}>
+									Rendering with Remotion Lambda...
+								</div>
+								<div style={{ height: 4, borderRadius: 2, background: '#1e2538', overflow: 'hidden' }}>
+									<div style={{ width: '65%', height: '100%', background: S.orange, borderRadius: 2, transition: 'width 0.5s' }} />
+								</div>
+							</div>
+						)}
+						{autoPipelineStatus === 'grading' && (
+							<div>
+								<div style={{ fontFamily: S.mono, fontSize: 11, color: S.orange, marginBottom: 6 }}>
+									AI Grading + Revising if needed...
+								</div>
+								<div style={{ height: 4, borderRadius: 2, background: '#1e2538', overflow: 'hidden' }}>
+									<div style={{ width: '85%', height: '100%', background: S.orange, borderRadius: 2, transition: 'width 0.5s' }} />
+								</div>
+							</div>
+						)}
+						{autoPipelineStatus === 'done' && autoPipelineResult && (
+							<div style={{ textAlign: 'left' }}>
+								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+									<div style={{ fontFamily: S.mono, fontSize: 12, color: S.accentLight, fontWeight: 700 }}>
+										✓ Pipeline Complete
+									</div>
+									<span style={{
+										fontFamily: S.mono, fontSize: 11, fontWeight: 700,
+										padding: '2px 8px', borderRadius: 4,
+										background: (autoPipelineResult.score ?? 0) >= 8 ? '#16653430' : (autoPipelineResult.score ?? 0) >= 6 ? '#92400e30' : '#7f1d1d30',
+										color: (autoPipelineResult.score ?? 0) >= 8 ? '#4ade80' : (autoPipelineResult.score ?? 0) >= 6 ? '#fbbf24' : '#f87171',
+									}}>
+										{autoPipelineResult.score}/10
+									</span>
+								</div>
+								<div style={{ fontFamily: S.mono, fontSize: 10, color: S.textMuted, marginBottom: 6 }}>
+									{autoPipelineResult.attempts} attempt{(autoPipelineResult.attempts ?? 0) !== 1 ? 's' : ''} · Saved to Supabase
+								</div>
+								<div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+									{autoPipelineResult.downloadUrl && (
+										<a
+											href={autoPipelineResult.downloadUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+											onClick={(e) => e.stopPropagation()}
+											style={{
+												fontFamily: S.mono, fontSize: 10, color: S.accentLight,
+												textDecoration: 'none',
+											}}
+										>
+											↓ Download
+										</a>
+									)}
+									<span
+										style={{ fontFamily: S.mono, fontSize: 10, color: S.textMuted, cursor: 'pointer' }}
+										onClick={(e) => { e.stopPropagation(); setAutoPipelineStatus('idle'); setAutoPipelineResult(null); }}
+									>
+										Upload another
+									</span>
+								</div>
+							</div>
+						)}
+						{autoPipelineStatus === 'error' && (
+							<div style={{ fontFamily: S.mono, fontSize: 11, color: S.red }}>
+								{autoPipelineError || 'Pipeline failed'} —{' '}
+								<span
+									style={{ cursor: 'pointer', textDecoration: 'underline' }}
+									onClick={(e) => { e.stopPropagation(); setAutoPipelineStatus('idle'); setAutoPipelineError(null); }}
+								>try again</span>
+							</div>
+						)}
+					</div>
 
 					{/* Generate button */}
 					<button

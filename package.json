@@ -27,6 +27,7 @@
     "@googleapis/drive": "^20.1.0",
     "@remotion/lambda": "4.0.428",
     "@remotion/transitions": "4.0.428",
+    "@supabase/supabase-js": "^2.97.0",
     "ai": "latest",
     "google-auth-library": "^10.5.0",
     "openai": "^6.17.0",

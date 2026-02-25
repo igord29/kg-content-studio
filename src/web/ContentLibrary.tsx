@@ -4,6 +4,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { VideoUploader } from './VideoUploader';
 
 // --- Types ---
 
@@ -33,6 +34,17 @@ interface VideoLibraryEntry {
 	topic: string;
 	clipCount: number;
 	editPlanSummary?: string;
+	// Supabase fields
+	title?: string;
+	edit_mode?: string;
+	public_url?: string;
+	created_at?: string;
+	score?: number | null;
+	review_notes?: string | null;
+	revision_count?: number;
+	tags?: string[];
+	duration_sec?: number | null;
+	render_id?: string;
 }
 
 interface GalleryImage extends LibraryImage {
@@ -461,8 +473,8 @@ function VideoCard({
 			</div>
 
 			<div style={{ padding: '14px 16px 16px' }}>
-				{/* Platform + Mode badges */}
-				<div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+				{/* Platform + Mode + Score badges */}
+				<div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
 					<span style={{
 						fontFamily: S.mono, fontSize: 9, fontWeight: 700, letterSpacing: 1,
 						color: platformColor, background: platformColor + '15',
@@ -477,7 +489,45 @@ function VideoCard({
 					}}>
 						{MODE_LABELS[entry.renderMode] || entry.renderMode}
 					</span>
+					{entry.score != null && (
+						<span style={{
+							fontFamily: S.mono, fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
+							color: entry.score >= 8 ? S.accentLight : entry.score >= 6 ? S.orange : S.red,
+							background: (entry.score >= 8 ? S.accent : entry.score >= 6 ? S.orange : S.red) + '15',
+							padding: '3px 7px', borderRadius: 3,
+						}}>
+							{entry.score}/10
+						</span>
+					)}
+					{entry.duration_sec != null && entry.duration_sec > 0 && (
+						<span style={{
+							fontFamily: S.mono, fontSize: 9, letterSpacing: 0.5,
+							color: S.textMuted,
+						}}>
+							{Math.round(entry.duration_sec)}s
+						</span>
+					)}
 				</div>
+
+				{/* Tag chips */}
+				{entry.tags && entry.tags.length > 0 && (
+					<div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
+						{entry.tags.slice(0, 4).map((tag, i) => (
+							<span key={i} style={{
+								fontFamily: S.mono, fontSize: 8, letterSpacing: 0.5,
+								color: S.textMuted, background: S.bg,
+								padding: '2px 6px', borderRadius: 3,
+							}}>
+								{tag}
+							</span>
+						))}
+						{entry.tags.length > 4 && (
+							<span style={{ fontFamily: S.mono, fontSize: 8, color: S.textDim }}>
+								+{entry.tags.length - 4}
+							</span>
+						)}
+					</div>
+				)}
 
 				{/* Topic */}
 				<p style={{
@@ -781,9 +831,21 @@ function VideoDetailView({
 					}} type="button">{'  '}</button>
 				</div>
 
+				{/* Inline video player */}
+				{entry.downloadUrl && (
+					<div style={{ background: '#000', borderBottom: `1px solid ${S.borderColor}` }}>
+						<video
+							controls
+							preload="metadata"
+							style={{ width: '100%', maxHeight: 400, display: 'block' }}
+							src={entry.downloadUrl}
+						/>
+					</div>
+				)}
+
 				{/* Metadata grid */}
 				<div style={{
-					display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16,
+					display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 16,
 					padding: '20px 24px', borderBottom: `1px solid ${S.borderColor}`,
 				}}>
 					<div>
@@ -798,12 +860,41 @@ function VideoDetailView({
 							{MODE_LABELS[entry.renderMode] || entry.renderMode}
 						</span>
 					</div>
-					<div>
-						<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 6 }}>Clips Used</div>
-						<span style={{ fontFamily: S.mono, fontSize: 11, color: S.textPrimary, letterSpacing: 0.3 }}>
-							{entry.clipCount}
-						</span>
-					</div>
+					{entry.score != null && (
+						<div>
+							<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 6 }}>Score</div>
+							<span style={{
+								fontFamily: S.mono, fontSize: 16, fontWeight: 700, letterSpacing: 0.3,
+								color: entry.score >= 8 ? S.accentLight : entry.score >= 6 ? S.orange : S.red,
+							}}>
+								{entry.score}/10
+							</span>
+						</div>
+					)}
+					{entry.duration_sec != null && entry.duration_sec > 0 && (
+						<div>
+							<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 6 }}>Duration</div>
+							<span style={{ fontFamily: S.mono, fontSize: 11, color: S.textPrimary, letterSpacing: 0.3 }}>
+								{Math.round(entry.duration_sec)}s
+							</span>
+						</div>
+					)}
+					{entry.revision_count != null && entry.revision_count > 0 && (
+						<div>
+							<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 6 }}>Revisions</div>
+							<span style={{ fontFamily: S.mono, fontSize: 11, color: S.textPrimary, letterSpacing: 0.3 }}>
+								{entry.revision_count}
+							</span>
+						</div>
+					)}
+					{entry.clipCount > 0 && (
+						<div>
+							<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 6 }}>Clips</div>
+							<span style={{ fontFamily: S.mono, fontSize: 11, color: S.textPrimary, letterSpacing: 0.3 }}>
+								{entry.clipCount}
+							</span>
+						</div>
+					)}
 				</div>
 
 				{/* Topic */}
@@ -816,7 +907,35 @@ function VideoDetailView({
 					</div>
 				)}
 
-				{/* Edit plan summary */}
+				{/* Tags */}
+				{entry.tags && entry.tags.length > 0 && (
+					<div style={{ padding: '16px 24px', borderBottom: `1px solid ${S.borderColor}` }}>
+						<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 8 }}>Tags</div>
+						<div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+							{entry.tags.map((tag, i) => (
+								<span key={i} style={{
+									fontFamily: S.mono, fontSize: 10, letterSpacing: 0.3,
+									color: S.textSecondary, background: S.bg,
+									padding: '4px 10px', borderRadius: 4, border: `1px solid ${S.borderColor}`,
+								}}>
+									{tag}
+								</span>
+							))}
+						</div>
+					</div>
+				)}
+
+				{/* Review notes */}
+				{entry.review_notes && (
+					<div style={{ padding: '16px 24px', borderBottom: `1px solid ${S.borderColor}` }}>
+						<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 6 }}>AI Review</div>
+						<p style={{ fontFamily: S.serif, fontSize: 13, lineHeight: 1.65, color: S.textSecondary, margin: 0 }}>
+							{entry.review_notes}
+						</p>
+					</div>
+				)}
+
+				{/* Edit plan summary (legacy) */}
 				{entry.editPlanSummary && (
 					<div style={{ padding: '16px 24px', borderBottom: `1px solid ${S.borderColor}` }}>
 						<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 6 }}>Edit Plan</div>
@@ -973,6 +1092,10 @@ export function ContentLibrary({ onBack }: { onBack: () => void }) {
 	const [filterPlatform, setFilterPlatform] = useState<string | null>(null);
 	const [sortDirection, setSortDirection] = useState<'newest' | 'oldest'>('newest');
 
+	// Video tab filters
+	const [videoSearchQuery, setVideoSearchQuery] = useState('');
+	const [videoMinScore, setVideoMinScore] = useState<number | null>(null);
+
 	// Selection states
 	const [selectedEntry, setSelectedEntry] = useState<LibraryEntry | null>(null);
 	const [selectedVideo, setSelectedVideo] = useState<VideoLibraryEntry | null>(null);
@@ -995,8 +1118,25 @@ export function ContentLibrary({ onBack }: { onBack: () => void }) {
 			}
 
 			if (videoResp.ok) {
-				const videoData = await videoResp.json() as { entries: VideoLibraryEntry[]; count: number };
-				setVideoEntries(videoData.entries || []);
+				const videoData = await videoResp.json() as { entries: any[]; count: number };
+				// Normalize Supabase-format entries to VideoLibraryEntry shape
+				const normalized = (videoData.entries || []).map((e: any) => ({
+					...e,
+					id: e.id,
+					createdAt: e.created_at || e.createdAt || new Date().toISOString(),
+					renderId: e.render_id || e.renderId || '',
+					downloadUrl: e.public_url || e.downloadUrl || '',
+					platform: e.platform || 'tiktok',
+					renderMode: e.edit_mode || e.renderMode || 'game_day',
+					topic: e.title || e.topic || 'Untitled',
+					clipCount: e.clipCount || 0,
+					score: e.score ?? null,
+					tags: e.tags || [],
+					duration_sec: e.duration_sec ?? null,
+					review_notes: e.review_notes ?? null,
+					revision_count: e.revision_count ?? 0,
+				})) as VideoLibraryEntry[];
+				setVideoEntries(normalized);
 			}
 
 			setError(null);
@@ -1085,13 +1225,46 @@ export function ContentLibrary({ onBack }: { onBack: () => void }) {
 		return result;
 	}, [entries, filterPlatform, searchQuery, sortDirection]);
 
-	// Sorted video entries
+	// Filtered + sorted video entries
 	const sortedVideoEntries = useMemo(() => {
-		return [...videoEntries].sort((a, b) => {
+		let filtered = [...videoEntries];
+
+		// Search filter
+		if (videoSearchQuery.trim()) {
+			const q = videoSearchQuery.toLowerCase();
+			filtered = filtered.filter(e =>
+				(e.topic || '').toLowerCase().includes(q) ||
+				(e.tags || []).some(t => t.toLowerCase().includes(q)) ||
+				(e.platform || '').toLowerCase().includes(q)
+			);
+		}
+
+		// Score filter
+		if (videoMinScore !== null) {
+			filtered = filtered.filter(e => (e.score ?? 0) >= videoMinScore);
+		}
+
+		return filtered.sort((a, b) => {
 			const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
 			return sortDirection === 'newest' ? diff : -diff;
 		});
-	}, [videoEntries, sortDirection]);
+	}, [videoEntries, sortDirection, videoSearchQuery, videoMinScore]);
+
+	// Group videos by month for date headers
+	const videoGroupedByMonth = useMemo(() => {
+		const groups: { label: string; entries: VideoLibraryEntry[] }[] = [];
+		let currentLabel = '';
+		for (const entry of sortedVideoEntries) {
+			const date = new Date(entry.createdAt);
+			const label = date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+			if (label !== currentLabel) {
+				groups.push({ label, entries: [] });
+				currentLabel = label;
+			}
+			groups[groups.length - 1]!.entries.push(entry);
+		}
+		return groups;
+	}, [sortedVideoEntries]);
 
 	// Stats
 	const totalImages = useMemo(() => entries.reduce((sum, e) => sum + (e.images?.length || 0), 0), [entries]);
@@ -1214,28 +1387,80 @@ export function ContentLibrary({ onBack }: { onBack: () => void }) {
 				{/* ===== VIDEO TAB ===== */}
 				{!isLoading && !error && activeTab === 'video' && (
 					<>
-						{videoEntries.length === 0 ? (
-							<EmptyState message="No videos yet" submessage="Completed video renders from the Video Editor will automatically appear here. Go create a video." />
+						<VideoUploader onComplete={() => {
+							// Refresh video entries when pipeline completes
+							fetch('/api/video-library').then(r => r.json()).then(data => {
+								if (data.entries) {
+									// The parent component will re-fetch on its own interval,
+									// but we can force a refresh here
+									window.location.reload();
+								}
+							}).catch(() => {});
+						}} />
+
+						{/* Search + Filter bar */}
+						<div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+							<input
+								type="text"
+								placeholder="Search videos..."
+								value={videoSearchQuery}
+								onChange={(e) => setVideoSearchQuery(e.target.value)}
+								style={{
+									flex: 1, minWidth: 180,
+									background: S.bg, color: S.textPrimary,
+									border: `1px solid ${S.borderColor}`, borderRadius: 6,
+									padding: '7px 12px', fontFamily: S.mono, fontSize: 11,
+								}}
+							/>
+							<select
+								value={videoMinScore === null ? '' : String(videoMinScore)}
+								onChange={(e) => setVideoMinScore(e.target.value ? parseInt(e.target.value) : null)}
+								style={{
+									background: S.bg, color: S.textPrimary,
+									border: `1px solid ${S.borderColor}`, borderRadius: 6,
+									padding: '7px 10px', fontFamily: S.mono, fontSize: 11,
+								}}
+							>
+								<option value="">All scores</option>
+								<option value="8">8+ only</option>
+								<option value="7">7+</option>
+								<option value="6">6+</option>
+							</select>
+							<button onClick={() => setSortDirection((prev) => prev === 'newest' ? 'oldest' : 'newest')} style={{
+								padding: '7px 12px', borderRadius: 6, border: `1px solid ${S.borderColor}`,
+								background: 'transparent', color: S.textMuted, fontFamily: S.mono, fontSize: 10,
+								letterSpacing: 0.5, cursor: 'pointer',
+							}} type="button">
+								{sortDirection === 'newest' ? 'Newest \u2193' : 'Oldest \u2191'}
+							</button>
+							<span style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 0.5 }}>
+								{sortedVideoEntries.length}/{videoEntries.length}
+							</span>
+						</div>
+
+						{sortedVideoEntries.length === 0 ? (
+							<EmptyState
+								message={videoEntries.length === 0 ? "No videos yet" : "No matches"}
+								submessage={videoEntries.length === 0 ? "Upload a video above for auto-editing, or render from the Video Editor." : "Try adjusting your search or filters."}
+							/>
 						) : (
-							<>
-								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-									<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 0.5 }}>
-										{videoEntries.length} video{videoEntries.length !== 1 ? 's' : ''}
+							/* Date-grouped video grid */
+							videoGroupedByMonth.map((group) => (
+								<div key={group.label} style={{ marginBottom: 24 }}>
+									<div style={{
+										fontFamily: S.mono, fontSize: 10, color: S.textMuted,
+										letterSpacing: 1, textTransform: 'uppercase', marginBottom: 12,
+										paddingBottom: 6, borderBottom: `1px solid ${S.borderColor}`,
+									}}>
+										{group.label} ({group.entries.length})
 									</div>
-									<button onClick={() => setSortDirection((prev) => prev === 'newest' ? 'oldest' : 'newest')} style={{
-										padding: '5px 10px', borderRadius: 4, border: `1px solid ${S.borderColor}`,
-										background: 'transparent', color: S.textMuted, fontFamily: S.mono, fontSize: 9,
-										letterSpacing: 0.5, cursor: 'pointer',
-									}} type="button">
-										{sortDirection === 'newest' ? 'Newest First \u2193' : 'Oldest First \u2191'}
-									</button>
+									<div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+										{group.entries.map((entry) => (
+											<VideoCard key={entry.id} entry={entry} onClick={() => setSelectedVideo(entry)} />
+										))}
+									</div>
 								</div>
-								<div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
-									{sortedVideoEntries.map((entry) => (
-										<VideoCard key={entry.id} entry={entry} onClick={() => setSelectedVideo(entry)} />
-									))}
-								</div>
-							</>
+							))
 						)}
 					</>
 				)}

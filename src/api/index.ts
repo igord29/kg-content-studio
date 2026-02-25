@@ -322,36 +322,104 @@ api.delete('/content-library/:id', async (c) => {
 	return c.json({ success: true, remaining: filtered.length });
 });
 
-// --- Video Library ---
+// --- Video Library (Supabase-backed) ---
 
 // Get all saved video renders
 api.get('/video-library', async (c) => {
-	const entries = (await c.var.thread.state.get<unknown[]>('video-library')) ?? [];
-	return c.json({ entries, count: entries.length });
+	const { supabaseAdmin } = await import('../lib/supabase');
+	const platform = c.req.query('platform');
+	const minScore = c.req.query('minScore');
+	const limit = parseInt(c.req.query('limit') || '100');
+
+	let query = supabaseAdmin
+		.from('finished_videos')
+		.select('*')
+		.order('created_at', { ascending: false })
+		.limit(limit);
+
+	if (platform) query = query.eq('platform', platform);
+	if (minScore) query = query.gte('score', parseInt(minScore));
+
+	const { data, error } = await query;
+	if (error) return c.json({ entries: [], count: 0, error: error.message }, 500);
+
+	return c.json({ entries: data || [], count: data?.length || 0 });
 });
 
-// Save a new video render entry (called from frontend on render completion)
-api.post('/video-library', async (c) => {
-	const entry = await c.req.json();
-	if (!entry || !entry.id) {
-		return c.json({ success: false, error: 'Invalid entry' }, 400);
+// Search video library (full-text search on title + tags)
+api.get('/video-library/search', async (c) => {
+	const { supabaseAdmin } = await import('../lib/supabase');
+	const q = c.req.query('q') || '';
+	if (!q.trim()) {
+		return c.json({ entries: [], count: 0 });
 	}
-	await c.var.thread.state.push('video-library', entry, 100);
-	return c.json({ success: true, id: entry.id });
+
+	const { data, error } = await supabaseAdmin
+		.from('finished_videos')
+		.select('*')
+		.or(`title.ilike.%${q}%,tags.cs.{${q.toLowerCase()}}`)
+		.order('created_at', { ascending: false })
+		.limit(50);
+
+	if (error) return c.json({ entries: [], count: 0, error: error.message }, 500);
+	return c.json({ entries: data || [], count: data?.length || 0 });
+});
+
+// Save a new video render entry
+api.post('/video-library', async (c) => {
+	const { supabaseAdmin } = await import('../lib/supabase');
+	const entry = await c.req.json();
+
+	if (!entry || !entry.title) {
+		return c.json({ success: false, error: 'title is required' }, 400);
+	}
+
+	const { data, error } = await supabaseAdmin
+		.from('finished_videos')
+		.insert({
+			title: entry.title,
+			platform: entry.platform || 'tiktok',
+			edit_mode: entry.edit_mode || entry.renderMode || 'game_day',
+			storage_path: entry.storage_path || '',
+			public_url: entry.public_url || entry.downloadUrl || '',
+			duration_sec: entry.duration_sec,
+			score: entry.score,
+			review_notes: entry.review_notes,
+			tags: entry.tags || [],
+			source_video_ids: entry.source_video_ids || [],
+			render_id: entry.render_id || entry.renderId,
+		})
+		.select('id')
+		.single();
+
+	if (error) return c.json({ success: false, error: error.message }, 500);
+	return c.json({ success: true, id: data.id });
 });
 
 // Delete a specific video library entry
 api.delete('/video-library/:id', async (c) => {
+	const { supabaseAdmin } = await import('../lib/supabase');
 	const id = c.req.param('id');
-	const entries = (await c.var.thread.state.get<{ id: string }[]>('video-library')) ?? [];
-	const filtered = entries.filter((e) => e.id !== id);
 
-	if (filtered.length === entries.length) {
-		return c.json({ success: false, error: 'Entry not found' }, 404);
+	// First get the storage path to clean up the file
+	const { data: entry } = await supabaseAdmin
+		.from('finished_videos')
+		.select('storage_path')
+		.eq('id', id)
+		.single();
+
+	// Delete from storage if path exists
+	if (entry?.storage_path) {
+		await supabaseAdmin.storage.from('finished-videos').remove([entry.storage_path]);
 	}
 
-	await c.var.thread.state.set('video-library', filtered);
-	return c.json({ success: true, remaining: filtered.length });
+	const { error } = await supabaseAdmin
+		.from('finished_videos')
+		.delete()
+		.eq('id', id);
+
+	if (error) return c.json({ success: false, error: error.message }, 500);
+	return c.json({ success: true });
 });
 
 // --- Upload Video (Quick Edit) ---
@@ -380,6 +448,83 @@ api.post('/upload-video', async (c) => {
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		console.error('[upload-video] Error: %s', msg);
+		return c.json({ success: false, error: 'Upload failed: ' + msg }, 500);
+	}
+});
+
+// --- Upload Video to Supabase Storage (for auto-pipeline) ---
+
+api.post('/upload-video-supabase', async (c) => {
+	try {
+		const formData = await c.req.formData();
+		const file = formData.get('video');
+		const platform = (formData.get('platform') as string) || 'tiktok';
+		const editMode = (formData.get('editMode') as string) || 'game_day';
+		const topic = (formData.get('topic') as string) || '';
+
+		if (!file || !(file instanceof File)) {
+			return c.json({ success: false, error: 'No video file provided' }, 400);
+		}
+
+		const buffer = Buffer.from(await file.arrayBuffer());
+		const filename = file.name || `upload_${Date.now()}.mp4`;
+
+		// Upload to Supabase Storage (raw-videos bucket)
+		const { supabaseAdmin } = await import('../lib/supabase');
+		const now = new Date();
+		const storagePath = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${Date.now()}_${filename}`;
+
+		const { error: uploadError } = await supabaseAdmin.storage
+			.from('raw-videos')
+			.upload(storagePath, buffer, {
+				contentType: file.type || 'video/mp4',
+				upsert: true,
+			});
+
+		if (uploadError) {
+			return c.json({ success: false, error: `Storage upload failed: ${uploadError.message}` }, 500);
+		}
+
+		const { data: urlData } = supabaseAdmin.storage
+			.from('raw-videos')
+			.getPublicUrl(storagePath);
+
+		// Also save to raw_uploads table
+		const { data: row, error: dbError } = await supabaseAdmin
+			.from('raw_uploads')
+			.insert({
+				original_filename: filename,
+				storage_path: storagePath,
+				public_url: urlData.publicUrl,
+				status: 'uploaded',
+			})
+			.select('id')
+			.single();
+
+		if (dbError) {
+			console.error('[upload-video-supabase] DB insert error: %s', dbError.message);
+		}
+
+		// Also upload to Google Drive so the auto-pipeline can use it with the existing catalog system
+		let driveFileId: string | undefined;
+		try {
+			const driveResult = await uploadVideoFile(buffer, filename);
+			driveFileId = driveResult.fileId;
+		} catch (err) {
+			console.error('[upload-video-supabase] Drive upload failed (non-fatal): %s', err instanceof Error ? err.message : err);
+		}
+
+		return c.json({
+			success: true,
+			supabaseId: row?.id,
+			storagePath,
+			publicUrl: urlData.publicUrl,
+			driveFileId,
+			filename,
+		});
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error('[upload-video-supabase] Error: %s', msg);
 		return c.json({ success: false, error: 'Upload failed: ' + msg }, 500);
 	}
 });

@@ -82,7 +82,7 @@ import {
 
 const AgentInput = s.object({
 	// Task type: determines which workflow to run
-	task: s.string().optional(), // 'list-videos' | 'folder-summary' | 'catalog' | 'edit' | 'render' | 'render-status' | 'save-render-to-drive' | 'instant-edit' | 'render-local' | 'download-render' | 'test-connection' | 'test-shotstack' | 'legacy'
+	task: s.string().optional(), // 'list-videos' | 'folder-summary' | 'catalog' | 'edit' | 'render' | 'render-status' | 'save-render-to-drive' | 'instant-edit' | 'auto-process' | 'render-local' | 'download-render' | 'test-connection' | 'test-shotstack' | 'legacy'
 
 	// Legacy fields (original video-editor interface)
 	videoType: s.string().optional(), // 'highlight', 'intro', 'recap', 'testimonial', 'promo', 'story'
@@ -822,6 +822,50 @@ const agent = createAgent('video-editor', {
 				const msg = err instanceof Error ? err.message : String(err);
 				ctx.logger.error('[instant-edit] Pipeline failed: %s', msg);
 				return { success: false, error: 'Instant edit failed: ' + msg };
+			}
+		}
+
+		// --- Autonomous quality loop: edit → render → grade → revise → save ---
+		if (task === 'auto-process') {
+			const videoIds = input.videoIds || [];
+			const platform = input.platform || 'tiktok';
+			const editMode = input.editMode || 'game_day';
+			const topic = input.topic || 'CLC Content';
+			const purpose = input.purpose || 'social media';
+			const minScore = (input as any).minScore || 8;
+			const maxAttempts = (input as any).maxAttempts || 3;
+
+			if (videoIds.length === 0) {
+				return { success: false, error: 'videoIds is required for auto-process' };
+			}
+
+			ctx.logger.info('[auto-process] Starting autonomous pipeline: %d videos, platform=%s, mode=%s, minScore=%d, maxAttempts=%d',
+				videoIds.length, platform, editMode, minScore, maxAttempts);
+
+			try {
+				const { runAutoPipeline } = await import('./auto-pipeline');
+				const result = await runAutoPipeline(
+					{ videoIds, platform, editMode, topic, purpose, minScore, maxAttempts },
+					ctx.logger,
+				);
+
+				return {
+					success: result.success,
+					message: result.success
+						? `Pipeline complete: score ${result.score}/10 after ${result.attempts} attempt(s). Saved to library.`
+						: `Pipeline failed after ${result.attempts} attempt(s): ${result.error}`,
+					renderId: result.renderId,
+					downloadUrl: result.downloadUrl,
+					score: result.score,
+					attempts: result.attempts,
+					review: result.review,
+					supabaseId: result.supabaseId,
+					publicUrl: result.publicUrl,
+				};
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.logger.error('[auto-process] Pipeline error: %s', msg);
+				return { success: false, error: 'Auto-process pipeline failed: ' + msg };
 			}
 		}
 

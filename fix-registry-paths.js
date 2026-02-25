@@ -21,6 +21,7 @@
 import { watch, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
+import { platform } from 'node:os';
 
 const registryPath = join(process.cwd(), 'src', 'generated', 'registry.ts');
 const watchDir = dirname(registryPath);
@@ -65,17 +66,21 @@ function fixRegistryFile() {
 // Fix immediately if file already exists
 fixRegistryFile();
 
-// Start watching for changes
+// Only watch on Windows — Linux/CI doesn't produce backslash paths
+const isWindows = platform() === 'win32';
+let watcher = null;
 let debounceTimer = null;
-const watcher = watch(watchDir, { recursive: false }, (eventType, filename) => {
-  if (filename === 'registry.ts') {
-    // Debounce to avoid double-writes
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      fixRegistryFile();
-    }, 50);
-  }
-});
+
+if (isWindows) {
+  watcher = watch(watchDir, { recursive: false }, (eventType, filename) => {
+    if (filename === 'registry.ts') {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        fixRegistryFile();
+      }, 50);
+    }
+  });
+}
 
 // Determine which agentuity command to run (build or deploy)
 const args = process.argv.slice(2);
@@ -88,23 +93,26 @@ for (const arg of args) {
     filteredArgs.push(arg);
   }
 }
-const buildArgs = ['@agentuity/cli', command, ...filteredArgs];
-console.log(`[fix-registry] Starting agentuity ${command} with path watcher...`);
 
-const child = spawn('bunx', buildArgs, {
+// Use locally installed CLI binary directly (avoids bunx network resolution)
+const cliBin = join(process.cwd(), 'node_modules', '.bin', 'agentuity');
+const spawnArgs = [command, ...filteredArgs];
+console.log(`[fix-registry] Starting agentuity ${command}${isWindows ? ' with path watcher' : ''}...`);
+
+const child = spawn(cliBin, spawnArgs, {
   stdio: 'inherit',
   shell: true,
   cwd: process.cwd(),
 });
 
 child.on('close', (code) => {
-  watcher.close();
+  if (watcher) watcher.close();
   if (debounceTimer) clearTimeout(debounceTimer);
   process.exit(code);
 });
 
 child.on('error', (err) => {
   console.error('[fix-registry] Failed to start build:', err.message);
-  watcher.close();
+  if (watcher) watcher.close();
   process.exit(1);
 });

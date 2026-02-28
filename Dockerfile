@@ -1,5 +1,8 @@
-FROM oven/bun:1.3.8-debian AS builder
+FROM node:22-bookworm AS builder
 WORKDIR /app
+
+# Install bun (project uses bun as package manager)
+RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
 
 # Copy dependency manifests first for layer caching
 COPY package.json bun.lock ./
@@ -8,9 +11,8 @@ RUN bun install --frozen-lockfile
 # Copy source and build scripts
 COPY . .
 
-# Run the same build command as package.json "build" script
-# bun can run Node.js scripts natively (node:fs, node:child_process supported)
-RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
+# Agentuity CLI's Vite bundler requires npm in PATH (provided by node base image)
+RUN bash create-stubs.sh && node fix-registry-paths.js --skip-type-check
 
 # --- Runtime stage (smaller image) ---
 FROM oven/bun:1.3.8-debian

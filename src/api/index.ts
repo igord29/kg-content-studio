@@ -300,26 +300,118 @@ api.get('/webhook/config', async (c) => {
 	return c.json({ configuredPlatforms: configured });
 });
 
-// --- Content Library ---
+// --- Content Library (Supabase-backed) ---
 
-// Get all saved content
+// Get all saved text content
 api.get('/content-library', async (c) => {
-	const entries = (await c.var.thread.state.get<unknown[]>('content-library')) ?? [];
+	const { supabaseAdmin } = await import('../lib/supabase');
+	const platform = c.req.query('platform');
+	const limit = parseInt(c.req.query('limit') || '100');
+
+	let query = supabaseAdmin
+		.from('generated_content')
+		.select('*')
+		.order('created_at', { ascending: false })
+		.limit(limit);
+
+	if (platform) query = query.eq('platform', platform);
+
+	const { data, error } = await query;
+	if (error) return c.json({ entries: [], count: 0, error: error.message }, 500);
+
+	// Map to the shape ContentLibrary.tsx expects
+	const entries = (data || []).map((row: any) => ({
+		id: row.id,
+		createdAt: row.created_at,
+		platform: row.platform,
+		content: row.content,
+		topic: row.topic || '',
+		contentType: row.content_type,
+		wordCount: row.word_count,
+		images: row.image_urls?.length > 0
+			? row.image_urls.map((url: string, i: number) => ({
+				styleId: row.image_styles?.[i] || `style-${i}`,
+				styleName: row.image_styles?.[i] || 'Unknown',
+				thumbnail: url,
+				imagePrompt: row.image_prompts?.[i] || '',
+			}))
+			: undefined,
+	}));
+
 	return c.json({ entries, count: entries.length });
 });
 
-// Delete a specific library entry
+// Delete a content entry + clean up storage images
 api.delete('/content-library/:id', async (c) => {
+	const { supabaseAdmin } = await import('../lib/supabase');
 	const id = c.req.param('id');
-	const entries = (await c.var.thread.state.get<{ id: string }[]>('content-library')) ?? [];
-	const filtered = entries.filter((e) => e.id !== id);
 
-	if (filtered.length === entries.length) {
-		return c.json({ success: false, error: 'Entry not found' }, 404);
+	// Get image URLs to clean up storage
+	const { data: entry } = await supabaseAdmin
+		.from('generated_content')
+		.select('image_urls')
+		.eq('id', id)
+		.single();
+
+	if (entry?.image_urls?.length) {
+		for (const url of entry.image_urls) {
+			const pathMatch = url.split('/generated-images/')[1];
+			if (pathMatch) {
+				await supabaseAdmin.storage.from('generated-images').remove([pathMatch]);
+			}
+		}
 	}
 
-	await c.var.thread.state.set('content-library', filtered);
-	return c.json({ success: true, remaining: filtered.length });
+	const { error } = await supabaseAdmin
+		.from('generated_content')
+		.delete()
+		.eq('id', id);
+
+	if (error) return c.json({ success: false, error: error.message }, 500);
+	return c.json({ success: true });
+});
+
+// --- Content Feedback ---
+
+// Submit feedback (like/dislike + optional notes)
+api.post('/content-feedback', async (c) => {
+	const { supabaseAdmin } = await import('../lib/supabase');
+	const body = await c.req.json();
+
+	if (!body || !body.rating || !['positive', 'negative'].includes(body.rating)) {
+		return c.json({ success: false, error: 'rating must be "positive" or "negative"' }, 400);
+	}
+
+	const { data, error } = await supabaseAdmin
+		.from('content_feedback')
+		.insert({
+			content_id: body.contentId || null,
+			rating: body.rating,
+			notes: body.notes || null,
+			platform: body.platform || null,
+			content_type: body.contentType || null,
+			content_snippet: body.contentSnippet || null,
+		})
+		.select('id')
+		.single();
+
+	if (error) return c.json({ success: false, error: error.message }, 500);
+	return c.json({ success: true, id: data.id });
+});
+
+// Get all feedback entries
+api.get('/content-feedback', async (c) => {
+	const { supabaseAdmin } = await import('../lib/supabase');
+	const limit = parseInt(c.req.query('limit') || '50');
+
+	const { data, error } = await supabaseAdmin
+		.from('content_feedback')
+		.select('*')
+		.order('created_at', { ascending: false })
+		.limit(limit);
+
+	if (error) return c.json({ entries: [], count: 0, error: error.message }, 500);
+	return c.json({ entries: data || [], count: data?.length || 0 });
 });
 
 // --- Video Library (Supabase-backed) ---

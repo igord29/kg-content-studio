@@ -40,6 +40,7 @@ const AgentInput = s.object({
 const AgentOutput = s.object({
 	content: s.string(),
 	platform: s.string(),
+	contentId: s.string().optional(),
 	imageUrl: s.string().optional(),
 	imagePrompt: s.string().optional(),
 	images: s.array(s.object({
@@ -270,6 +271,107 @@ async function generateStyledImage(
 	}
 }
 
+// ---------------------------------------------------------------------------
+// SUPABASE IMAGE UPLOAD
+// ---------------------------------------------------------------------------
+// Uploads base64 PNG images to the 'generated-images' Supabase Storage bucket
+// and returns a persistent public URL. Falls back gracefully — if upload fails,
+// the caller keeps the base64 data URL.
+// ---------------------------------------------------------------------------
+
+async function uploadImageToSupabase(
+	base64Data: string,
+	styleId: string,
+	logger: { info: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
+): Promise<string | null> {
+	try {
+		const { supabaseAdmin } = await import('../../lib/supabase');
+
+		const raw = base64Data.replace(/^data:image\/\w+;base64,/, '');
+		const buffer = Buffer.from(raw, 'base64');
+
+		const now = new Date();
+		const storagePath = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${Date.now()}_${styleId}.png`;
+
+		const { error: uploadError } = await supabaseAdmin.storage
+			.from('generated-images')
+			.upload(storagePath, buffer, {
+				contentType: 'image/png',
+				upsert: false,
+			});
+
+		if (uploadError) {
+			logger.error('Supabase image upload failed: %s', uploadError.message);
+			return null;
+		}
+
+		const { data: urlData } = supabaseAdmin.storage
+			.from('generated-images')
+			.getPublicUrl(storagePath);
+
+		logger.info('Image uploaded to Supabase: %s', urlData.publicUrl);
+		return urlData.publicUrl;
+	} catch (err) {
+		logger.error('Image upload error: %s', err);
+		return null;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FEEDBACK CONTEXT LOADER
+// ---------------------------------------------------------------------------
+// Queries Supabase for recent editorial feedback (likes/dislikes with notes)
+// and formats them as a prompt section to append to the system prompt.
+// This is the "training" mechanism — Kim's past feedback becomes direct
+// editorial instruction for the LLM.
+// ---------------------------------------------------------------------------
+
+async function loadFeedbackContext(
+	logger?: { info: (msg: string, ...args: unknown[]) => void },
+): Promise<string> {
+	try {
+		const { supabaseAdmin } = await import('../../lib/supabase');
+
+		const { data } = await supabaseAdmin
+			.from('content_feedback')
+			.select('rating, notes, platform, content_type, content_snippet')
+			.not('notes', 'is', null)
+			.order('created_at', { ascending: false })
+			.limit(20);
+
+		if (!data || data.length === 0) return '';
+
+		const liked = data
+			.filter((f: any) => f.rating === 'positive' && f.notes)
+			.map((f: any) => `- "${f.notes}"${f.content_snippet ? ` (re: "${f.content_snippet.slice(0, 80)}...")` : ''}`)
+			.slice(0, 8);
+
+		const disliked = data
+			.filter((f: any) => f.rating === 'negative' && f.notes)
+			.map((f: any) => `- "${f.notes}"${f.content_snippet ? ` (re: "${f.content_snippet.slice(0, 80)}...")` : ''}`)
+			.slice(0, 8);
+
+		if (liked.length === 0 && disliked.length === 0) return '';
+
+		const sections: string[] = ['\n\n---\n\nFEEDBACK FROM KIMBERLY (use this to calibrate your writing):'];
+
+		if (disliked.length > 0) {
+			sections.push(`\nShe did NOT like these things in previous content — AVOID repeating these patterns:\n${disliked.join('\n')}`);
+		}
+		if (liked.length > 0) {
+			sections.push(`\nShe DID like these things — lean into these patterns:\n${liked.join('\n')}`);
+		}
+
+		sections.push('\nTreat this feedback as direct editorial instruction. It overrides general guidelines when they conflict.\n---');
+
+		const result = sections.join('\n');
+		logger?.info('Loaded feedback context: %d chars (%d liked, %d disliked)', result.length, liked.length, disliked.length);
+		return result;
+	} catch {
+		return '';
+	}
+}
+
 const agent = createAgent('content-creator', {
 	description: 'Creates social media content with optional AI-generated images',
 	schema: {
@@ -286,14 +388,17 @@ const agent = createAgent('content-creator', {
 	}) => {
 		ctx.logger.info('Creating content for: %s on %s', topic, platform);
 
+		// Step 0: Load editorial feedback from Supabase to inject into system prompt
+		const feedbackContext = await loadFeedbackContext(ctx.logger);
+
 		// Step 1: Build a structured, context-rich prompt from the brief data
 		const generationPrompt = buildGenerationPrompt(topic, platform);
-		ctx.logger.info('Generation prompt length: %d', generationPrompt.length);
+		ctx.logger.info('Generation prompt length: %d, feedback context: %d chars', generationPrompt.length, feedbackContext.length);
 
-		// Step 2: Generate the text content with the structured prompt
+		// Step 2: Generate the text content with the structured prompt + feedback
 		const { text: rawContent } = await generateText({
 			model: openai('gpt-5-mini'),
-			system: systemPrompt,
+			system: systemPrompt + feedbackContext,
 			prompt: generationPrompt,
 		});
 
@@ -318,6 +423,8 @@ const agent = createAgent('content-creator', {
 Post: ${content}
 
 Platform: ${platform}
+
+Author context: This content is written from the perspective of Kimberly Gordon, a Black woman who is the founder and executive director of Community Literacy Club and UnitedSets Tennis & Learning. When the post is written in first person or describes leadership, program direction, coaching, or organizational vision, the scene should reflect her identity — a Black woman leading, teaching, coaching, or connecting with her community. Do NOT default to male figures in leadership positions.
 
 Write a structured scene description following this exact format:
 
@@ -395,18 +502,68 @@ Write only the structured scene description, nothing else:`,
 				images?.length ?? 0,
 				imageMode === 'agent-pick' ? 2 : selectedStyles.length,
 			);
+
+			// Upload generated images to Supabase Storage for persistence
+			// Replace base64 data URLs with public Supabase URLs
+			if (images && images.length > 0) {
+				ctx.logger.info('Uploading %d images to Supabase Storage...', images.length);
+				for (const img of images) {
+					if (img.imageUrl.startsWith('data:')) {
+						const publicUrl = await uploadImageToSupabase(img.imageUrl, img.styleId, ctx.logger);
+						if (publicUrl) {
+							img.imageUrl = publicUrl;
+						}
+					}
+				}
+				// Update the primary imageUrl too
+				const firstImage = images[0];
+				if (firstImage) {
+					imageUrl = firstImage.imageUrl;
+				}
+			}
 		}
 
-		const result = {
-			content,
-			platform,
-			imageUrl,
-			imagePrompt,
-			images,
-			agentRecommendations,
-		};
+		// Save to Supabase for persistent storage
+		let contentId: string | undefined;
+		try {
+			const { supabaseAdmin } = await import('../../lib/supabase');
 
-		// Auto-save to content library for future reference
+			const imageUrls = (images || []).map(img => img.imageUrl);
+			const imagePrompts = (images || []).map(img => img.imagePrompt);
+			const imageStyles = (images || []).map(img => img.styleName);
+
+			const contentType = platform.toLowerCase() === 'blog' ? 'blog'
+				: ['tiktok', 'youtube'].includes(platform.toLowerCase()) ? 'script'
+				: platform.toLowerCase() === 'newsletter' ? 'newsletter'
+				: 'post';
+
+			const { data: row, error: dbError } = await supabaseAdmin
+				.from('generated_content')
+				.insert({
+					platform,
+					content,
+					topic: topic.slice(0, 500),
+					image_urls: imageUrls,
+					image_prompts: imagePrompts,
+					image_styles: imageStyles,
+					content_type: contentType,
+					word_count: content.split(/\s+/).length,
+				})
+				.select('id')
+				.single();
+
+			if (dbError) {
+				ctx.logger.error('Supabase content save failed: %s', dbError.message);
+			} else {
+				contentId = row.id;
+				ctx.logger.info('Content saved to Supabase: %s', row.id);
+			}
+		} catch (err) {
+			ctx.logger.warn('Failed to save to Supabase: %s',
+				err instanceof Error ? err.message : String(err));
+		}
+
+		// Also save to thread state as fallback (existing pattern)
 		try {
 			const thumbnails = (images || []).map((img) => ({
 				styleId: img.styleId,
@@ -416,7 +573,7 @@ Write only the structured scene description, nothing else:`,
 			}));
 
 			const libraryEntry = {
-				id: `cl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+				id: contentId || `cl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
 				createdAt: new Date().toISOString(),
 				platform,
 				content,
@@ -425,14 +582,20 @@ Write only the structured scene description, nothing else:`,
 			};
 
 			await ctx.thread.state.push('content-library', libraryEntry, 100);
-			ctx.logger.info('Content saved to library: %s (%s, %d images)',
-				libraryEntry.id, platform, thumbnails.length);
 		} catch (libErr) {
-			ctx.logger.warn('Failed to save to content library: %s',
+			ctx.logger.warn('Thread state save failed: %s',
 				libErr instanceof Error ? libErr.message : String(libErr));
 		}
 
-		return result;
+		return {
+			content,
+			platform,
+			contentId,
+			imageUrl,
+			imagePrompt,
+			images,
+			agentRecommendations,
+		};
 	}
 });
 

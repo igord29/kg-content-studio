@@ -43,3 +43,28 @@ export type RawUpload = {
   pipeline_run_id: string | null;
   created_at: string;
 };
+
+export type GeneratedContent = {
+  id: string;
+  platform: string;
+  content: string;
+  topic: string | null;
+  image_urls: string[];
+  image_prompts: string[];
+  image_styles: string[];
+  content_type: 'post' | 'blog' | 'script' | 'newsletter' | 'caption';
+  word_count: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ContentFeedback = {
+  id: string;
+  content_id: string | null;
+  rating: 'positive' | 'negative';
+  notes: string | null;
+  platform: string | null;
+  content_type: string | null;
+  content_snippet: string | null;
+  created_at: string;
+};

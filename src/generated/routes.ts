@@ -264,6 +264,18 @@ declare module '@agentuity/frontend' {
 				stream: typeof contentCreator extends { stream?: infer S } ? S : false;
 				params: never;
 			};
+	'POST /api/content-feedback': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'GET /api/content-feedback': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'GET /api/content-library': {
 				inputSchema: never;
 				outputSchema: never;
@@ -439,6 +451,16 @@ declare module '@agentuity/frontend' {
 			 */
 			post: { input: POSTApiContentCreatorInput; output: POSTApiContentCreatorOutput; type: 'api'; params: never; paramsTuple: [] };
 		};
+		contentFeedback: {
+			/**
+			 * Route: GET /api/content-feedback
+			 */
+			get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			/**
+			 * Route: POST /api/content-feedback
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
 		contentLibrary: {
 			/**
 			 * Route: GET /api/content-library
@@ -600,6 +622,18 @@ declare module '@agentuity/react' {
 				stream: typeof contentCreator extends { stream?: infer S } ? S : false;
 				params: never;
 			};
+	'POST /api/content-feedback': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'GET /api/content-feedback': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'GET /api/content-library': {
 				inputSchema: never;
 				outputSchema: never;
@@ -755,6 +789,16 @@ declare module '@agentuity/react' {
 			 * Route: POST /api/content-creator
 			 */
 			post: { input: POSTApiContentCreatorInput; output: POSTApiContentCreatorOutput; type: 'api'; params: never; paramsTuple: [] };
+		};
+		contentFeedback: {
+			/**
+			 * Route: GET /api/content-feedback
+			 */
+			get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			/**
+			 * Route: POST /api/content-feedback
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 		};
 		contentLibrary: {
 			/**
@@ -918,6 +962,16 @@ const _rpcRouteMetadata = {
 				"post": {
 						"type": "api",
 						"path": "/api/content-creator"
+				}
+		},
+		"contentFeedback": {
+				"get": {
+						"type": "api",
+						"path": "/api/content-feedback"
+				},
+				"post": {
+						"type": "api",
+						"path": "/api/content-feedback"
 				}
 		},
 		"contentLibrary": {

@@ -369,6 +369,7 @@ interface OutputCardProps {
 	onSendToMake: () => void;
 	onEdit?: (newContent: string) => void;
 	copied: boolean;
+	contentId?: string;
 }
 
 const OutputCard = ({
@@ -379,12 +380,57 @@ const OutputCard = ({
 	onSendToMake,
 	onEdit,
 	copied,
+	contentId,
 }: OutputCardProps) => {
 	const p = PLATFORMS.find((pl) => pl.id === platform);
 	const isVideo = p?.category === 'video';
 	const [expandedPrompt, setExpandedPrompt] = useState<string | null>(null);
 	const [isEditing, setIsEditing] = useState(false);
 	const [editedContent, setEditedContent] = useState(content);
+	const [feedbackSent, setFeedbackSent] = useState<'positive' | 'negative' | null>(null);
+	const [showFeedbackNotes, setShowFeedbackNotes] = useState(false);
+	const [feedbackNotes, setFeedbackNotes] = useState('');
+
+	const handleFeedback = async (rating: 'positive' | 'negative') => {
+		setFeedbackSent(rating);
+		try {
+			await fetch('/api/content-feedback', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					contentId: contentId || null,
+					rating,
+					platform,
+					contentType: platform.toLowerCase() === 'blog' ? 'blog' : 'post',
+					contentSnippet: content.slice(0, 300),
+				}),
+			});
+		} catch { /* best-effort */ }
+		setShowFeedbackNotes(true);
+	};
+
+	const submitFeedbackNotes = async () => {
+		if (!feedbackNotes.trim()) {
+			setShowFeedbackNotes(false);
+			return;
+		}
+		try {
+			await fetch('/api/content-feedback', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					contentId: contentId || null,
+					rating: feedbackSent || 'negative',
+					notes: feedbackNotes.trim(),
+					platform,
+					contentType: platform.toLowerCase() === 'blog' ? 'blog' : 'post',
+					contentSnippet: content.slice(0, 300),
+				}),
+			});
+		} catch { /* best-effort */ }
+		setShowFeedbackNotes(false);
+		setFeedbackNotes('');
+	};
 
 	return (
 		<div
@@ -685,7 +731,140 @@ const OutputCard = ({
 				>
 					Send to Make.com →
 				</button>
+
+				{/* Feedback: train the agent */}
+				<div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+					{feedbackSent ? (
+						<span style={{
+							fontFamily: "'Space Mono', monospace",
+							fontSize: 10,
+							color: feedbackSent === 'positive' ? '#2D6A4F' : '#f87171',
+							letterSpacing: 0.5,
+						}}>
+							{feedbackSent === 'positive' ? '✓ Liked' : '✓ Noted'}
+						</span>
+					) : (
+						<>
+							<button
+								onClick={() => handleFeedback('positive')}
+								style={{
+									background: 'none',
+									border: '1px solid #1e2538',
+									borderRadius: 6,
+									padding: '8px 12px',
+									cursor: 'pointer',
+									fontSize: 14,
+									lineHeight: 1,
+									color: '#8892b0',
+									transition: 'all 0.2s',
+								}}
+								title="This is good — more like this"
+								type="button"
+							>
+								👍
+							</button>
+							<button
+								onClick={() => handleFeedback('negative')}
+								style={{
+									background: 'none',
+									border: '1px solid #1e2538',
+									borderRadius: 6,
+									padding: '8px 12px',
+									cursor: 'pointer',
+									fontSize: 14,
+									lineHeight: 1,
+									color: '#8892b0',
+									transition: 'all 0.2s',
+								}}
+								title="Not quite — tell me what to change"
+								type="button"
+							>
+								👎
+							</button>
+						</>
+					)}
+				</div>
 			</div>
+
+			{/* Feedback notes input */}
+			{showFeedbackNotes && (
+				<div style={{
+					marginTop: 12,
+					padding: 14,
+					borderRadius: 8,
+					border: `1px solid ${feedbackSent === 'positive' ? '#2D6A4F' : '#f87171'}33`,
+					background: feedbackSent === 'positive' ? '#2D6A4F0a' : '#f871710a',
+				}}>
+					<div style={{
+						fontFamily: "'Space Mono', monospace",
+						fontSize: 10,
+						letterSpacing: 1,
+						textTransform: 'uppercase' as const,
+						color: feedbackSent === 'positive' ? '#2D6A4F' : '#f87171',
+						marginBottom: 8,
+					}}>
+						{feedbackSent === 'positive' ? 'What did you like?' : 'What should change?'}
+					</div>
+					<textarea
+						value={feedbackNotes}
+						onChange={(e) => setFeedbackNotes(e.target.value)}
+						placeholder={
+							feedbackSent === 'positive'
+								? 'e.g., "Love the opening" or "This tone is perfect"'
+								: 'e.g., "Too listy" or "Sounds like a grant app" or "Don\'t list program details"'
+						}
+						style={{
+							width: '100%',
+							minHeight: 60,
+							padding: 10,
+							borderRadius: 6,
+							border: '1px solid #1e2538',
+							background: '#0a0d14',
+							color: '#e2e8f0',
+							fontSize: 13,
+							fontFamily: "'Source Serif 4', Georgia, serif",
+							resize: 'vertical',
+							outline: 'none',
+						}}
+					/>
+					<div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+						<button
+							onClick={submitFeedbackNotes}
+							style={{
+								padding: '7px 16px',
+								borderRadius: 6,
+								border: 'none',
+								background: feedbackSent === 'positive' ? '#2D6A4F' : '#f87171',
+								color: '#fff',
+								cursor: 'pointer',
+								fontFamily: "'Space Mono', monospace",
+								fontSize: 10,
+								letterSpacing: 0.5,
+							}}
+							type="button"
+						>
+							Save Note
+						</button>
+						<button
+							onClick={() => { setShowFeedbackNotes(false); setFeedbackNotes(''); }}
+							style={{
+								padding: '7px 16px',
+								borderRadius: 6,
+								border: '1px solid #1e2538',
+								background: 'transparent',
+								color: '#8892b0',
+								cursor: 'pointer',
+								fontFamily: "'Space Mono', monospace",
+								fontSize: 10,
+								letterSpacing: 0.5,
+							}}
+							type="button"
+						>
+							Skip
+						</button>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 };
@@ -704,6 +883,7 @@ export function App({ onBack }: AppProps) {
 	const [userInput, setUserInput] = useState('');
 	const [isGenerating, setIsGenerating] = useState(false);
 	const [generatedContent, setGeneratedContent] = useState<string | null>(null);
+	const [generatedContentId, setGeneratedContentId] = useState<string | null>(null);
 	const [showTemplates, setShowTemplates] = useState(false);
 	const [copied, setCopied] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -939,9 +1119,10 @@ export function App({ onBack }: AppProps) {
 					}
 					return response.json();
 				})
-				.then((data: { content: string; platform: string }) => {
+				.then((data: { content: string; platform: string; contentId?: string }) => {
 					const content = data.content || '';
 					setGeneratedContent(content);
+					setGeneratedContentId(data.contentId || null);
 					setIsGenerating(false);
 					setGeneratingStatus('');
 					// Show style picker after text is ready
@@ -1106,7 +1287,7 @@ export function App({ onBack }: AppProps) {
 		setSelectedPlatform(null);
 		setBriefData({});
 		setMessages([]);
-		setGeneratedContent(null);
+		setGeneratedContent(null); setGeneratedContentId(null);
 		setShowStylePicker(false);
 		setIsGeneratingImages(false);
 		setGeneratedImages([]);
@@ -1563,7 +1744,7 @@ export function App({ onBack }: AppProps) {
 										onClick={() => {
 											setStep('brief');
 											setMessages([]);
-											setGeneratedContent(null);
+											setGeneratedContent(null); setGeneratedContentId(null);
 											setShowStylePicker(false);
 											setGeneratedImages([]);
 										}}
@@ -1778,6 +1959,7 @@ export function App({ onBack }: AppProps) {
 											onSendToMake={handleSendToMake}
 											onEdit={handleEditContent}
 											copied={copied}
+											contentId={generatedContentId || undefined}
 										/>
 										<div style={{ marginTop: 16 }}>
 											<StylePicker onSubmit={handleStylePickerSubmit} />
@@ -1796,11 +1978,12 @@ export function App({ onBack }: AppProps) {
 											onSendToMake={handleSendToMake}
 											onEdit={handleEditContent}
 											copied={copied}
+											contentId={generatedContentId || undefined}
 										/>
 										<div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
 											<button
 												onClick={() => {
-													setGeneratedContent(null);
+													setGeneratedContent(null); setGeneratedContentId(null);
 													setShowStylePicker(false);
 													setGeneratedImages([]);
 													setMessages((prev) => [

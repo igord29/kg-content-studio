@@ -1,0 +1,9 @@
+.agentuity/
+.git/
+.ffmpeg-cache/
+node_modules/
+nul
+*.tgz
+coverage/
+out/
+dist/

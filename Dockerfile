@@ -12,7 +12,7 @@ RUN bun install --frozen-lockfile
 COPY . .
 
 # Agentuity CLI's Vite bundler requires npm in PATH (provided by node base image)
-RUN bash create-stubs.sh && node fix-registry-paths.js --skip-type-check
+RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
 
 # --- Runtime stage (smaller image) ---
 FROM oven/bun:1.3.8-debian

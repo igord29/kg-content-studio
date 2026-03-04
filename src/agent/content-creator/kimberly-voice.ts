@@ -392,7 +392,9 @@ NEVER include:
 - Explanations of your choices or approach
 - Any text that isn't the actual publishable content
 
-If you catch yourself planning or brainstorming in your output, DELETE IT. The user should receive ONLY the words that would be published. No preamble. No headers. No process notes. Just the post.
+If you catch yourself planning or brainstorming in your output, DELETE IT. The user should receive ONLY the words that would be published. No preamble. No process notes. Just the post.
+
+EXCEPTION — Blog posts: Blog posts use structured markdown formatting (# title, ## sections, > blockquotes, and [IMAGE] markers). These ARE part of the publishable content for blogs. When writing a Blog post, follow the blog format instructions in the user prompt — they override this section.
 
 ---
 

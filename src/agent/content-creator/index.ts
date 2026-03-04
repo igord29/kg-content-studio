@@ -126,72 +126,81 @@ function buildGenerationPrompt(topic: string, platform: string): string {
 		sections.push(`## ADDITIONAL CONTEXT FROM THE CONVERSATION\n${conversationNotes}`);
 	}
 
-	// ANTI-FABRICATION + OUTPUT FORMAT RULES — injected into every generation prompt
+	// ANTI-FABRICATION RULES — injected into every generation prompt
 	sections.push(`## ABSOLUTE RULES
 1. DO NOT invent any person, child, parent, coach, or specific individual. No "Jamal," no "Coach Keisha," no "Sarah's mom," no fake names. ZERO invented characters.
 2. DO NOT create specific anecdotes that didn't happen. You can describe TYPES of moments ("the kid who finally holds the racket right") but never invent a plot with named characters.
 3. If a real moment was provided above, use it. If not, write from program-level truth and Kimberly's lived perspective.
 4. Start mid-thought. Drop the reader into something specific. No warm-up paragraphs.
 5. Every sentence must earn its spot. If Kimberly would delete it, you delete it first.
-6. Write this so an AI detector scores it as HUMAN. That means: irregular sentence lengths, conversational fragments, specific details over general claims, imperfect rhythm that sounds like someone actually talking.
+6. Write this so an AI detector scores it as HUMAN. That means: irregular sentence lengths, conversational fragments, specific details over general claims, imperfect rhythm that sounds like someone actually talking.`);
 
-## OUTPUT FORMAT — CRITICAL
+	const isBlog = platform.toLowerCase() === 'blog';
+
+	if (isBlog) {
+		// BLOG: structured markdown with image placement markers
+		// This REPLACES the generic output format — blog posts use markdown, not plain text
+		sections.push(`## OUTPUT FORMAT — BLOG STRUCTURED MARKDOWN
+
+YOUR OUTPUT MUST BE STRUCTURED MARKDOWN. This is the blog format — NOT plain text.
+
+Your ENTIRE response must follow this EXACT template. Copy this structure literally, replacing the bracketed descriptions with real content:
+
+# Your Compelling Title Here
+
+[HEADER_IMAGE]
+
+Your engaging 2-3 sentence intro paragraph here. Hook the reader into the story.
+
+## Your First Section Title
+
+Your substantive paragraph(s) here. No bullet lists.
+
+## Your Second Section Title
+
+Your substantive paragraph(s) here.
+
+> Your pull quote here — one powerful sentence that captures a key insight.
+
+## Your Third Section Title
+
+[MID_IMAGE]
+
+Your substantive paragraph(s) here.
+
+[CLOSING_IMAGE]
+
+## Your Final Section Title
+
+Your closing paragraph with a natural CTA — an invitation, not a sales pitch.
+
+MANDATORY REQUIREMENTS:
+- Line 1 of your output MUST start with # followed by the title
+- You MUST include 3-5 lines that start with ## (section headings)
+- You MUST include exactly one line starting with > (pull quote)
+- You MUST include these three markers, each alone on its own line: [HEADER_IMAGE] and [MID_IMAGE] and [CLOSING_IMAGE]
+- Write substantive paragraphs between the headings — NO bullet lists, NO numbered lists
+- Do NOT use bold (**), italic (*), or any formatting besides #, ##, >, and the three image markers
+- Do NOT include any brainstorming, labels like "Blog post:", or meta-commentary`);
+	} else {
+		// NON-BLOG: plain text output
+		sections.push(`## OUTPUT FORMAT — CRITICAL
 Your response must be ONLY the final publishable content. Nothing else.
 DO NOT include brainstorming, angle analysis, strategy notes, "Pick:" headers, numbered options, or any planning process.
 DO NOT label your output with "Blog post:" or "Here's the post:" or any header.
 DO NOT explain your approach or choices.
 The FIRST word of your response must be the FIRST word of the actual post.`);
-
-	// BLOG-SPECIFIC: structured markdown format with image markers
-	if (platform.toLowerCase() === 'blog') {
-		sections.push(`## BLOG FORMAT — STRUCTURED MARKDOWN (MANDATORY)
-Your blog output MUST follow this exact structure:
-
-# [Compelling H1 Title]
-
-[HEADER_IMAGE]
-
-[2-3 sentence intro paragraph that hooks the reader into the story]
-
-## [First H2 Section Title]
-
-[Substantive paragraph(s) — no bullet lists]
-
-## [Second H2 Section Title]
-
-[Substantive paragraph(s)]
-
-> [A pull quote — one powerful sentence from Kimberly that captures the key insight]
-
-## [Third H2 Section Title]
-
-[MID_IMAGE]
-
-[Substantive paragraph(s)]
-
-## [Optional Fourth/Fifth H2 Sections]
-
-[CLOSING_IMAGE]
-
-## [Final Section Title]
-
-[Closing paragraph with natural CTA — an invitation, not a sales pitch]
-
-RULES FOR THIS FORMAT:
-- Start with exactly one # H1 line (the title)
-- Use ## for section headings (3-5 sections total)
-- Include exactly one > blockquote line as a pull quote
-- Place [HEADER_IMAGE], [MID_IMAGE], [CLOSING_IMAGE] each on their own line, exactly once each
-- Write substantive paragraphs, NOT bullet lists or numbered lists
-- Do NOT use bold, italic, or any other markdown formatting — just #, ##, >, and image markers
-- The first line MUST be the # title. Nothing before it.`);
 	}
+
+	const closingInstruction = isBlog
+		? 'RESPOND WITH ONLY THE STRUCTURED MARKDOWN BLOG. Line 1 must be # followed by the title. Include all three image markers [HEADER_IMAGE], [MID_IMAGE], [CLOSING_IMAGE].'
+		: 'RESPOND WITH ONLY THE POST. No brainstorming. No angle analysis. No "here\'s the post" labels. The first word you write IS the first word of the published content.';
 
 	return `You are writing a ${platform} post for Community Literacy Club.
 
 ${sections.join('\n\n')}
 
-RESPOND WITH ONLY THE POST. No brainstorming. No angle analysis. No "here's the post" labels. The first word you write IS the first word of the published content.`;
+${closingInstruction}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -449,8 +458,72 @@ const agent = createAgent('content-creator', {
 
 		// Step 2b: Strip any brainstorming/planning that leaked into the output.
 		// The model sometimes dumps its chain-of-thought before the actual post.
-		const content = stripBrainstorming(rawContent);
+		// For blog posts, skip stripping to preserve markdown structure (# headers, > quotes, [MARKERS])
+		const isBlogPost = platform.toLowerCase() === 'blog';
+		let content = isBlogPost ? rawContent.trim() : stripBrainstorming(rawContent);
 		ctx.logger.info('Content generated, length: %d (raw: %d)', content.length, rawContent.length);
+
+		// Step 2c: Blog format validation — if the LLM didn't produce structured markdown,
+		// make a second call to reformat the plain text into the required blog structure.
+		if (isBlogPost) {
+			const hasH1 = /^#\s+.+/m.test(content);
+			const hasH2 = /^##\s+.+/m.test(content);
+			const hasMarkers = content.includes('[HEADER_IMAGE]') && content.includes('[MID_IMAGE]') && content.includes('[CLOSING_IMAGE]');
+
+			ctx.logger.info('Blog format check — H1: %s, H2: %s, markers: %s', hasH1, hasH2, hasMarkers);
+
+			if (!hasH1 || !hasH2 || !hasMarkers) {
+				ctx.logger.info('Blog format missing — reformatting with second LLM call...');
+				const { text: reformatted } = await generateText({
+					model: openai('gpt-5-mini'),
+					prompt: `You are a formatting assistant. Take this blog post and reformat it into structured markdown.
+
+ORIGINAL BLOG POST:
+${content}
+
+REFORMAT it into this EXACT structure. Keep ALL the original writing — just add the formatting:
+
+# [Extract or write a compelling title from the content]
+
+[HEADER_IMAGE]
+
+[First 2-3 sentences as intro paragraph]
+
+## [Section heading for the first major topic]
+
+[Paragraphs from the original covering this topic]
+
+## [Section heading for the second major topic]
+
+[Paragraphs from the original]
+
+> [Pick the single most powerful sentence from the original as a pull quote]
+
+## [Section heading for the next topic]
+
+[MID_IMAGE]
+
+[Paragraphs from the original]
+
+[CLOSING_IMAGE]
+
+## [Final section heading]
+
+[Final paragraphs from the original]
+
+RULES:
+- KEEP the original text — do not rewrite it, just organize it
+- Line 1 MUST start with # (the title)
+- Include 3-5 ## section headings
+- Include exactly one > blockquote (pull quote)
+- Include exactly these three markers on their own lines: [HEADER_IMAGE], [MID_IMAGE], [CLOSING_IMAGE]
+- No bullet lists, no bold/italic, no extra formatting
+- Output ONLY the reformatted markdown, nothing else`,
+				});
+				content = reformatted.trim();
+				ctx.logger.info('Blog reformatted, length: %d', content.length);
+			}
+		}
 
 		let imageUrl: string | undefined;
 		let imagePrompt: string | undefined;

@@ -1,6 +1,7 @@
 import { useAnalytics } from '@agentuity/react';
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { StylePicker, type StylePickerResult } from './StylePicker';
+import { BlogRenderer, isBlogWithMarkers } from './BlogRenderer';
 import './App.css';
 
 // Timeout constants
@@ -546,23 +547,36 @@ const OutputCard = ({
 			) : (
 				<div
 					style={{
-						color: '#e2e8f0',
-						fontSize: 15,
-						lineHeight: 1.75,
-						fontFamily: "'Source Serif 4', Georgia, serif",
-						whiteSpace: 'pre-wrap',
 						padding: '16px 0',
 						borderTop: '1px solid #1e2538',
 						borderBottom: '1px solid #1e2538',
 						marginBottom: 16,
 					}}
 				>
-					{content}
+					{platform.toLowerCase() === 'blog' && isBlogWithMarkers(content) ? (
+						<BlogRenderer
+							content={content}
+							images={(images || []).map((img) => ({
+								imageUrl: img.imageUrl,
+								styleName: img.styleName,
+							}))}
+						/>
+					) : (
+						<div style={{
+							color: '#e2e8f0',
+							fontSize: 15,
+							lineHeight: 1.75,
+							fontFamily: "'Source Serif 4', Georgia, serif",
+							whiteSpace: 'pre-wrap',
+						}}>
+							{content}
+						</div>
+					)}
 				</div>
 			)}
 
-			{/* Generated Images */}
-			{images && images.length > 0 && (
+			{/* Generated Images — only show gallery for non-blog or blog without markers */}
+			{images && images.length > 0 && !(platform.toLowerCase() === 'blog' && isBlogWithMarkers(content)) && (
 				<div style={{ marginBottom: 16 }}>
 					<div style={{
 						fontFamily: "'Space Mono', monospace",

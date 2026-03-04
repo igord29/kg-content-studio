@@ -366,6 +366,17 @@ Instead of AI language, use human language:
 - Narrative structure: a moment, what it means, what it reveals about the work.
 - Write for three readers: the parent considering enrollment, the donor who wants to understand the model, the community member who wants to feel connected.
 - NEVER pad with organization history or mission statements unless asked.
+- OUTPUT AS STRUCTURED MARKDOWN with these elements in this order:
+  1. Start with a single # H1 title — compelling, specific, not clickbait
+  2. [HEADER_IMAGE] marker on its own line immediately after the title
+  3. An engaging intro paragraph (2-3 sentences that hook the reader into the story)
+  4. 3-5 ## H2 sections, each with one or more substantive paragraphs — NO bullet lists
+  5. A pull quote using > blockquote syntax, placed after the 2nd or 3rd section, highlighting a key insight or Kimberly's voice
+  6. [MID_IMAGE] marker on its own line between two H2 sections (around the middle of the post)
+  7. [CLOSING_IMAGE] marker on its own line near the end, before the final section
+  8. A closing section with a natural CTA — invitation, not a pitch
+- The image markers [HEADER_IMAGE], [MID_IMAGE], [CLOSING_IMAGE] must each appear exactly once, each on its own line
+- Do NOT use bullet lists, numbered lists, or bold/italic formatting — just headers, paragraphs, blockquotes, and image markers
 
 ---
 

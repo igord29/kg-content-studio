@@ -142,6 +142,51 @@ DO NOT label your output with "Blog post:" or "Here's the post:" or any header.
 DO NOT explain your approach or choices.
 The FIRST word of your response must be the FIRST word of the actual post.`);
 
+	// BLOG-SPECIFIC: structured markdown format with image markers
+	if (platform.toLowerCase() === 'blog') {
+		sections.push(`## BLOG FORMAT — STRUCTURED MARKDOWN (MANDATORY)
+Your blog output MUST follow this exact structure:
+
+# [Compelling H1 Title]
+
+[HEADER_IMAGE]
+
+[2-3 sentence intro paragraph that hooks the reader into the story]
+
+## [First H2 Section Title]
+
+[Substantive paragraph(s) — no bullet lists]
+
+## [Second H2 Section Title]
+
+[Substantive paragraph(s)]
+
+> [A pull quote — one powerful sentence from Kimberly that captures the key insight]
+
+## [Third H2 Section Title]
+
+[MID_IMAGE]
+
+[Substantive paragraph(s)]
+
+## [Optional Fourth/Fifth H2 Sections]
+
+[CLOSING_IMAGE]
+
+## [Final Section Title]
+
+[Closing paragraph with natural CTA — an invitation, not a sales pitch]
+
+RULES FOR THIS FORMAT:
+- Start with exactly one # H1 line (the title)
+- Use ## for section headings (3-5 sections total)
+- Include exactly one > blockquote line as a pull quote
+- Place [HEADER_IMAGE], [MID_IMAGE], [CLOSING_IMAGE] each on their own line, exactly once each
+- Write substantive paragraphs, NOT bullet lists or numbered lists
+- Do NOT use bold, italic, or any other markdown formatting — just #, ##, >, and image markers
+- The first line MUST be the # title. Nothing before it.`);
+	}
+
 	return `You are writing a ${platform} post for Community Literacy Club.
 
 ${sections.join('\n\n')}
@@ -414,11 +459,115 @@ const agent = createAgent('content-creator', {
 
 		// Step 3: Generate images if requested
 		if (includeImage) {
-			ctx.logger.info('Generating structured image prompt for gpt-image-1.5...');
+			const isBlog = platform.toLowerCase() === 'blog';
 
-			const { text: generatedImagePrompt } = await generateText({
-				model: openai('gpt-5-mini'),
-				prompt: `You are writing an image generation prompt for gpt-image-1.5, based on a social media post for Community Literacy Club (a youth tennis, chess, and mentorship nonprofit serving predominantly Black and brown communities in Hempstead, Long Beach, Brooklyn, Westchester, Newark NJ, and Connecticut).
+			if (isBlog) {
+				// ---------------------------------------------------------------
+				// BLOG: Generate 3 position-specific images (header, mid, closing)
+				// ---------------------------------------------------------------
+				ctx.logger.info('Blog detected — generating 3 position-specific image prompts...');
+
+				// Strip image markers from content before passing to image prompt generator
+				const cleanContent = content
+					.replace(/\[HEADER_IMAGE\]/g, '')
+					.replace(/\[MID_IMAGE\]/g, '')
+					.replace(/\[CLOSING_IMAGE\]/g, '')
+					.trim();
+
+				const { text: blogImagePrompts } = await generateText({
+					model: openai('gpt-5-mini'),
+					prompt: `You are writing THREE image generation prompts for gpt-image-1.5, based on a blog post for Community Literacy Club (a youth tennis, chess, and mentorship nonprofit serving predominantly Black and brown communities in Hempstead, Long Beach, Brooklyn, Westchester, Newark NJ, and Connecticut).
+
+Blog post:
+${cleanContent}
+
+Author context: This content is written from the perspective of Kimberly Gordon, a Black woman who is the founder and executive director of Community Literacy Club and UnitedSets Tennis & Learning. When the post is written in first person or describes leadership, program direction, coaching, or organizational vision, the scene should reflect her identity — a Black woman leading, teaching, coaching, or connecting with her community. Do NOT default to male figures in leadership positions.
+
+Write THREE separate scene descriptions, one for each position in the blog post. Each scene should be DIFFERENT and reflect the content near its placement:
+
+HEADER:
+Scene: [Sets the overall tone — captures the topic/theme of the blog, wide establishing shot]
+Subject: [Main subject that draws the reader in]
+Key details: [Textures, colors, atmosphere]
+Composition: [Wide or medium shot, inviting the reader in]
+
+MID:
+Scene: [Illustrates the core insight or turning point in the narrative]
+Subject: [A specific action or interaction that embodies the middle section's content]
+Key details: [Close-up details that feel intimate and real]
+Composition: [Tighter framing, eye-level, documentary feel]
+
+CLOSING:
+Scene: [Forward-looking, resolution, or the feeling the reader should leave with]
+Subject: [A moment that captures hope, determination, or community]
+Key details: [Warm lighting, sense of continuation]
+Composition: [Medium-wide, golden hour or warm interior lighting]
+
+RULES:
+- REPRESENT THE COMMUNITY: Show Black and brown children, teens, young adults, and families. This is who CLC serves.
+- Be SPECIFIC — worn tennis ball fuzz, chalk dust on fingers, cracked gym floor, folding chairs, portable net
+- Use photography/cinematography language (35mm lens, shallow depth of field, golden hour)
+- Do NOT include any art style directions — just describe the scene and moment
+- Do NOT include text overlays, watermarks, or brand references
+- Capture real, unposed moments — not stock photo setups
+- Settings should feel like community centers, school gyms, public parks — NOT country clubs
+- Each scene description should be 4-6 lines
+- The three scenes must be VISUALLY DISTINCT from each other
+
+Write the three scene descriptions using the exact labels HEADER:, MID:, CLOSING: — nothing else:`,
+				});
+
+				// Parse out the three prompts
+				const promptText = blogImagePrompts.trim();
+				const headerMatch = promptText.match(/HEADER:\s*([\s\S]*?)(?=MID:|$)/i);
+				const midMatch = promptText.match(/MID:\s*([\s\S]*?)(?=CLOSING:|$)/i);
+				const closingMatch = promptText.match(/CLOSING:\s*([\s\S]*?)$/i);
+
+				const blogPositionPrompts = [
+					{ position: 'Header image', prompt: headerMatch?.[1]?.trim() || promptText },
+					{ position: 'Mid-post image', prompt: midMatch?.[1]?.trim() || promptText },
+					{ position: 'Closing image', prompt: closingMatch?.[1]?.trim() || promptText },
+				];
+
+				imagePrompt = blogPositionPrompts[0]!.prompt; // primary prompt for metadata
+
+				// Use top recommended style for visual consistency across all 3 blog images
+				const recommendations = getAgentStyleRecommendations(topic, platform);
+				agentRecommendations = recommendations;
+				const primaryStyle = getStyleById(recommendations[0]?.styleId || 'photorealism');
+
+				if (primaryStyle) {
+					ctx.logger.info('Blog images: using style "%s" for all 3 positions', primaryStyle.name);
+
+					const imagePromises = blogPositionPrompts.map((bp) =>
+						generateStyledImage(bp.prompt, primaryStyle, bp.position, platform, ctx.logger),
+					);
+
+					const results = await Promise.allSettled(imagePromises);
+					const successfulImages: { styleId: string; styleName: string; imageUrl: string; imagePrompt: string; reason: string }[] = [];
+					for (const result of results) {
+						if (result.status === 'fulfilled' && result.value !== null) {
+							successfulImages.push(result.value);
+						}
+					}
+					images = successfulImages;
+
+					const firstImage = successfulImages[0];
+					if (firstImage) {
+						imageUrl = firstImage.imageUrl;
+					}
+				}
+
+				ctx.logger.info('Blog image generation complete: %d of 3 succeeded', images?.length ?? 0);
+			} else {
+				// ---------------------------------------------------------------
+				// NON-BLOG: Standard image generation (existing flow)
+				// ---------------------------------------------------------------
+				ctx.logger.info('Generating structured image prompt for gpt-image-1.5...');
+
+				const { text: generatedImagePrompt } = await generateText({
+					model: openai('gpt-5-mini'),
+					prompt: `You are writing an image generation prompt for gpt-image-1.5, based on a social media post for Community Literacy Club (a youth tennis, chess, and mentorship nonprofit serving predominantly Black and brown communities in Hempstead, Long Beach, Brooklyn, Westchester, Newark NJ, and Connecticut).
 
 Post: ${content}
 
@@ -444,64 +593,65 @@ RULES:
 - Keep it to 4-6 lines total
 
 Write only the structured scene description, nothing else:`,
-			});
-
-			imagePrompt = generatedImagePrompt.trim();
-			ctx.logger.info('Image prompt: %s', imagePrompt.slice(0, 200));
-
-			if (imageMode === 'agent-pick') {
-				const recommendations = getAgentStyleRecommendations(topic, platform);
-				agentRecommendations = recommendations;
-				ctx.logger.info('Agent recommended styles: %s', recommendations.map(r => r.styleName).join(', '));
-
-				const imagePromises = recommendations.map((rec) => {
-					const style = getStyleById(rec.styleId);
-					if (!style) return Promise.resolve(null);
-					return generateStyledImage(imagePrompt!, style, rec.reason, platform, ctx.logger);
 				});
 
-				const results = await Promise.allSettled(imagePromises);
-				const successfulImages: { styleId: string; styleName: string; imageUrl: string; imagePrompt: string; reason: string }[] = [];
-				for (const result of results) {
-					if (result.status === 'fulfilled' && result.value !== null) {
-						successfulImages.push(result.value);
+				imagePrompt = generatedImagePrompt.trim();
+				ctx.logger.info('Image prompt: %s', imagePrompt.slice(0, 200));
+
+				if (imageMode === 'agent-pick') {
+					const recommendations = getAgentStyleRecommendations(topic, platform);
+					agentRecommendations = recommendations;
+					ctx.logger.info('Agent recommended styles: %s', recommendations.map(r => r.styleName).join(', '));
+
+					const imagePromises = recommendations.map((rec) => {
+						const style = getStyleById(rec.styleId);
+						if (!style) return Promise.resolve(null);
+						return generateStyledImage(imagePrompt!, style, rec.reason, platform, ctx.logger);
+					});
+
+					const results = await Promise.allSettled(imagePromises);
+					const successfulImages: { styleId: string; styleName: string; imageUrl: string; imagePrompt: string; reason: string }[] = [];
+					for (const result of results) {
+						if (result.status === 'fulfilled' && result.value !== null) {
+							successfulImages.push(result.value);
+						}
+					}
+					images = successfulImages;
+
+					const firstImage = successfulImages[0];
+					if (firstImage) {
+						imageUrl = firstImage.imageUrl;
+					}
+				} else {
+					const stylesToUse = selectedStyles.slice(0, variationCount);
+					ctx.logger.info('User selected styles: %s', stylesToUse.join(', '));
+
+					const imagePromises = stylesToUse.map((styleId) => {
+						const style = getStyleById(styleId);
+						if (!style) return Promise.resolve(null);
+						return generateStyledImage(imagePrompt!, style, 'Selected by user', platform, ctx.logger);
+					});
+
+					const results = await Promise.allSettled(imagePromises);
+					const successfulImages: { styleId: string; styleName: string; imageUrl: string; imagePrompt: string; reason: string }[] = [];
+					for (const result of results) {
+						if (result.status === 'fulfilled' && result.value !== null) {
+							successfulImages.push(result.value);
+						}
+					}
+					images = successfulImages;
+
+					const firstImg = successfulImages[0];
+					if (firstImg) {
+						imageUrl = firstImg.imageUrl;
 					}
 				}
-				images = successfulImages;
 
-				const firstImage = successfulImages[0];
-				if (firstImage) {
-					imageUrl = firstImage.imageUrl;
-				}
-			} else {
-				const stylesToUse = selectedStyles.slice(0, variationCount);
-				ctx.logger.info('User selected styles: %s', stylesToUse.join(', '));
-
-				const imagePromises = stylesToUse.map((styleId) => {
-					const style = getStyleById(styleId);
-					if (!style) return Promise.resolve(null);
-					return generateStyledImage(imagePrompt!, style, 'Selected by user', platform, ctx.logger);
-				});
-
-				const results = await Promise.allSettled(imagePromises);
-				const successfulImages: { styleId: string; styleName: string; imageUrl: string; imagePrompt: string; reason: string }[] = [];
-				for (const result of results) {
-					if (result.status === 'fulfilled' && result.value !== null) {
-						successfulImages.push(result.value);
-					}
-				}
-				images = successfulImages;
-
-				const firstImg = successfulImages[0];
-				if (firstImg) {
-					imageUrl = firstImg.imageUrl;
-				}
-			}
-
-			ctx.logger.info('Image generation complete: %d of %d succeeded',
-				images?.length ?? 0,
-				imageMode === 'agent-pick' ? 2 : selectedStyles.length,
-			);
+				ctx.logger.info('Image generation complete: %d of %d succeeded',
+					images?.length ?? 0,
+					imageMode === 'agent-pick' ? 2 : selectedStyles.length,
+				);
+			} // end non-blog else
 
 			// Upload generated images to Supabase Storage for persistence
 			// Replace base64 data URLs with public Supabase URLs

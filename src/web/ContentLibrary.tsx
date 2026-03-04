@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { VideoUploader } from './VideoUploader';
+import { BlogRenderer, isBlogWithMarkers } from './BlogRenderer';
 
 // --- Types ---
 
@@ -693,16 +694,27 @@ function TextDetailView({
 
 				{/* Full content */}
 				<div style={{ padding: '20px 24px' }}>
-					<pre style={{
-						fontFamily: S.serif, fontSize: 14, lineHeight: 1.7, color: S.textPrimary,
-						whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, letterSpacing: '0.01em',
-					}}>
-						{entry.content}
-					</pre>
+					{entry.platform === 'Blog' && isBlogWithMarkers(entry.content) ? (
+						<BlogRenderer
+							content={entry.content}
+							images={(entry.images || []).map((img) => ({
+								imageUrl: img.thumbnail,
+								thumbnail: img.thumbnail,
+								styleName: img.styleName,
+							}))}
+						/>
+					) : (
+						<pre style={{
+							fontFamily: S.serif, fontSize: 14, lineHeight: 1.7, color: S.textPrimary,
+							whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, letterSpacing: '0.01em',
+						}}>
+							{entry.content}
+						</pre>
+					)}
 				</div>
 
-				{/* Images */}
-				{entry.images && entry.images.length > 0 && (
+				{/* Images — only show gallery for non-blog or blog without markers (fallback) */}
+				{entry.images && entry.images.length > 0 && !(entry.platform === 'Blog' && isBlogWithMarkers(entry.content)) && (
 					<div style={{ padding: '0 24px 20px' }}>
 						<div style={{ fontFamily: S.mono, fontSize: 9, color: S.textDim, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 12 }}>
 							Generated Images

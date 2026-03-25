@@ -32,5 +32,6 @@ RUN sed -i 's/hostname:"127.0.0.1"/hostname:process.env.HOST||"127.0.0.1"/g' .ag
 
 # Railway sets PORT env var; app.js reads process.env.PORT
 ENV HOST=0.0.0.0
+ENV NODE_ENV=production
 EXPOSE 3500
 CMD ["bun", ".agentuity/app.js"]

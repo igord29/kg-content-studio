@@ -26,6 +26,11 @@ COPY --from=builder /app/.agentuity .agentuity/
 COPY --from=builder /app/node_modules node_modules/
 COPY --from=builder /app/package.json ./
 
+# Patch: Agentuity binds to 127.0.0.1 by default, but Railway's reverse proxy
+# needs the server on 0.0.0.0. Replace the hardcoded hostname with an env-var lookup.
+RUN sed -i 's/hostname:"127.0.0.1"/hostname:process.env.HOST||"127.0.0.1"/g' .agentuity/app.js
+
 # Railway sets PORT env var; app.js reads process.env.PORT
+ENV HOST=0.0.0.0
 EXPOSE 3500
 CMD ["bun", ".agentuity/app.js"]

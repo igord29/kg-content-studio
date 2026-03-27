@@ -1127,6 +1127,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					platform,
 					editMode: selectedMode === 'auto' ? 'game_day' : selectedMode,
 					renderEngine,
+					appUrl: window.location.origin,
 					// Music: pass custom URL if provided, disable if user turned off
 					musicUrl: musicEnabled ? (customMusicUrl.trim() || undefined) : undefined,
 					musicDisabled: !musicEnabled,
@@ -1340,6 +1341,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					platform,
 					editMode: selectedMode === 'auto' ? 'game_day' : selectedMode,
 					renderEngine,
+					appUrl: window.location.origin,
 					musicUrl: musicEnabled ? (customMusicUrl.trim() || undefined) : undefined,
 					musicDisabled: !musicEnabled,
 				}),

@@ -923,6 +923,12 @@ export async function checkRemotionStatus(renderId: string, logger?: Logger): Pr
 		return { id: renderId, status: 'failed', error: entry.error };
 	}
 
+	// If Lambda hasn't been submitted yet (still preprocessing), return queued status
+	if (!entry.lambdaRenderId || !entry.bucketName || !entry.region) {
+		logger?.info('[remotion-lambda] Render %s still preprocessing (awaiting Lambda submission)', renderId);
+		return { id: renderId, status: 'rendering' };
+	}
+
 	// Poll Lambda for progress
 	try {
 		const { getRenderProgress } = await import('@remotion/lambda/client');

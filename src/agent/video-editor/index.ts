@@ -1585,14 +1585,36 @@ const agent = createAgent('video-editor', {
 			// using the topic as a query and pick the best matches
 			if (videoIds.length === 0 && catalog.length > 0) {
 				ctx.logger.info('[video-editor] No videos selected — auto-searching catalog for: %s', topic);
-				const queryTokens = topic.toLowerCase().split(/[\s,]+/).filter((t: string) => t.length > 1);
+				const topicLower = topic.toLowerCase();
+				// Tokenize but also normalize common compound terms (e.g. "usopen" → "us open")
+				const queryTokens = topicLower.split(/[\s,]+/).filter((t: string) => t.length > 1);
+
 				const scored = catalog
-					.map(entry => ({
-						fileId: entry.fileId,
-						score: scoreSearchMatch(entry, queryTokens),
-						quality: entry.quality,
-						duration: entry.duration ? parseInt(entry.duration) : 0,
-					}))
+					.map(entry => {
+						let score = scoreSearchMatch(entry, queryTokens);
+						// Also do full-phrase matching against location and activity
+						// This catches "us open" when user types "usopen" or vice versa
+						const locLower = (entry.suspectedLocation || '').toLowerCase();
+						const actLower = (entry.activity || '').toLowerCase();
+						const readableText = Array.isArray(entry.readableText)
+							? entry.readableText.join(' ').toLowerCase()
+							: (entry.readableText || '').toLowerCase();
+						const searchable = `${locLower} ${actLower} ${readableText}`;
+
+						// Check if topic (or normalized variants) appears in searchable text
+						const normalized = topicLower.replace(/\s+/g, '');
+						for (const field of [locLower, actLower, readableText]) {
+							const fieldNorm = field.replace(/\s+/g, '');
+							if (fieldNorm.includes(normalized) || normalized.includes(fieldNorm.replace(/[^a-z0-9]/g, ''))) {
+								score += 5;
+							}
+						}
+						// Boost high quality clips
+						if (entry.quality === 'excellent') score += 2;
+						else if (entry.quality === 'good') score += 1;
+
+						return { fileId: entry.fileId, score };
+					})
 					.filter(r => r.score > 0)
 					.sort((a, b) => b.score - a.score);
 

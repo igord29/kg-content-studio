@@ -386,7 +386,7 @@ const agent = createAgent('video-editor', {
 					};
 				}
 
-				const clips = editPlanObj.clips as Array<{
+				const rawClips = editPlanObj.clips as Array<{
 					fileId: string;
 					filename?: string;
 					trimStart?: number;
@@ -394,6 +394,44 @@ const agent = createAgent('video-editor', {
 					purpose?: string;
 					speed?: number;
 				}>;
+
+				// Validate and fix file IDs against catalog — Claude can hallucinate
+				// characters in long Google Drive IDs. Match by filename or fuzzy ID.
+				const catalogForValidation = loadExistingCatalog();
+				const catalogByFile = new Map(catalogForValidation.map(e => [e.filename, e.fileId]));
+				const catalogIds = new Set(catalogForValidation.map(e => e.fileId));
+
+				const clips = rawClips.map(clip => {
+					if (catalogIds.has(clip.fileId)) return clip; // ID is valid
+					// Try matching by filename
+					if (clip.filename && catalogByFile.has(clip.filename)) {
+						const correctId = catalogByFile.get(clip.filename)!;
+						ctx.logger.warn('[render] Fixed hallucinated fileId for %s: %s → %s',
+							clip.filename, clip.fileId, correctId);
+						return { ...clip, fileId: correctId };
+					}
+					// Fuzzy match: find the catalog ID with the smallest edit distance
+					let bestMatch = '';
+					let bestScore = 0;
+					for (const catId of catalogIds) {
+						// Count matching characters in same positions
+						let matches = 0;
+						for (let i = 0; i < Math.min(catId.length, clip.fileId.length); i++) {
+							if (catId[i] === clip.fileId[i]) matches++;
+						}
+						if (matches > bestScore) {
+							bestScore = matches;
+							bestMatch = catId;
+						}
+					}
+					if (bestScore > clip.fileId.length * 0.7) {
+						ctx.logger.warn('[render] Fuzzy-matched fileId %s → %s (%d/%d chars match)',
+							clip.fileId, bestMatch, bestScore, clip.fileId.length);
+						return { ...clip, fileId: bestMatch };
+					}
+					ctx.logger.warn('[render] Could not validate fileId: %s (filename: %s)', clip.fileId, clip.filename);
+					return clip;
+				});
 
 				const overlays = (editPlanObj.textOverlays || []) as Array<{
 					text: string;

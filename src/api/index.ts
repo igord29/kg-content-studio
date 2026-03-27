@@ -56,19 +56,20 @@ api.delete('/translate/history', validator({ output: StateSchema }), async (c) =
 
 // Refine question — generates one pointed follow-up question based on the brief
 api.post('/refine-question', async (c) => {
-	const { platform, briefData } = await c.req.json<{
-		platform: string;
-		briefData: Record<string, string>;
-	}>();
+	try {
+		const { platform, briefData } = await c.req.json<{
+			platform: string;
+			briefData: Record<string, string>;
+		}>();
 
-	const briefSummary = Object.entries(briefData)
-		.filter(([_, v]) => v?.trim())
-		.map(([k, v]) => `${k}: ${v}`)
-		.join('\n');
+		const briefSummary = Object.entries(briefData)
+			.filter(([_, v]) => v?.trim())
+			.map(([k, v]) => `${k}: ${v}`)
+			.join('\n');
 
-	const { text: question } = await generateText({
-		model: openai('gpt-4o-mini'),
-		prompt: `You are a creative director helping a nonprofit founder write a ${platform} post. She's given you this brief:
+		const { text: question } = await generateText({
+			model: openai('gpt-4o-mini'),
+			prompt: `You are a creative director helping a nonprofit founder write a ${platform} post. She's given you this brief:
 
 ${briefSummary}
 
@@ -83,9 +84,13 @@ Rules:
 - If the brief is already rich with detail, ask about the emotional undercurrent or what she wants the reader to feel differently about after reading
 
 Write ONLY the question. Nothing else.`,
-	});
+		});
 
-	return c.json({ question: question.trim() });
+		return c.json({ question: question.trim() });
+	} catch (err) {
+		console.error('[refine-question] Error:', err instanceof Error ? err.message : err);
+		return c.json({ question: null }, 500);
+	}
 });
 
 // Manager agent
@@ -236,7 +241,7 @@ api.get('/processed-file/:processedId', async (c) => {
 		const filePath = path.join(tempDir, `processed_${processedId}.mp4`);
 		const resolvedPath = path.resolve(filePath);
 
-		if (!resolvedPath.startsWith(tempDir)) {
+		if (!resolvedPath.toLowerCase().startsWith(tempDir.toLowerCase())) {
 			return c.text('Access denied', 403);
 		}
 
@@ -482,10 +487,12 @@ api.get('/video-library/search', async (c) => {
 		return c.json({ entries: [], count: 0 });
 	}
 
+	// Sanitize query to prevent PostgREST filter injection
+	const safeQ = q.replace(/[{},\\]/g, '');
 	const { data, error } = await supabaseAdmin
 		.from('finished_videos')
 		.select('*')
-		.or(`title.ilike.%${q}%,tags.cs.{${q.toLowerCase()}}`)
+		.or(`title.ilike.%${safeQ}%,tags.cs.{${safeQ.toLowerCase()}}`)
 		.order('created_at', { ascending: false })
 		.limit(50);
 

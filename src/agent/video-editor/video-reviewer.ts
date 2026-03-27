@@ -9,6 +9,7 @@
 
 import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
+import { anthropic } from '@ai-sdk/anthropic';
 import { videoDirectorPrompt } from './video-director-prompt';
 
 // --- Types ---
@@ -405,9 +406,9 @@ ${editPlanContext}
 Return your review as JSON following the format specified in your instructions.`,
 		});
 
-		// Send to GPT-5-mini
+		// Send to GPT-4o for vision-based review
 		const result = await generateText({
-			model: openai('gpt-5-mini'),
+			model: openai('gpt-4o'),
 			system: buildReviewPrompt(mode, platform),
 			messages: [{
 				role: 'user',
@@ -534,7 +535,7 @@ ADDITIONAL RULES:
 Return ONLY the revised JSON edit plan (same format as the original) wrapped in \`\`\`json fences. Include a "revisionNotes" field explaining what you changed and why for each clip.`;
 
 	const result = await generateText({
-		model: openai('gpt-5.1'),
+		model: anthropic('claude-sonnet-4-6'),
 		system: videoDirectorPrompt,
 		prompt,
 	});

@@ -1,18 +1,26 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY!;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.warn('SUPABASE_URL or SUPABASE_ANON_KEY not set — Supabase client will be unavailable');
+}
+
 /** Public client — respects RLS policies */
-export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase: SupabaseClient = supabaseUrl && supabaseAnonKey
+  ? createClient(supabaseUrl, supabaseAnonKey)
+  : null as unknown as SupabaseClient;
 
 /** Admin client — bypasses RLS. Falls back to anon key if service role key not set. */
-export const supabaseAdmin: SupabaseClient = createClient(
-  supabaseUrl,
-  supabaseServiceKey || supabaseAnonKey,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+export const supabaseAdmin: SupabaseClient = supabaseUrl && supabaseAnonKey
+  ? createClient(
+      supabaseUrl,
+      supabaseServiceKey || supabaseAnonKey,
+      { auth: { persistSession: false, autoRefreshToken: false } },
+    )
+  : null as unknown as SupabaseClient;
 
 export type FinishedVideo = {
   id: string;

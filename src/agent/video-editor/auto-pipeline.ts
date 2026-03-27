@@ -6,7 +6,7 @@
  */
 
 import { generateText } from 'ai';
-import { openai } from '@ai-sdk/openai';
+import { anthropic } from '@ai-sdk/anthropic';
 import { videoDirectorPrompt } from './video-director-prompt';
 import { getVideoMetadata, type CatalogEntry } from './google-drive';
 import { loadExistingCatalog } from './cataloger';
@@ -128,17 +128,17 @@ Return a JSON edit plan with: clips (array of {fileId, filename, trimStart, dura
 
 Wrap the JSON in \`\`\`json fences.`;
 
-	logger.info('[auto-pipeline] Generating edit plan with gpt-5.1: %d videos, platform=%s, mode=%s', videoIds.length, platform, editMode);
+	logger.info('[auto-pipeline] Generating edit plan with Claude: %d videos, platform=%s, mode=%s', videoIds.length, platform, editMode);
 
 	const result = await generateText({
-		model: openai('gpt-5.1'),
+		model: anthropic('claude-sonnet-4-6'),
 		system: videoDirectorPrompt,
 		prompt,
 	});
 
 	const jsonMatch = result.text.match(/```json\s*([\s\S]*?)```/);
 	if (!jsonMatch?.[1]) {
-		throw new Error('gpt-5.1 did not return a valid JSON edit plan');
+		throw new Error('Claude did not return a valid JSON edit plan');
 	}
 
 	return JSON.parse(jsonMatch[1].trim());
@@ -340,7 +340,7 @@ export async function runAutoPipeline(
 		maxAttempts = 3,
 	} = config;
 
-	let currentPlan: Record<string, unknown>;
+	let currentPlan: Record<string, unknown> = {};
 	let lastReview: VideoReview | undefined;
 	let lastDownloadUrl: string | undefined;
 	let lastRenderId = '';

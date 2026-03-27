@@ -7,7 +7,7 @@
 import { createAgent } from '@agentuity/runtime';
 import { s } from '@agentuity/schema';
 import { generateText } from 'ai';
-import { openai } from '@ai-sdk/openai';
+import { anthropic } from '@ai-sdk/anthropic';
 import {
 	VIDEO_TEMPLATES,
 	getTemplateById,
@@ -1703,7 +1703,7 @@ IMPORTANT JSON RULES:
 `;
 
 			const result = await generateText({
-				model: openai('gpt-4o'),
+				model: anthropic('claude-sonnet-4-6'),
 				system: videoDirectorPrompt,
 				prompt: userMessage,
 			});
@@ -2078,7 +2078,7 @@ IMPORTANT JSON RULES:
 			ctx.logger.info('[video-editor] Generating video script...');
 
 			const { text: generatedScript } = await generateText({
-				model: openai('gpt-5-mini'),
+				model: anthropic('claude-sonnet-4-6'),
 				system: videoDirectorPrompt,
 				prompt: `Create a video editing script for:
 
@@ -2174,7 +2174,7 @@ Write a clear, actionable video script:`,
 			ctx.logger.info('[video-editor] Generating social caption...');
 
 			const { text: generatedCaption } = await generateText({
-				model: openai('gpt-5-mini'),
+				model: anthropic('claude-sonnet-4-6'),
 				system: videoDirectorPrompt,
 				prompt: `Write a short social media caption for a ${platform} video about:
 
@@ -2202,7 +2202,7 @@ Just the caption text, nothing else:`,
 			const hashtagCount = platformHashtagCounts[platform.toLowerCase()] || 5;
 
 			const { text: generatedHashtags } = await generateText({
-				model: openai('gpt-5-mini'),
+				model: anthropic('claude-haiku-4-5-20251001'),
 				prompt: `Generate ${hashtagCount} relevant hashtags for a ${platform} video about "${topic}" for a youth tennis and chess nonprofit.
 
 Include a mix of:

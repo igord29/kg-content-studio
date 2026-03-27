@@ -14,7 +14,7 @@ import { createHmac } from 'crypto';
  * Falls back to a static dev key for local development.
  */
 function getSecret(): string {
-	return process.env.AGENTUITY_SDK_KEY || process.env.OPENAI_API_KEY || 'dev-proxy-secret';
+	return process.env.AGENTUITY_SDK_KEY || 'dev-proxy-secret';
 }
 
 /**

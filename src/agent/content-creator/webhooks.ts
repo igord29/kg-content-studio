@@ -77,7 +77,7 @@ export async function sendToMakeWebhook(
 		hashtags: extractHashtags(content),
 		metadata: {
 			generatedAt: new Date().toISOString(),
-			model: 'gpt-5-mini',
+			model: 'gpt-4o-mini',
 			agentVersion: '1.0',
 		},
 	};

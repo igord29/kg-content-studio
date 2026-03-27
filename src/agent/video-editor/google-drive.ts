@@ -268,6 +268,7 @@ export async function downloadVideo(fileId: string, outputPath: string): Promise
   const dest = fs.createWriteStream(destPath);
 
   return new Promise((resolve, reject) => {
+    dest.on('error', (err: Error) => reject(err));
     (response.data as NodeJS.ReadableStream)
       .on('end', () => resolve(destPath))
       .on('error', (err: Error) => reject(err))

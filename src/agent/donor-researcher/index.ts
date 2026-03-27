@@ -236,19 +236,16 @@ const agent = createAgent('donor-researcher', {
 		limit = 10,
 		focusOnAccountingFirms,
 	}) => {
-		ctx.logger.info('Donor Researcher: %s (type: %s)', searchType, prospectType || 'all');
-
 		// Auto-set prospect type if accounting firm focus flag is set
-		if (focusOnAccountingFirms && !prospectType) {
-			prospectType = 'accounting-firm';
-		}
+		const resolvedProspectType = (focusOnAccountingFirms && !prospectType) ? 'accounting-firm' : prospectType;
+		ctx.logger.info('Donor Researcher: %s (type: %s)', searchType, resolvedProspectType || 'all');
 
 		// =====================================================================
 		// PROSPECT SEARCH
 		// =====================================================================
 		if (searchType === 'prospect-search') {
 			const searchCriteria = [
-				prospectType && `Type: ${prospectType}`,
+				resolvedProspectType && `Type: ${resolvedProspectType}`,
 				givingArea && `Focus: ${givingArea}`,
 				location && `Location: ${location}`,
 				minGiftSize && `Min gift: $${minGiftSize.toLocaleString()}`,
@@ -261,7 +258,7 @@ const agent = createAgent('donor-researcher', {
 			// Build type-specific search instructions
 			let typeSpecificInstructions = '';
 
-			if (prospectType === 'accounting-firm') {
+			if (resolvedProspectType === 'accounting-firm') {
 				typeSpecificInstructions = `
 ## ACCOUNTING FIRM SEARCH — SPECIAL INSTRUCTIONS
 
@@ -288,7 +285,7 @@ These firms' clients need quality charitable tax deductions. CLC is a 501(c)(3) 
 - Community involvement history
 
 Focus on REAL firms that operate in these areas. Use your knowledge of the Long Island and Westchester CPA landscape.`;
-			} else if (prospectType === 'individual') {
+			} else if (resolvedProspectType === 'individual') {
 				typeSpecificInstructions = `
 Focus on high-net-worth individuals in Nassau County and Westchester who:
 - Own businesses in the area
@@ -361,7 +358,7 @@ Return ONLY valid JSON:`,
 				ctx.logger.error('Failed to parse prospects JSON: %s', e);
 				prospects = [{
 					name: 'Research results pending',
-					type: prospectType || 'foundation',
+					type: resolvedProspectType || 'foundation',
 					description: 'Unable to parse detailed results. Please try again.',
 					givingAreas: [givingArea || 'youth-development'],
 					typicalGiftRange: 'Varies',

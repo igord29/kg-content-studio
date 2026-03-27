@@ -1021,7 +1021,9 @@ export function App({ onBack }: AppProps) {
 					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify({ platform: selectedPlatform, briefData }),
 				});
+				if (!res.ok) throw new Error('refine-question failed');
 				const { question } = await res.json();
+				if (!question) throw new Error('No question returned');
 				setMessages((prev) => [...prev, { isAgent: true, text: question }]);
 			} catch {
 				// Fallback if the refine endpoint fails
@@ -1035,7 +1037,7 @@ export function App({ onBack }: AppProps) {
 
 	// Shared generation logic — called by both handleSendMessage and handleSkipRefine
 	const startGeneration = useCallback((extraConversationContext?: string) => {
-		if (!selectedPlatform) return;
+		if (!selectedPlatform || isGenerating) return;
 
 		setMessages((prev) => {
 			const filtered = prev.filter((m) => !m.isTyping);
@@ -1081,11 +1083,10 @@ export function App({ onBack }: AppProps) {
 		track('generate_content', { platform: selectedPlatform, briefData });
 
 		// Set up abort controller for timeout/cancellation
-		abortControllerRef.current = new AbortController();
+		const controller = new AbortController();
+		abortControllerRef.current = controller;
 		const timeoutId = setTimeout(() => {
-			if (abortControllerRef.current) {
-				abortControllerRef.current.abort();
-			}
+			controller.abort();
 		}, TEXT_GENERATION_TIMEOUT);
 
 		// Call the API — text only first (includeImage: false)
@@ -1097,7 +1098,7 @@ export function App({ onBack }: AppProps) {
 				platform: p?.label || 'Instagram',
 				includeImage: false,
 			}),
-			signal: abortControllerRef.current.signal,
+			signal: controller.signal,
 		})
 			.then((response) => {
 				clearTimeout(timeoutId);
@@ -1132,7 +1133,7 @@ export function App({ onBack }: AppProps) {
 					},
 				]);
 			});
-	}, [selectedPlatform, briefData, messages, track]);
+	}, [selectedPlatform, briefData, messages, track, isGenerating]);
 
 	const handleSendMessage = useCallback(() => {
 		if (!userInput.trim() || !selectedPlatform) return;

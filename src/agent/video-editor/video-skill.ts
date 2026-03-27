@@ -234,8 +234,10 @@ export function generateAddMusicCommand(
 	outputPath: string,
 	volume: number = 0.3,
 	fadeOut: number = 2,
+	videoDuration?: number,
 ): string {
-	return `ffmpeg -i "${videoPath}" -i "${audioPath}" -filter_complex "[1:a]volume=${volume},afade=t=out:st=58:d=${fadeOut}[bg];[0:a][bg]amix=inputs=2:duration=first" -c:v copy "${outputPath}"`;
+	const fadeStart = videoDuration ? Math.max(0, videoDuration - fadeOut) : 58;
+	return `ffmpeg -i "${videoPath}" -i "${audioPath}" -filter_complex "[1:a]volume=${volume},afade=t=out:st=${fadeStart}:d=${fadeOut}[bg];[0:a][bg]amix=inputs=2:duration=first" -c:v copy "${outputPath}"`;
 }
 
 /**

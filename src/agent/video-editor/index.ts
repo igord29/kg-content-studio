@@ -1572,16 +1572,44 @@ const agent = createAgent('video-editor', {
 		// --- AI-powered edit plan generation ---
 
 		if (task === 'edit') {
-			const videoIds = input.videoIds || [];
+			let videoIds: string[] = input.videoIds || [];
 			const topic = input.topic || 'General CLC content';
 			const purpose = input.purpose || 'social';
 			const editMode = input.editMode || 'auto';
 
-			ctx.logger.info('[video-editor] Generating edit plan for %d videos, topic: %s', videoIds.length, topic);
-
 			// Load catalog data for context
 			const catalog = loadExistingCatalog();
 			const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
+
+			// Auto-select: when no videos are explicitly selected, search the catalog
+			// using the topic as a query and pick the best matches
+			if (videoIds.length === 0 && catalog.length > 0) {
+				ctx.logger.info('[video-editor] No videos selected — auto-searching catalog for: %s', topic);
+				const queryTokens = topic.toLowerCase().split(/[\s,]+/).filter((t: string) => t.length > 1);
+				const scored = catalog
+					.map(entry => ({
+						fileId: entry.fileId,
+						score: scoreSearchMatch(entry, queryTokens),
+						quality: entry.quality,
+						duration: entry.duration ? parseInt(entry.duration) : 0,
+					}))
+					.filter(r => r.score > 0)
+					.sort((a, b) => b.score - a.score);
+
+				// Take top matches (up to 10 clips to give the AI enough footage to work with)
+				const autoSelected = scored.slice(0, 10).map(r => r.fileId);
+				if (autoSelected.length > 0) {
+					videoIds = autoSelected;
+					ctx.logger.info('[video-editor] Auto-selected %d clips from catalog (top scores: %s)',
+						autoSelected.length,
+						scored.slice(0, 3).map(r => `${r.fileId.slice(0, 8)}..=${r.score}`).join(', '),
+					);
+				} else {
+					ctx.logger.warn('[video-editor] No catalog matches for topic: %s', topic);
+				}
+			}
+
+			ctx.logger.info('[video-editor] Generating edit plan for %d videos, topic: %s', videoIds.length, topic);
 
 			// Load usage data for freshness context (best-effort — won't block if unavailable)
 			let usageSummaryMap = new Map<string, VideoUsageSummary>();

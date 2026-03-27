@@ -944,6 +944,86 @@ export function updateCatalogEntry(
 	return entry;
 }
 
+// --- Background Catalog Job ---
+
+export interface CatalogJobStatus {
+	state: 'idle' | 'running' | 'completed' | 'error';
+	total: number;
+	completed: number;
+	failed: number;
+	skipped: number;
+	currentFile?: string;
+	startedAt?: string;
+	updatedAt?: string;
+	errorMessage?: string;
+}
+
+let _catalogJob: CatalogJobStatus = { state: 'idle', total: 0, completed: 0, failed: 0, skipped: 0 };
+
+/**
+ * Get the current background catalog job status.
+ */
+export function getCatalogJobStatus(): CatalogJobStatus {
+	return { ..._catalogJob };
+}
+
+/**
+ * Start a background catalog run. Returns immediately with the job status.
+ * The catalog processes asynchronously — poll getCatalogJobStatus() for updates.
+ * If a job is already running, returns false.
+ */
+export function startBackgroundCatalog(config: Partial<CatalogConfig> = {}): boolean {
+	if (_catalogJob.state === 'running') {
+		console.log('[cataloger] Background job already running, ignoring start request');
+		return false;
+	}
+
+	_catalogJob = {
+		state: 'running',
+		total: 0,
+		completed: 0,
+		failed: 0,
+		skipped: 0,
+		startedAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+	};
+
+	// Fire and forget — the promise runs in the background
+	runFullCatalog(config, (progress) => {
+		_catalogJob.total = progress.total;
+		_catalogJob.completed = progress.completed;
+		_catalogJob.failed = progress.failed;
+		_catalogJob.skipped = progress.skipped;
+		_catalogJob.currentFile = progress.currentFile;
+		_catalogJob.updatedAt = new Date().toISOString();
+	}).then((finalProgress) => {
+		_catalogJob.state = 'completed';
+		_catalogJob.total = finalProgress.total;
+		_catalogJob.completed = finalProgress.completed;
+		_catalogJob.failed = finalProgress.failed;
+		_catalogJob.skipped = finalProgress.skipped;
+		_catalogJob.currentFile = undefined;
+		_catalogJob.updatedAt = new Date().toISOString();
+		console.log(`[cataloger] Background job completed: ${finalProgress.completed}/${finalProgress.total}`);
+	}).catch((err) => {
+		_catalogJob.state = 'error';
+		_catalogJob.errorMessage = err instanceof Error ? err.message : String(err);
+		_catalogJob.updatedAt = new Date().toISOString();
+		console.error('[cataloger] Background job failed:', err);
+	});
+
+	return true;
+}
+
+/**
+ * Get the set of fileIds that have already been cataloged.
+ * Used by the frontend to distinguish "never analyzed" from "analyzed but unknown".
+ */
+export function getProcessedFileIds(): string[] {
+	const catalog = loadExistingCatalog();
+	return catalog.map(entry => entry.fileId);
+}
+
 // --- Scene Analysis Helper ---
 
 /**

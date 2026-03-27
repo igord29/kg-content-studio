@@ -95,8 +95,11 @@ for (const arg of args) {
 }
 
 // Use locally installed CLI binary directly (avoids bunx network resolution)
-const cliBin = join(process.cwd(), 'node_modules', '.bin', 'agentuity');
-const spawnArgs = [command, ...filteredArgs];
+// On WSL/Linux, bun creates .bunx shim instead of plain symlink — use bunx as fallback
+const plainBin = join(process.cwd(), 'node_modules', '.bin', 'agentuity');
+const useBunx = !existsSync(plainBin);
+const cliBin = useBunx ? 'bunx' : plainBin;
+const spawnArgs = useBunx ? ['agentuity', command, ...filteredArgs] : [command, ...filteredArgs];
 console.log(`[fix-registry] Starting agentuity ${command}${isWindows ? ' with path watcher' : ''}...`);
 
 const child = spawn(cliBin, spawnArgs, {

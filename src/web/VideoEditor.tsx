@@ -693,7 +693,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		return { byLocation, byContentType, byQuality, needsReview };
 	}, [videos]);
 
-	// --- Load videos on mount ---
+	// --- Load videos on mount + resume any running catalog job ---
 
 	useEffect(() => {
 		loadVideos();
@@ -710,6 +710,22 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 				}
 			})
 			.catch(() => {}); // best-effort
+		// Check if a catalog job is already running (e.g. page refresh)
+		fetch('/api/video-editor', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ task: 'catalog-status' }),
+		}).then(r => r.json()).then(data => {
+			if (data.success && data.status?.state === 'running') {
+				setCatalogRunning(true);
+				setCatalogProgress({
+					total: data.status.total || 0,
+					completed: data.status.completed || 0,
+					failed: data.status.failed || 0,
+				});
+				startCatalogPolling();
+			}
+		}).catch(() => {}); // best-effort
 	}, []);
 
 	// Auto-catalog: trigger when uncataloged videos are detected
@@ -793,9 +809,11 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 			if (videosData.success && videosData.videos) {
 				setVideos(videosData.videos);
 
-				// Auto-detect uncataloged videos
+				// Auto-detect truly uncataloged videos using processedFileIds from backend.
+				// This distinguishes "never analyzed" from "analyzed but location unknown".
+				const processedIds = new Set<string>(videosData.processedFileIds || []);
 				const uncataloged = (videosData.videos as DriveVideo[]).filter(
-					(v) => !v.description && (!v.suspectedLocation || v.suspectedLocation === 'Unknown' || v.suspectedLocation === 'unknown')
+					(v) => !processedIds.has(v.id)
 				);
 				if (uncataloged.length > 0) {
 					setUncatalogedCount(uncataloged.length);
@@ -1584,49 +1602,91 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		}
 	}, [topic, purpose, selectedMode, enabledPlatforms, loadVideos]);
 
-	// --- Catalog handlers ---
+	// --- Catalog handlers (background job with polling) ---
+
+	const catalogPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+	// Stop polling and clean up
+	const stopCatalogPolling = useCallback(() => {
+		if (catalogPollRef.current) {
+			clearInterval(catalogPollRef.current);
+			catalogPollRef.current = null;
+		}
+	}, []);
+
+	// Poll the background catalog job for progress updates
+	const startCatalogPolling = useCallback(() => {
+		stopCatalogPolling();
+		catalogPollRef.current = setInterval(async () => {
+			try {
+				const resp = await fetch('/api/video-editor', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ task: 'catalog-status' }),
+				});
+				const data = await resp.json();
+				if (!data.success) return;
+
+				const s = data.status;
+				setCatalogProgress({
+					total: s.total || 0,
+					completed: s.completed || 0,
+					failed: s.failed || 0,
+				});
+
+				if (s.state === 'completed') {
+					stopCatalogPolling();
+					setCatalogRunning(false);
+					setAutoCatalogDetected(false);
+					setUncatalogedCount(0);
+					// Reload videos to get newly cataloged data
+					await loadVideos();
+				} else if (s.state === 'error') {
+					stopCatalogPolling();
+					setCatalogRunning(false);
+					setCatalogError(s.errorMessage || 'Catalog job failed');
+				}
+			} catch {
+				// Network error during poll — keep trying
+			}
+		}, 3000);
+	}, [stopCatalogPolling, loadVideos]);
+
+	// Clean up polling on unmount
+	useEffect(() => {
+		return () => stopCatalogPolling();
+	}, [stopCatalogPolling]);
 
 	const handleRunFullCatalog = useCallback(async () => {
 		setCatalogRunning(true);
 		setCatalogError(null);
-		setCatalogProgress({ total: videos.length || 247, completed: 0, failed: 0 });
+		setCatalogProgress({ total: uncatalogedCount || 0, completed: 0, failed: 0 });
 
 		try {
 			const response = await fetch('/api/video-editor', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					task: 'catalog',
-					catalogAction: 'run-full',
-					batchSize: 10,
-				}),
+				body: JSON.stringify({ task: 'catalog-start', batchSize: 5 }),
 			});
 
 			if (!response.ok) {
-				throw new Error(`Catalog request failed (${response.status})`);
+				throw new Error(`Catalog start failed (${response.status})`);
 			}
 
 			const data = await response.json();
 
 			if (data.success) {
-				setCatalogProgress({
-					total: data.progress?.total || 0,
-					completed: data.progress?.completed || 0,
-					failed: data.progress?.failed || 0,
-				});
-				// Reload videos to get enriched data (will re-evaluate uncataloged count)
-				setAutoCatalogDetected(false);
-				setUncatalogedCount(0);
-				await loadVideos();
+				// Start polling for progress updates
+				startCatalogPolling();
 			} else {
-				setCatalogError(data.message || 'Catalog failed');
+				setCatalogError(data.message || 'Failed to start catalog');
+				setCatalogRunning(false);
 			}
 		} catch (err) {
 			setCatalogError(err instanceof Error ? err.message : 'Catalog request failed');
-		} finally {
 			setCatalogRunning(false);
 		}
-	}, [videos.length, loadVideos]);
+	}, [uncatalogedCount, startCatalogPolling]);
 
 	// Refresh thumbnails for videos that are missing previews
 	const handleRefreshThumbnails = useCallback(async () => {
@@ -2255,9 +2315,11 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 										fontSize: 9,
 										color: S.textMuted,
 									}}>
-										{catalogRunning
-											? 'Auto-cataloging in progress...'
-											: 'Auto-cataloging will begin shortly...'}
+										{catalogRunning && catalogProgress
+											? `Cataloging: ${catalogProgress.completed}/${catalogProgress.total} analyzed${catalogProgress.failed > 0 ? `, ${catalogProgress.failed} failed` : ''}`
+											: catalogRunning
+												? 'Auto-cataloging starting...'
+												: 'Auto-cataloging will begin shortly...'}
 									</div>
 								</div>
 								{!catalogRunning && (

@@ -42,6 +42,9 @@ import {
 	getCatalogSummary,
 	loadExistingCatalog,
 	updateCatalogEntry,
+	startBackgroundCatalog,
+	getCatalogJobStatus,
+	getProcessedFileIds,
 	type CatalogProgress,
 } from './cataloger';
 import {
@@ -1336,10 +1339,14 @@ const agent = createAgent('video-editor', {
 			// Load catalog data and merge with video list
 			const catalog = loadExistingCatalog();
 			const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
+			// Send the set of processed fileIds so frontend can distinguish
+			// "never analyzed" from "analyzed but location unknown"
+			const processedFileIds = [...catalogMap.keys()];
 
 			return {
 				success: true,
 				count: videos.length,
+				processedFileIds,
 				videos: videos.map((v: VideoFile) => {
 					const ce = catalogMap.get(v.id);
 					return {
@@ -1382,6 +1389,37 @@ const agent = createAgent('video-editor', {
 							: undefined,
 					};
 				}),
+			};
+		}
+
+		// --- Background catalog job endpoints ---
+
+		if (task === 'catalog-start') {
+			ctx.logger.info('[video-editor] Starting background catalog job...');
+			const batchSize = input.batchSize || 5;
+			const started = startBackgroundCatalog({ batchSize });
+			if (!started) {
+				const status = getCatalogJobStatus();
+				return {
+					success: true,
+					message: 'Catalog job already running',
+					alreadyRunning: true,
+					status,
+				};
+			}
+			return {
+				success: true,
+				message: 'Background catalog job started',
+				alreadyRunning: false,
+				status: getCatalogJobStatus(),
+			};
+		}
+
+		if (task === 'catalog-status') {
+			const status = getCatalogJobStatus();
+			return {
+				success: true,
+				status,
 			};
 		}
 

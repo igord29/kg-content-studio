@@ -1,18 +1,18 @@
 /**
- * TextOverlay — mode-specific styled text overlays for CLC videos.
+ * TextOverlay — mode-specific styled text overlays with animated entry/exit.
  *
- * Replicates the text styling from getTextStyle() in shotstack.ts,
- * but uses React/CSS instead of Shotstack HTML assets.
+ * Supports 6 animation styles: fade, slideUp, slideDown, scaleUp, bounce, typewriter.
+ * Default animation is mode-aware: game_day gets scaleUp, quick_hit gets bounce, etc.
  *
  * Brand colors:
  *   Primary: #1B4D3E (deep forest green)
  *   Secondary: #C9A84C (gold)
  *   Text: #FFFFFF (white)
- *   Dark: #1A1A1A (near-black)
  */
 
 import React from 'react';
-import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
+import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, spring } from 'remotion';
+import type { TextAnimation } from './types';
 
 interface TextOverlayProps {
 	text: string;
@@ -20,40 +20,28 @@ interface TextOverlayProps {
 	position: 'top' | 'center' | 'bottom';
 	isFirst: boolean;
 	isLast: boolean;
+	animation?: TextAnimation;
 }
 
 const BRAND_GREEN = '#1B4D3E';
 const BRAND_GOLD = '#C9A84C';
 
-export const TextOverlay: React.FC<TextOverlayProps> = ({ text, mode, position, isFirst, isLast }) => {
+/** Default animation per mode — each mode gets a distinct text feel */
+const MODE_DEFAULT_ANIMATION: Record<string, TextAnimation> = {
+	game_day: 'scaleUp',
+	our_story: 'fade',
+	quick_hit: 'bounce',
+	showcase: 'slideUp',
+};
+
+export const TextOverlay: React.FC<TextOverlayProps> = ({ text, mode, position, isFirst, isLast, animation }) => {
 	const frame = useCurrentFrame();
-	const { durationInFrames } = useVideoConfig();
+	const { durationInFrames, fps } = useVideoConfig();
 
-	// Fade in/out animation (8 frames fade in, 8 frames fade out)
-	// Guard: if durationInFrames is too short for 4-point interpolation,
-	// use a simple 2-point fade instead (prevents "inputRange not monotonic" errors).
-	const fadeInFrames = 8;
-	const fadeOutFrames = 8;
+	const anim = animation || MODE_DEFAULT_ANIMATION[mode] || 'fade';
 
-	let opacity: number;
-	if (durationInFrames <= fadeInFrames + fadeOutFrames + 2) {
-		// Too short for full fade in + hold + fade out — just do a simple fade in/out
-		opacity = durationInFrames <= 1
-			? 1
-			: interpolate(
-				frame,
-				[0, Math.floor(durationInFrames / 2), durationInFrames],
-				[0, 1, 0],
-				{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
-			);
-	} else {
-		opacity = interpolate(
-			frame,
-			[0, fadeInFrames, durationInFrames - fadeOutFrames, durationInFrames],
-			[0, 1, 1, 0],
-			{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
-		);
-	}
+	// Compute entry/exit animation values
+	const { opacity, transform: animTransform } = computeAnimation(anim, frame, durationInFrames, fps);
 
 	// Position styles
 	const positionStyle: React.CSSProperties = {
@@ -70,16 +58,166 @@ export const TextOverlay: React.FC<TextOverlayProps> = ({ text, mode, position, 
 	// Mode-specific text styling
 	const textStyle = getTextStyle(mode, isFirst, isLast);
 
+	// For typewriter, render partial text
+	const displayText = anim === 'typewriter'
+		? getTypewriterText(text, frame, durationInFrames, fps, mode)
+		: (mode === 'game_day' || mode === 'quick_hit' ? text.toUpperCase() : text);
+
 	return (
 		<AbsoluteFill style={{ opacity }}>
 			<div style={positionStyle}>
-				<div style={textStyle}>
-					{mode === 'game_day' || mode === 'quick_hit' ? text.toUpperCase() : text}
+				<div style={{
+					...textStyle,
+					transform: animTransform,
+				}}>
+					{displayText}
 				</div>
 			</div>
 		</AbsoluteFill>
 	);
 };
+
+/**
+ * Compute opacity and transform for each animation type.
+ *
+ * Entry animation plays over the first ~12 frames.
+ * Exit animation (fade out) plays over the last ~8 frames.
+ * The hold phase in between keeps the text fully visible.
+ */
+function computeAnimation(
+	animation: TextAnimation,
+	frame: number,
+	durationInFrames: number,
+	fps: number,
+): { opacity: number; transform: string } {
+	const entryFrames = Math.min(12, Math.floor(durationInFrames * 0.3));
+	const exitFrames = Math.min(8, Math.floor(durationInFrames * 0.2));
+
+	// Exit fade (shared across all animations)
+	const exitOpacity = durationInFrames <= exitFrames + 2
+		? 1
+		: interpolate(
+			frame,
+			[Math.max(0, durationInFrames - exitFrames), durationInFrames],
+			[1, 0],
+			{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
+		);
+
+	switch (animation) {
+		case 'slideUp': {
+			const y = interpolate(frame, [0, entryFrames], [40, 0], {
+				extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+			});
+			const entryOpacity = interpolate(frame, [0, entryFrames], [0, 1], {
+				extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+			});
+			return {
+				opacity: Math.min(entryOpacity, exitOpacity),
+				transform: `translateY(${y}px)`,
+			};
+		}
+
+		case 'slideDown': {
+			const y = interpolate(frame, [0, entryFrames], [-40, 0], {
+				extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+			});
+			const entryOpacity = interpolate(frame, [0, entryFrames], [0, 1], {
+				extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+			});
+			return {
+				opacity: Math.min(entryOpacity, exitOpacity),
+				transform: `translateY(${y}px)`,
+			};
+		}
+
+		case 'scaleUp': {
+			const scale = interpolate(frame, [0, entryFrames], [0.5, 1.0], {
+				extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+			});
+			const entryOpacity = interpolate(frame, [0, Math.floor(entryFrames * 0.6)], [0, 1], {
+				extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+			});
+			return {
+				opacity: Math.min(entryOpacity, exitOpacity),
+				transform: `scale(${scale})`,
+			};
+		}
+
+		case 'bounce': {
+			// Spring-based bounce — overshoots then settles
+			const springValue = spring({
+				frame,
+				fps,
+				config: {
+					damping: 8,
+					stiffness: 200,
+					mass: 0.5,
+				},
+				durationInFrames: entryFrames + 6,
+			});
+			return {
+				opacity: exitOpacity,
+				transform: `scale(${springValue})`,
+			};
+		}
+
+		case 'typewriter': {
+			// Typewriter uses opacity only for exit, no transform
+			return {
+				opacity: exitOpacity,
+				transform: '',
+			};
+		}
+
+		case 'fade':
+		default: {
+			// Original simple fade in/out
+			let entryOpacity: number;
+			if (durationInFrames <= entryFrames + exitFrames + 2) {
+				entryOpacity = durationInFrames <= 1
+					? 1
+					: interpolate(
+						frame,
+						[0, Math.floor(durationInFrames / 2), durationInFrames],
+						[0, 1, 0],
+						{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
+					);
+				return { opacity: entryOpacity, transform: '' };
+			}
+			entryOpacity = interpolate(
+				frame,
+				[0, entryFrames, durationInFrames - exitFrames, durationInFrames],
+				[0, 1, 1, 0],
+				{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
+			);
+			return { opacity: entryOpacity, transform: '' };
+		}
+	}
+}
+
+/**
+ * Typewriter effect — reveals text character by character.
+ * Completes typing at 60% of duration, holds the full text for the remaining 40%.
+ */
+function getTypewriterText(
+	text: string,
+	frame: number,
+	durationInFrames: number,
+	fps: number,
+	mode: string,
+): string {
+	const typingDuration = Math.floor(durationInFrames * 0.6);
+	const charsToShow = Math.min(
+		text.length,
+		Math.floor(interpolate(frame, [0, typingDuration], [0, text.length], {
+			extrapolateLeft: 'clamp',
+			extrapolateRight: 'clamp',
+		})),
+	);
+
+	const partial = text.slice(0, charsToShow);
+	return (mode === 'game_day' || mode === 'quick_hit') ? partial.toUpperCase() : partial;
+}
 
 function getTextStyle(mode: string, isFirst: boolean, isLast: boolean): React.CSSProperties {
 	const baseStyle: React.CSSProperties = {

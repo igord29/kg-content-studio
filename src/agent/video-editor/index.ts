@@ -465,10 +465,10 @@ const agent = createAgent('video-editor', {
 					clips.length, platform, editMode, totalEditDuration);
 
 				// --- Render Pipeline Selection ---
-				// If the preprocessor Lambda is deployed, use it for deshake + sharpen.
-				// Otherwise, fall back to direct S3 upload (raw clips, no FFmpeg).
-				const { isPreprocessorAvailable } = await import('./remotion/preprocessor-invoke');
-				const usePreprocessor = isPreprocessorAvailable();
+				// Force direct pipeline (skip preprocessor) until preprocessor reliability is fixed.
+				// The preprocessor Lambda invocations hang during batch processing, causing renders
+				// to sit at "still preprocessing" forever. Direct pipeline works: Drive → S3 → Remotion Lambda.
+				const usePreprocessor = false;
 
 				if (usePreprocessor) {
 					// --- Preprocessed Pipeline (Drive → S3 → FFmpeg Lambda → S3 → Remotion Lambda) ---

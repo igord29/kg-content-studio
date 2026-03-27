@@ -1013,42 +1013,128 @@ export function App({ onBack }: AppProps) {
 			},
 		]);
 
-		setTimeout(() => {
-			// Dynamic follow-up questions based on what's MISSING from the brief
-			const hasMoment = !!briefData.moment?.trim();
-			const hasDetails = !!briefData.details?.trim();
-			const hasCta = !!briefData.cta?.trim();
-			const hasAudience = !!briefData.audience?.trim();
-			const hasHook = !!briefData.hook?.trim();
-			const hasTopic = !!briefData.topic?.trim();
-
-			let followUps: string;
-
-			if (selectedPlatform === 'blog' && !hasMoment) {
-				followUps =
-					"Is there a specific moment — a Tuesday at the gym, a kid's first serve, something you saw that stuck with you? That's what makes this piece real instead of generic.";
-			} else if (selectedPlatform === 'tiktok' && !hasHook) {
-				followUps =
-					"What's the first thing someone sees when they stop scrolling? A kid mid-swing? A chessboard close-up? Give me the opening shot.";
-			} else if (selectedPlatform === 'youtube') {
-				followUps =
-					"Should this feel like someone talking to the camera, or more of a produced piece with B-roll? And what's the one thing a viewer should walk away knowing?";
-			} else if (!hasDetails && !hasMoment) {
-				followUps =
-					"Give me something specific — a date, a gym name, what the weather was like, how many kids showed up. Details are what make this sound like Kimberly, not a template.";
-			} else if (!hasCta) {
-				followUps =
-					"What do you want people to do after reading this? Sign up, share it, show up somewhere? Or is this just about making them feel something?";
-			} else {
-				followUps =
-					"Anything else I should know? A link to include, a name to mention, or something you definitely don't want in this post?";
+		// Generate a smart follow-up question via LLM
+		setTimeout(async () => {
+			try {
+				const res = await fetch('/api/refine-question', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ platform: selectedPlatform, briefData }),
+				});
+				const { question } = await res.json();
+				setMessages((prev) => [...prev, { isAgent: true, text: question }]);
+			} catch {
+				// Fallback if the refine endpoint fails
+				setMessages((prev) => [
+					...prev,
+					{ isAgent: true, text: "What's one specific detail — a moment, a place, a reaction — that would make this feel real instead of generic?" },
+				]);
 			}
-
-			setMessages((prev) => [...prev, { isAgent: true, text: followUps }]);
-		}, 1500);
+		}, 800);
 	}, [selectedPlatform, briefData]);
 
-	const handleSendMessage = useCallback(async () => {
+	// Shared generation logic — called by both handleSendMessage and handleSkipRefine
+	const startGeneration = useCallback((extraConversationContext?: string) => {
+		if (!selectedPlatform) return;
+
+		setMessages((prev) => {
+			const filtered = prev.filter((m) => !m.isTyping);
+			return [
+				...filtered,
+				{
+					isAgent: true,
+					text: extraConversationContext
+						? 'Perfect — I have everything I need. Writing your post now...'
+						: 'Got it — writing your post from the brief...',
+				},
+			];
+		});
+
+		setIsGenerating(true);
+		setGeneratingStatus('WRITING YOUR POST...');
+		setError(null);
+
+		const p = PLATFORMS.find((pl) => pl.id === selectedPlatform);
+
+		// Collect conversation answers as additional context
+		const previousAnswers = messages
+			.filter((m) => !m.isAgent && !m.isTyping)
+			.map((m) => m.text)
+			.filter(Boolean);
+		const conversationContext = [...previousAnswers, ...(extraConversationContext ? [extraConversationContext] : [])]
+			.filter(Boolean)
+			.join('. ');
+
+		// Build structured key:value pairs — the backend parses these
+		const topicParts: string[] = [];
+		for (const [key, value] of Object.entries(briefData)) {
+			if (value?.trim()) {
+				topicParts.push(`${key}: ${value.trim()}`);
+			}
+		}
+		if (conversationContext) {
+			topicParts.push(`conversation: ${conversationContext}`);
+		}
+		const fullTopic = topicParts.join('. ');
+		setSavedFullTopic(fullTopic);
+
+		track('generate_content', { platform: selectedPlatform, briefData });
+
+		// Set up abort controller for timeout/cancellation
+		abortControllerRef.current = new AbortController();
+		const timeoutId = setTimeout(() => {
+			if (abortControllerRef.current) {
+				abortControllerRef.current.abort();
+			}
+		}, TEXT_GENERATION_TIMEOUT);
+
+		// Call the API — text only first (includeImage: false)
+		fetch('/api/content-creator', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				topic: fullTopic,
+				platform: p?.label || 'Instagram',
+				includeImage: false,
+			}),
+			signal: abortControllerRef.current.signal,
+		})
+			.then((response) => {
+				clearTimeout(timeoutId);
+				if (!response.ok) {
+					throw new Error('Failed to generate content');
+				}
+				return response.json();
+			})
+			.then((data: { content: string; platform: string; contentId?: string }) => {
+				const content = data.content || '';
+				setGeneratedContent(content);
+				setGeneratedContentId(data.contentId || null);
+				setIsGenerating(false);
+				setGeneratingStatus('');
+				// Show style picker after text is ready
+				setShowStylePicker(true);
+			})
+			.catch((err) => {
+				clearTimeout(timeoutId);
+				if (err.name === 'AbortError') {
+					setError('Request timed out or was cancelled. Please try again.');
+				} else {
+					setError(err instanceof Error ? err.message : 'Something went wrong');
+				}
+				setIsGenerating(false);
+				setGeneratingStatus('');
+				setMessages((prev) => [
+					...prev,
+					{
+						isAgent: true,
+						text: 'Sorry, there was an error generating your content. Please try again.',
+					},
+				]);
+			});
+	}, [selectedPlatform, briefData, messages, track]);
+
+	const handleSendMessage = useCallback(() => {
 		if (!userInput.trim() || !selectedPlatform) return;
 
 		const currentInput = userInput.trim();
@@ -1056,111 +1142,14 @@ export function App({ onBack }: AppProps) {
 		setUserInput('');
 
 		setTimeout(() => {
-			setMessages((prev) => [...prev, { isAgent: true, isTyping: true }]);
-		}, 400);
+			startGeneration(currentInput);
+		}, 800);
+	}, [userInput, selectedPlatform, startGeneration]);
 
-		setTimeout(() => {
-			setMessages((prev) => {
-				const filtered = prev.filter((m) => !m.isTyping);
-				return [
-					...filtered,
-					{
-						isAgent: true,
-						text: 'Perfect — I have everything I need. Writing your post now...',
-					},
-				];
-			});
-
-			setIsGenerating(true);
-			setGeneratingStatus('WRITING YOUR POST...');
-			setError(null);
-
-			// Build a structured topic string — each field is a labeled section
-			// so the backend prompt builder can parse and use them properly.
-			const p = PLATFORMS.find((pl) => pl.id === selectedPlatform);
-
-			// Collect conversation answers as additional context.
-			// NOTE: `messages` state doesn't yet include the current userInput
-			// (setMessages is async), so we append it manually to avoid losing
-			// the user's most recent answer.
-			const previousAnswers = messages
-				.filter((m) => !m.isAgent && !m.isTyping)
-				.map((m) => m.text)
-				.filter(Boolean);
-			// userInput was captured before we cleared it above
-			const conversationContext = [...previousAnswers, currentInput]
-				.filter(Boolean)
-				.join('. ');
-
-			// Build structured key:value pairs — the backend parses these
-			const topicParts: string[] = [];
-			for (const [key, value] of Object.entries(briefData)) {
-				if (value?.trim()) {
-					topicParts.push(`${key}: ${value.trim()}`);
-				}
-			}
-			if (conversationContext) {
-				topicParts.push(`conversation: ${conversationContext}`);
-			}
-			const fullTopic = topicParts.join('. ');
-			setSavedFullTopic(fullTopic);
-
-			track('generate_content', { platform: selectedPlatform, briefData });
-
-			// Set up abort controller for timeout/cancellation
-			abortControllerRef.current = new AbortController();
-			const timeoutId = setTimeout(() => {
-				if (abortControllerRef.current) {
-					abortControllerRef.current.abort();
-				}
-			}, TEXT_GENERATION_TIMEOUT);
-
-			// Call the API — text only first (includeImage: false)
-			fetch('/api/content-creator', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					topic: fullTopic,
-					platform: p?.label || 'Instagram',
-					includeImage: false,
-				}),
-				signal: abortControllerRef.current.signal,
-			})
-				.then((response) => {
-					clearTimeout(timeoutId);
-					if (!response.ok) {
-						throw new Error('Failed to generate content');
-					}
-					return response.json();
-				})
-				.then((data: { content: string; platform: string; contentId?: string }) => {
-					const content = data.content || '';
-					setGeneratedContent(content);
-					setGeneratedContentId(data.contentId || null);
-					setIsGenerating(false);
-					setGeneratingStatus('');
-					// Show style picker after text is ready
-					setShowStylePicker(true);
-				})
-				.catch((err) => {
-					clearTimeout(timeoutId);
-					if (err.name === 'AbortError') {
-						setError('Request timed out or was cancelled. Please try again.');
-					} else {
-						setError(err instanceof Error ? err.message : 'Something went wrong');
-					}
-					setIsGenerating(false);
-					setGeneratingStatus('');
-					setMessages((prev) => [
-						...prev,
-						{
-							isAgent: true,
-							text: 'Sorry, there was an error generating your content. Please try again.',
-						},
-					]);
-				});
-		}, 2000);
-	}, [userInput, selectedPlatform, briefData, messages, track]);
+	const handleSkipRefine = useCallback(() => {
+		if (!selectedPlatform) return;
+		startGeneration();
+	}, [selectedPlatform, startGeneration]);
 
 	const handleStylePickerSubmit = useCallback((result: StylePickerResult) => {
 		if (!selectedPlatform || !generatedContent) return;
@@ -1857,51 +1846,73 @@ export function App({ onBack }: AppProps) {
 								)}
 
 								{!generatedContent && !isGenerating && (
-									<div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
-										<textarea
-											value={userInput}
-											onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-												setUserInput(e.target.value)
-											}
-											onKeyDown={(e) => {
-												if (e.key === 'Enter' && !e.shiftKey) {
-													e.preventDefault();
-													handleSendMessage();
+									<div>
+										<div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+											<textarea
+												value={userInput}
+												onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+													setUserInput(e.target.value)
 												}
-											}}
-											placeholder="Answer the questions or add more context..."
-											rows={2}
-											style={{
-												flex: 1,
-												padding: '14px 16px',
-												borderRadius: 8,
-												border: '1px solid #1e2538',
-												background: '#111520',
-												color: '#e2e8f0',
-												fontSize: 14,
-												fontFamily: "'Source Serif 4', Georgia, serif",
-												lineHeight: 1.5,
-												resize: 'none',
-												outline: 'none',
-											}}
-										/>
+												onKeyDown={(e) => {
+													if (e.key === 'Enter' && !e.shiftKey) {
+														e.preventDefault();
+														handleSendMessage();
+													}
+												}}
+												placeholder="Answer the question or add more context..."
+												rows={2}
+												style={{
+													flex: 1,
+													padding: '14px 16px',
+													borderRadius: 8,
+													border: '1px solid #1e2538',
+													background: '#111520',
+													color: '#e2e8f0',
+													fontSize: 14,
+													fontFamily: "'Source Serif 4', Georgia, serif",
+													lineHeight: 1.5,
+													resize: 'none',
+													outline: 'none',
+												}}
+											/>
+											<button
+												onClick={handleSendMessage}
+												style={{
+													padding: '14px 20px',
+													borderRadius: 8,
+													border: 'none',
+													background: '#2D6A4F',
+													color: '#ffffff',
+													cursor: 'pointer',
+													fontFamily: "'Space Mono', monospace",
+													fontSize: 12,
+													fontWeight: 700,
+													whiteSpace: 'nowrap',
+												}}
+												type="button"
+											>
+												Send
+											</button>
+										</div>
 										<button
-											onClick={handleSendMessage}
+											onClick={handleSkipRefine}
 											style={{
-												padding: '14px 20px',
-												borderRadius: 8,
-												border: 'none',
-												background: '#2D6A4F',
-												color: '#ffffff',
+												marginTop: 10,
+												padding: '8px 16px',
+												borderRadius: 6,
+												border: '1px solid #2a3147',
+												background: 'transparent',
+												color: '#64748b',
 												cursor: 'pointer',
 												fontFamily: "'Space Mono', monospace",
-												fontSize: 12,
-												fontWeight: 700,
-												whiteSpace: 'nowrap',
+												fontSize: 11,
+												letterSpacing: 0.5,
+												width: '100%',
+												transition: 'all 0.2s',
 											}}
 											type="button"
 										>
-											Send
+											Skip — just write it from my brief
 										</button>
 									</div>
 								)}

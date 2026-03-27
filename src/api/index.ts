@@ -4,6 +4,8 @@
 
 import { createRouter, validator } from '@agentuity/runtime';
 import { s } from '@agentuity/schema';
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
 import translate, { AgentOutput, type HistoryEntry } from '../agent/translate';
 import manager from '../agent/manager';
 import contentCreator from '../agent/content-creator';
@@ -50,6 +52,40 @@ api.delete('/translate/history', validator({ output: StateSchema }), async (c) =
 		threadId: c.var.thread.id,
 		translationCount: 0,
 	});
+});
+
+// Refine question — generates one pointed follow-up question based on the brief
+api.post('/refine-question', async (c) => {
+	const { platform, briefData } = await c.req.json<{
+		platform: string;
+		briefData: Record<string, string>;
+	}>();
+
+	const briefSummary = Object.entries(briefData)
+		.filter(([_, v]) => v?.trim())
+		.map(([k, v]) => `${k}: ${v}`)
+		.join('\n');
+
+	const { text: question } = await generateText({
+		model: openai('gpt-4o-mini'),
+		prompt: `You are a creative director helping a nonprofit founder write a ${platform} post. She's given you this brief:
+
+${briefSummary}
+
+Your job: ask ONE pointed question that will surface a specific detail, real moment, or perspective that would make this content feel authentic and human — not generic.
+
+Rules:
+- Ask about something CONCRETE: a real moment she witnessed, a specific kid's reaction (no names), what the room looked like, what she was thinking at a particular point
+- Don't ask "is there anything else?" — that's lazy
+- Don't repeat what she already provided — push PAST it
+- Keep it to 1-2 sentences
+- Sound like a smart editor, not a chatbot
+- If the brief is already rich with detail, ask about the emotional undercurrent or what she wants the reader to feel differently about after reading
+
+Write ONLY the question. Nothing else.`,
+	});
+
+	return c.json({ question: question.trim() });
 });
 
 // Manager agent

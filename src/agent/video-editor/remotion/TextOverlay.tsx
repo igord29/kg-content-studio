@@ -134,7 +134,7 @@ function computeAnimation(
 			const scale = interpolate(frame, [0, entryFrames], [0.5, 1.0], {
 				extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
 			});
-			const entryOpacity = interpolate(frame, [0, Math.floor(entryFrames * 0.6)], [0, 1], {
+			const entryOpacity = interpolate(frame, [0, Math.max(1, Math.floor(entryFrames * 0.6))], [0, 1], {
 				extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
 			});
 			return {

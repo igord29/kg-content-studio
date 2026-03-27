@@ -122,6 +122,7 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 						position={overlay.position}
 						isFirst={overlay.isFirst}
 						isLast={overlay.isLast}
+						animation={overlay.animation}
 					/>
 				</Sequence>
 			))}

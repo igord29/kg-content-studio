@@ -84,25 +84,54 @@ export function getDefaultGradeForMode(mode: string): string {
  * Example: [{ at: 0, speed: 1 }, { at: 0.4, speed: 0.3 }, { at: 0.6, speed: 0.3 }, { at: 1, speed: 1 }]
  * This creates a slow-mo ramp in the middle 20% of the clip.
  */
+/**
+ * Compute a single constant playback rate from speed keyframes.
+ * Uses weighted average across the keyframe segments.
+ * This is the safe approach for OffthreadVideo (which needs a constant rate).
+ */
+function getConstantPlaybackRate(keyframes?: SpeedKeyframe[]): number {
+	if (!keyframes || keyframes.length === 0) return 1;
+	if (keyframes.length === 1) return Math.max(0.01, keyframes[0]!.speed);
+
+	const sorted = [...keyframes].sort((a, b) => a.at - b.at);
+	let weightedSum = 0;
+	let totalWeight = 0;
+
+	for (let i = 0; i < sorted.length - 1; i++) {
+		const segLength = sorted[i + 1]!.at - sorted[i]!.at;
+		const avgSpeed = (sorted[i]!.speed + sorted[i + 1]!.speed) / 2;
+		weightedSum += avgSpeed * segLength;
+		totalWeight += segLength;
+	}
+
+	return Math.max(0.01, totalWeight > 0 ? weightedSum / totalWeight : sorted[0]!.speed);
+}
+
+/**
+ * Per-frame playback rate interpolation (for future FFmpeg preprocessing use).
+ * NOT safe for direct OffthreadVideo playbackRate — produces incorrect seeks.
+ */
 function getPlaybackRate(progress: number, keyframes?: SpeedKeyframe[]): number {
 	if (!keyframes || keyframes.length === 0) return 1;
-	if (keyframes.length === 1) return keyframes[0]!.speed;
+	if (keyframes.length === 1) return Math.max(0.01, keyframes[0]!.speed);
 
-	// Sort by position
+	// Sort by position and deduplicate (same `at` values crash interpolate)
 	const sorted = [...keyframes].sort((a, b) => a.at - b.at);
+	const deduped = sorted.filter((k, i) => i === 0 || k.at > sorted[i - 1]!.at);
+	if (deduped.length === 1) return Math.max(0.01, deduped[0]!.speed);
 
 	// Clamp progress to keyframe range
-	if (progress <= sorted[0]!.at) return sorted[0]!.speed;
-	if (progress >= sorted[sorted.length - 1]!.at) return sorted[sorted.length - 1]!.speed;
+	if (progress <= deduped[0]!.at) return Math.max(0.01, deduped[0]!.speed);
+	if (progress >= deduped[deduped.length - 1]!.at) return Math.max(0.01, deduped[deduped.length - 1]!.speed);
 
 	// Find surrounding keyframes and interpolate
-	const inputRange = sorted.map(k => k.at);
-	const outputRange = sorted.map(k => k.speed);
+	const inputRange = deduped.map(k => k.at);
+	const outputRange = deduped.map(k => k.speed);
 
-	return interpolate(progress, inputRange, outputRange, {
+	return Math.max(0.01, interpolate(progress, inputRange, outputRange, {
 		extrapolateLeft: 'clamp',
 		extrapolateRight: 'clamp',
-	});
+	}));
 }
 
 export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speedKeyframes }) => {
@@ -145,8 +174,10 @@ export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speed
 	// Color grading — resolve filter name to CSS filter chain
 	const cssFilter = filter ? (COLOR_GRADES[filter] || COLOR_GRADES['boost']) : '';
 
-	// Speed ramping — compute playback rate at current frame
-	const playbackRate = getPlaybackRate(progress, speedKeyframes);
+	// Speed — OffthreadVideo requires a constant playbackRate (dynamic per-frame rates
+	// produce incorrect seek positions). If speedKeyframes are provided, compute a
+	// single effective rate. For true variable-speed ramping, preprocess with FFmpeg.
+	const playbackRate = getConstantPlaybackRate(speedKeyframes);
 
 	return (
 		<AbsoluteFill>

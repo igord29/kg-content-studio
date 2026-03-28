@@ -1,8 +1,8 @@
 FROM node:22-bookworm AS builder
 WORKDIR /app
 
-# Install bun (project uses bun as package manager)
-RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
+# Install bun 1.3.8 (pinned to match local dev — newer versions resolve deps differently)
+RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local BUN_VERSION=1.3.8 bash
 
 # Copy dependency manifests first for layer caching
 COPY package.json bun.lock ./

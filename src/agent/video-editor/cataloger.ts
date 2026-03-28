@@ -441,6 +441,15 @@ async function analyzeVideoFrames(
 			}
 		}
 
+		// Step 7d: Timestamp-aware action scoring
+		let timestampScores: CatalogEntry['timestampScores'] | undefined;
+		try {
+			timestampScores = await scoreVideoTimestamps(videoPath, video.id, duration);
+			console.log(`[cataloger] Timestamp scores: ${timestampScores?.length || 0} timestamps scored`);
+		} catch (err) {
+			console.warn(`[cataloger] Timestamp scoring skipped for ${video.name}: ${err}`);
+		}
+
 		// Step 8: Clean up temp files
 		cleanupTempFiles(video.id);
 
@@ -468,6 +477,7 @@ async function analyzeVideoFrames(
 				locationConfidence === 'unknown',
 			reviewNotes: buildReviewNotes(analysis),
 			sceneAnalysis: sceneAnalysisResult,
+			timestampScores,
 		};
 
 	} catch (err) {
@@ -611,6 +621,149 @@ function applyFilenameHeuristics(entry: CatalogEntry, filename: string): void {
 			entry.contentType = 'event';
 		}
 	}
+}
+
+// --- Timestamp-Aware Action Scoring ---
+
+const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/chess nonprofit video for video editing. Each frame is from a specific timestamp. Score each frame on 4 axes (1-5 scale):
+
+- movement: How much physical motion/action is visible? (1=static/empty, 5=peak action like a serve or rally)
+- people: How many people are engaged/visible? (1=empty/backs of heads, 5=multiple people actively engaged)
+- tennis: How relevant is this to tennis/chess activity? (1=irrelevant/ground/sky, 5=direct gameplay)
+- energy: Overall excitement/visual interest? (1=dead air/empty space, 5=celebration/intensity)
+
+Also provide a brief 10-word-max description of what you see.
+
+Return ONLY a JSON array, one object per frame in the order provided:
+[{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "brief": "Two kids rallying on hard court"}]
+
+No markdown, no explanation, just the JSON array.`;
+
+/**
+ * Score video timestamps for action quality using GPT-4o vision.
+ * Extracts a frame every intervalSeconds, batches them, and scores.
+ * Returns sorted array of timestamp scores.
+ */
+async function scoreVideoTimestamps(
+	videoPath: string,
+	fileId: string,
+	duration: number,
+	intervalSeconds: number = 5,
+	batchSize: number = 12,
+): Promise<CatalogEntry['timestampScores']> {
+	if (duration < 15) {
+		console.log('[cataloger] Video too short for timestamp scoring (<15s)');
+		return undefined;
+	}
+
+	const tempDir = ensureTempDir();
+	const timestamps: number[] = [];
+	for (let t = intervalSeconds; t < duration - 2; t += intervalSeconds) {
+		timestamps.push(t);
+	}
+
+	console.log(`[cataloger] Scoring ${timestamps.length} timestamps (every ${intervalSeconds}s)...`);
+
+	const allScores: NonNullable<CatalogEntry['timestampScores']> = [];
+
+	// Process in batches
+	for (let batchIdx = 0; batchIdx < timestamps.length; batchIdx += batchSize) {
+		// Memory safety check
+		const heap = process.memoryUsage().heapUsed;
+		if (heap > 800 * 1024 * 1024) {
+			console.warn(`[cataloger] Heap at ${Math.round(heap / 1024 / 1024)}MB, stopping timestamp scoring`);
+			break;
+		}
+
+		const batch = timestamps.slice(batchIdx, batchIdx + batchSize);
+		const framePaths: Array<{ timestamp: number; path: string }> = [];
+
+		// Extract frames for this batch (low-res to save memory)
+		for (const ts of batch) {
+			const framePath = path.join(tempDir, `${fileId}_score_${ts.toFixed(0)}.jpg`);
+			try {
+				execSync(
+					`ffmpeg -y -ss ${ts.toFixed(2)} -i "${videoPath}" -frames:v 1 -vf scale=512:-1 -q:v 5 "${framePath}"`,
+					{ timeout: 15000, stdio: 'pipe' },
+				);
+				if (fs.existsSync(framePath)) {
+					framePaths.push({ timestamp: ts, path: framePath });
+				}
+			} catch {
+				// Skip failed frames
+			}
+		}
+
+		if (framePaths.length === 0) continue;
+
+		// Build vision request
+		const contentParts: Array<{ type: 'image'; image: Uint8Array } | { type: 'text'; text: string }> = [];
+		for (const fp of framePaths) {
+			contentParts.push({
+				type: 'image',
+				image: new Uint8Array(fs.readFileSync(fp.path)),
+			});
+		}
+
+		const frameLabels = framePaths.map(fp => `Frame at ${fp.timestamp.toFixed(0)}s`).join(', ');
+		contentParts.push({
+			type: 'text',
+			text: `${TIMESTAMP_SCORING_PROMPT}\n\nFrames (in order): ${frameLabels}\n\nTimestamps: ${framePaths.map(fp => fp.timestamp).join(', ')}`,
+		});
+
+		// Call GPT-4o
+		try {
+			const result = await generateText({
+				model: openai('gpt-4o'),
+				messages: [{ role: 'user', content: contentParts }],
+			});
+
+			let jsonStr = result.text.trim();
+			if (jsonStr.startsWith('```')) {
+				jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+			}
+
+			const scores = JSON.parse(jsonStr) as Array<{
+				timestamp: number;
+				movement: number;
+				people: number;
+				tennis: number;
+				energy: number;
+				brief: string;
+			}>;
+
+			for (const score of scores) {
+				const actionQuality = Math.round((score.movement + score.people + score.tennis + score.energy) / 4 * 2);
+				allScores.push({
+					timestamp: score.timestamp,
+					actionQuality: Math.min(10, Math.max(1, actionQuality)),
+					movement: score.movement,
+					people: score.people,
+					tennis: score.tennis,
+					energy: score.energy,
+					brief: score.brief,
+				});
+			}
+		} catch (err) {
+			console.warn(`[cataloger] Scoring batch failed (ts ${batch[0]}-${batch[batch.length - 1]}s): ${err}`);
+		}
+
+		// Clean up frame files immediately
+		for (const fp of framePaths) {
+			try { fs.unlinkSync(fp.path); } catch { /* ignore */ }
+		}
+
+		// Rate limit between batches
+		if (batchIdx + batchSize < timestamps.length) {
+			await sleep(1000);
+		}
+	}
+
+	// Sort by actionQuality descending
+	allScores.sort((a, b) => b.actionQuality - a.actionQuality);
+	console.log(`[cataloger] Scored ${allScores.length} timestamps. Top: ${allScores.slice(0, 3).map(s => `${s.timestamp}s=${s.actionQuality}/10`).join(', ')}`);
+
+	return allScores.length > 0 ? allScores : undefined;
 }
 
 // --- Resume/Skip Logic ---

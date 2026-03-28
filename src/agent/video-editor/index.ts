@@ -1733,7 +1733,20 @@ const agent = createAgent('video-editor', {
 					const totalDurSec = v.duration ? Math.round(parseInt(v.duration) / 1000) : (ce.duration ? parseInt(ce.duration) : 0);
 					const sceneSection = ce.sceneAnalysis
 						? '\n  SCENE ANALYSIS (use segment IDs and cut safety for trim points):\n' + formatSegmentTimelineForPrompt(ce.sceneAnalysis as any)
-						: `\n  ⚠️ SCENE ANALYSIS: NOT AVAILABLE — you do NOT know what happens at specific timestamps. All trim points are ESTIMATES. Spread them across the ${totalDurSec}s duration. Do NOT invent specific actions.`;
+						: '';
+
+					// Timestamp action scores — tells the AI where the best moments are
+					let timestampSection = '';
+					if (ce.timestampScores && ce.timestampScores.length > 0) {
+						const top10 = ce.timestampScores.slice(0, 10); // already sorted by actionQuality desc
+						const lines = top10.map(s => `    ${s.timestamp}s: ${s.actionQuality}/10 — "${s.brief}" (move=${s.movement}, people=${s.people}, tennis=${s.tennis}, energy=${s.energy})`);
+						// Find best action windows (consecutive high-scoring timestamps)
+						const sorted = [...ce.timestampScores].sort((a, b) => a.timestamp - b.timestamp);
+						const hookCandidates = top10.slice(0, 3).map(s => `${s.timestamp}s`).join(', ');
+						timestampSection = `\n  ✅ TIMESTAMP ACTION SCORES (use these for trimStart — sorted by quality, best first):\n${lines.join('\n')}\n    BEST HOOK CANDIDATES: ${hookCandidates}`;
+					} else if (!ce.sceneAnalysis) {
+						timestampSection = `\n  ⚠️ NO TIMESTAMP SCORES — all trim points are ESTIMATES. Spread across the ${totalDurSec}s duration.`;
+					}
 					return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr})
   - Google Drive fileId: ${v.id}
   - WHAT THE CATALOG DESCRIBES (this is ALL you know about this clip): ${ce.activity}
@@ -1744,7 +1757,7 @@ const agent = createAgent('video-editor', {
   - People: ${ce.peopleCount || 'Unknown'}
   - Readable Text Visible In Frames: ${readableText}
   - Notable Moments Flagged: ${ce.notableMoments || 'None — no specific moments identified'}
-  - Suggested Modes: ${ce.suggestedModes?.join(', ') || 'None'}${sceneSection}
+  - Suggested Modes: ${ce.suggestedModes?.join(', ') || 'None'}${sceneSection}${timestampSection}
 ${formatUsageContextForPrompt(usageSummaryMap.get(v.id || ''), ce)}`;
 				} else {
 					return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr}) - Google Drive fileId: ${v.id} - no catalog data available`;
@@ -1784,6 +1797,13 @@ When NAMED SCENE SEGMENTS are available (SCENE TIMELINE with S1, S2, S3...), you
 - NEVER violate cut safety warnings — if it says "Let action complete", your clip must not end mid-action
 - NEVER cut during dialogue without letting the speaker finish
 When segments are NOT available, fall back to timestamp-based editing. When it's NOT available, all trim points are ESTIMATES and you must say so.
+
+When TIMESTAMP ACTION SCORES are available, you MUST:
+- Use the highest-scoring timestamps as your trimStart values — these are visually confirmed to have action/people/energy
+- For hooks, pick from "BEST HOOK CANDIDATES" — these are the most visually compelling moments
+- Prefer timestamps with high tennis/people/movement scores over low ones
+- The scores are based on actual frame analysis by GPT-4o vision, so they are reliable
+- You can use a timestamp with a lower score if it serves the narrative, but NEVER use a timestamp with score 1-3 for a hook or peak moment
 
 The user's topic "${topic}" describes what they WANT the video to be about. Select clips whose catalog descriptions MATCH that topic. If the catalog says "Kids playing tennis" and the topic asks for "redball tennis tournament", that's a reasonable match — but you still can't invent specific gameplay moments that aren't in the catalog description.
 

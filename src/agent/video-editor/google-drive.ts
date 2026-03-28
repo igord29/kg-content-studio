@@ -116,6 +116,15 @@ export interface CatalogEntry {
     }>;
   };
   semanticTags?: string[];
+  timestampScores?: Array<{
+    timestamp: number;
+    actionQuality: number;  // 1-10 composite
+    movement: number;       // 1-5
+    people: number;         // 1-5
+    tennis: number;         // 1-5
+    energy: number;         // 1-5
+    brief: string;          // 10-word-max description
+  }>;
 }
 
 export interface FolderStructure {

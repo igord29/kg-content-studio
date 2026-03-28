@@ -46,26 +46,42 @@ async function uploadDriveFileToS3(
 
 	const s3Key = `temp-clips/${renderPrefix}/${fileId}.mp4`;
 
-	// Step 1: Download from Google Drive into a buffer
+	// Step 1: Download from Google Drive to a temp file (stream, not buffer)
 	logger?.info('[s3-upload] Downloading %s from Google Drive...', fileId);
 	const startDl = Date.now();
 
 	const authClient = getAuth();
 	const drive = new drive_v3.Drive({ auth: authClient });
 
+	const fs = await import('fs');
+	const path = await import('path');
+	const os = await import('os');
+	const tempPath = path.join(os.tmpdir(), `s3upload_${fileId}_${Date.now()}.mp4`);
+
 	const response = await drive.files.get(
 		{ fileId, alt: 'media' },
-		{ responseType: 'arraybuffer' },
+		{ responseType: 'stream' },
 	);
 
-	const buffer = Buffer.from(response.data as ArrayBuffer);
+	// Stream to disk to avoid buffering 300MB+ in memory
+	await new Promise<void>((resolve, reject) => {
+		const ws = fs.createWriteStream(tempPath);
+		(response.data as NodeJS.ReadableStream).pipe(ws);
+		ws.on('finish', resolve);
+		ws.on('error', reject);
+		(response.data as NodeJS.ReadableStream).on('error', reject);
+	});
+
+	const fileSize = fs.statSync(tempPath).size;
 	const dlTime = ((Date.now() - startDl) / 1000).toFixed(1);
 	logger?.info('[s3-upload] Downloaded %s: %dMB in %ss',
-		fileId, (buffer.length / (1024 * 1024)).toFixed(1), dlTime);
+		fileId, (fileSize / (1024 * 1024)).toFixed(1), dlTime);
 
-	// Step 2: Upload to S3
+	// Step 2: Stream upload to S3 from temp file
 	logger?.info('[s3-upload] Uploading %s to s3://%s/%s...', fileId, bucketName, s3Key);
 	const startUp = Date.now();
+
+	const { Upload } = await import('@aws-sdk/lib-storage');
 
 	const s3 = new S3Client({
 		region,
@@ -75,17 +91,26 @@ async function uploadDriveFileToS3(
 		},
 	});
 
-	await s3.send(new PutObjectCommand({
-		Bucket: bucketName,
-		Key: s3Key,
-		Body: buffer,
-		ContentType: 'video/mp4',
-		// Public read so Lambda workers (and OffthreadVideo's proxy) can fetch it
-		// The bucket already has public access enabled for Remotion sites
-	}));
+	const upload = new Upload({
+		client: s3,
+		params: {
+			Bucket: bucketName,
+			Key: s3Key,
+			Body: fs.createReadStream(tempPath),
+			ContentType: 'video/mp4',
+		},
+		// 10MB parts, process one part at a time to keep memory low
+		partSize: 10 * 1024 * 1024,
+		queueSize: 1,
+	});
+
+	await upload.done();
 
 	const upTime = ((Date.now() - startUp) / 1000).toFixed(1);
 	logger?.info('[s3-upload] Uploaded %s to S3 in %ss', fileId, upTime);
+
+	// Clean up temp file
+	try { fs.unlinkSync(tempPath); } catch { /* best-effort */ }
 
 	// Build the public S3 URL
 	const s3Url = `https://${bucketName}.s3.${region}.amazonaws.com/${s3Key}`;
@@ -94,7 +119,7 @@ async function uploadDriveFileToS3(
 		fileId,
 		s3Key,
 		s3Url,
-		sizeBytes: buffer.length,
+		sizeBytes: fileSize,
 	};
 }
 
@@ -119,8 +144,8 @@ export async function uploadClipsToS3(
 		uniqueFileIds.length, renderPrefix);
 	const startTime = Date.now();
 
-	// Upload in parallel (but limit concurrency to avoid overwhelming Drive API)
-	const concurrency = 3;
+	// Upload sequentially to keep memory low — each clip streams through disk, not RAM
+	const concurrency = 1;
 	const results = new Map<string, S3UploadedClip>();
 	const errors: string[] = [];
 

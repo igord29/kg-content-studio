@@ -728,21 +728,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		}).catch(() => {}); // best-effort
 	}, []);
 
-	// Auto-catalog: trigger when uncataloged videos are detected
-	useEffect(() => {
-		if (
-			autoCatalogDetected &&
-			!autoCatalogDismissed &&
-			!catalogRunning &&
-			uncatalogedCount > 0 &&
-			driveConnected === true
-		) {
-			const timer = setTimeout(() => {
-				handleRunFullCatalog();
-			}, 3000);
-			return () => clearTimeout(timer);
-		}
-	}, [autoCatalogDetected, autoCatalogDismissed, catalogRunning, uncatalogedCount, driveConnected]);
+	// Auto-catalog DISABLED — downloading 500MB videos in the background causes OOM on Railway.
+	// The banner still shows uncataloged count; user can click "Run Full Catalog" manually.
+	// Re-enable once Railway has more memory or cataloging is moved to a separate worker.
 
 	const loadVideos = useCallback(async () => {
 		setLoadingVideos(true);

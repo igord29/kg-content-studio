@@ -90,15 +90,18 @@ function computeAnimation(
 	durationInFrames: number,
 	fps: number,
 ): { opacity: number; transform: string } {
-	const entryFrames = Math.min(12, Math.floor(durationInFrames * 0.3));
-	const exitFrames = Math.min(8, Math.floor(durationInFrames * 0.2));
+	// Guard: ensure frames are at least 1 to prevent [0,0] interpolate crash
+	const entryFrames = Math.max(1, Math.min(12, Math.floor(durationInFrames * 0.3)));
+	const exitFrames = Math.max(1, Math.min(8, Math.floor(durationInFrames * 0.2)));
 
 	// Exit fade (shared across all animations)
-	const exitOpacity = durationInFrames <= exitFrames + 2
+	// Guard: skip exit fade if duration is too short
+	const exitStart = Math.max(0, durationInFrames - exitFrames);
+	const exitOpacity = durationInFrames <= 2 || exitStart >= durationInFrames
 		? 1
 		: interpolate(
 			frame,
-			[Math.max(0, durationInFrames - exitFrames), durationInFrames],
+			[exitStart, Math.max(exitStart + 1, durationInFrames)],
 			[1, 0],
 			{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
 		);
@@ -174,19 +177,22 @@ function computeAnimation(
 			// Original simple fade in/out
 			let entryOpacity: number;
 			if (durationInFrames <= entryFrames + exitFrames + 2) {
-				entryOpacity = durationInFrames <= 1
+				entryOpacity = durationInFrames <= 2
 					? 1
 					: interpolate(
 						frame,
-						[0, Math.floor(durationInFrames / 2), durationInFrames],
+						[0, Math.max(1, Math.floor(durationInFrames / 2)), durationInFrames],
 						[0, 1, 0],
 						{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
 					);
 				return { opacity: entryOpacity, transform: '' };
 			}
+			// Guard: ensure 4-point inputRange is strictly monotonically increasing
+			const holdStart = Math.min(entryFrames, durationInFrames - exitFrames - 1);
+			const holdEnd = Math.max(holdStart + 1, durationInFrames - exitFrames);
 			entryOpacity = interpolate(
 				frame,
-				[0, entryFrames, durationInFrames - exitFrames, durationInFrames],
+				[0, Math.max(1, holdStart), Math.max(2, holdEnd), Math.max(3, durationInFrames)],
 				[0, 1, 1, 0],
 				{ extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
 			);
@@ -206,7 +212,7 @@ function getTypewriterText(
 	fps: number,
 	mode: string,
 ): string {
-	const typingDuration = Math.floor(durationInFrames * 0.6);
+	const typingDuration = Math.max(1, Math.floor(durationInFrames * 0.6));
 	const charsToShow = Math.min(
 		text.length,
 		Math.floor(interpolate(frame, [0, typingDuration], [0, text.length], {

@@ -70,7 +70,8 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 					const elements: React.ReactNode[] = [];
 
 					// Add transition before this clip (except for the first clip)
-					if (index > 0) {
+					// Skip if transitionDurationFrames is 0 (causes [0,0] interpolate crash)
+					if (index > 0 && transitionDurationFrames > 0) {
 						const mapping = clip.transitionType
 							? { type: clip.transitionType, direction: clip.transitionDirection }
 							: getTransitionForClip(mode, index);

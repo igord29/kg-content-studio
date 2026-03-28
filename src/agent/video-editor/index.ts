@@ -512,11 +512,19 @@ const agent = createAgent('video-editor', {
 
 				} else {
 					// --- Direct Pipeline (Drive → S3 → Remotion Lambda) ---
-					// No preprocessor Lambda deployed. Upload raw clips directly.
-					ctx.logger.info('[render-remotion] Preprocessor Lambda not configured. Using direct S3 upload (no stabilization).');
-					const { submitRemotionRenderDirect } = await import('./remotion/render');
+					// Fire-and-forget: S3 upload + Lambda submission runs async
+					// because it takes 40-60s which exceeds Agentuity's 60s timeout.
+					ctx.logger.info('[render-remotion] Using direct S3 upload (no stabilization).');
+					const { submitRemotionRenderDirect, preRegisterRender } = await import('./remotion/render');
 
-					const renderId = await submitRemotionRenderDirect(
+					const renderId = `remotion_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+					preRegisterRender(renderId);
+
+					ctx.logger.info('[render-remotion] Pre-registered render %s. Starting direct pipeline (async)...', renderId);
+
+					// Fire-and-forget: runs beyond the session timeout.
+					// Frontend polls render-status for progress.
+					submitRemotionRenderDirect(
 						{
 							clips,
 							textOverlays: overlays,
@@ -526,15 +534,20 @@ const agent = createAgent('video-editor', {
 						},
 						appUrl,
 						ctx.logger,
-					);
-					ctx.logger.info('[render-remotion] Submitted to Lambda. Render ID: %s', renderId);
+						renderId,
+					).catch(async (err) => {
+						const msg = err instanceof Error ? err.message : String(err);
+						ctx.logger.error('[render-remotion] Direct pipeline error: %s', msg);
+						const { failRender } = await import('./remotion/render');
+						failRender(renderId, msg);
+					});
 
 					return {
 						success: true,
 						renderId,
 						renderPlatform: platform,
 						renderMode: editMode,
-						message: `Remotion Lambda render submitted: ${clips.length} clips (raw → S3 → Lambda, no stabilization)`,
+						message: `Remotion Lambda render submitted: ${clips.length} clips (async: S3 upload + Lambda)`,
 					};
 				}
 			}

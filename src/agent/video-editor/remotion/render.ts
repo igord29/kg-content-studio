@@ -400,8 +400,9 @@ export async function submitRemotionRenderDirect(
 	},
 	appUrl: string,
 	logger?: Logger,
+	preRegisteredRenderId?: string,
 ): Promise<string> {
-	const renderId = `remotion_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+	const renderId = preRegisteredRenderId || `remotion_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 	logger?.info('[remotion-lambda] Render %s: getting infrastructure config...', renderId);
 
@@ -508,17 +509,27 @@ export async function submitRemotionRenderDirect(
 		timeoutInMilliseconds: 120_000,
 	});
 
-	// Step 5: Store mapping in registry (include S3 clips for cleanup)
-	const entry: LambdaRenderEntry = {
-		localId: renderId,
-		lambdaRenderId: result.renderId,
-		bucketName: result.bucketName,
-		functionName: infra.functionName,
-		region: infra.region,
-		status: 'queued',
-		createdAt: Date.now(),
-	};
-	renderRegistry.set(renderId, entry);
+	// Step 5: Store mapping in registry (update if pre-registered, otherwise create)
+	if (preRegisteredRenderId && renderRegistry.has(renderId)) {
+		updateRenderEntry(renderId, {
+			lambdaRenderId: result.renderId,
+			bucketName: result.bucketName,
+			functionName: infra.functionName,
+			region: infra.region,
+			status: 'queued',
+		});
+	} else {
+		const entry: LambdaRenderEntry = {
+			localId: renderId,
+			lambdaRenderId: result.renderId,
+			bucketName: result.bucketName,
+			functionName: infra.functionName,
+			region: infra.region,
+			status: 'queued',
+			createdAt: Date.now(),
+		};
+		renderRegistry.set(renderId, entry);
+	}
 
 	// Schedule S3 cleanup after 30 minutes (generous: renders take 2-5 min)
 	const s3ClipsList = [...s3Clips.values()];

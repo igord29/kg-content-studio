@@ -45,6 +45,7 @@ import {
 	startBackgroundCatalog,
 	getCatalogJobStatus,
 	getProcessedFileIds,
+	rescoreExistingCatalog,
 	type CatalogProgress,
 } from './cataloger';
 import {
@@ -1099,7 +1100,8 @@ const agent = createAgent('video-editor', {
   — no catalog data`;
 				}).join('\n\n');
 
-				const revisedPlan = await generateRevisedEditPlan(reviewData, originalPlan, footageContext, editMode, platform);
+				const humanFeedback = (input as any).humanFeedback as string | undefined;
+				const revisedPlan = await generateRevisedEditPlan(reviewData, originalPlan, footageContext, editMode, platform, humanFeedback);
 
 				if (revisedPlan) {
 					ctx.logger.info('[video-editor] On-demand revision generated with %d clips',
@@ -1471,6 +1473,30 @@ const agent = createAgent('video-editor', {
 			return {
 				success: true,
 				status,
+			};
+		}
+
+		if (task === 'rescore-timestamps') {
+			ctx.logger.info('[video-editor] Starting timestamp re-scoring...');
+			const fileIds = input.videoIds as string[] | undefined;
+			const force = !!(input as any).force;
+
+			// Fire-and-forget — this takes minutes
+			rescoreExistingCatalog(
+				{ force, fileIds: fileIds?.length ? fileIds : undefined },
+				(completed, total, currentFile) => {
+					ctx.logger.info('[video-editor] Re-score progress: %d/%d (%s)', completed, total, currentFile);
+				},
+			).then(result => {
+				ctx.logger.info('[video-editor] Re-score done: %d scored, %d skipped, %d failed',
+					result.scored, result.skipped, result.failed);
+			}).catch(err => {
+				ctx.logger.error('[video-editor] Re-score error: %s', err);
+			});
+
+			return {
+				success: true,
+				message: `Timestamp re-scoring started${fileIds?.length ? ` for ${fileIds.length} videos` : ' for all unscored videos'}`,
 			};
 		}
 

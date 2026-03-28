@@ -1177,6 +1177,104 @@ export function getProcessedFileIds(): string[] {
 	return catalog.map(entry => entry.fileId);
 }
 
+/**
+ * Re-score existing catalog entries with timestamp-aware action scoring.
+ * Downloads each video, runs scoreVideoTimestamps, saves scores to catalog.
+ * Skips entries that already have timestampScores unless force=true.
+ */
+export async function rescoreExistingCatalog(
+	options: { force?: boolean; fileIds?: string[] } = {},
+	onProgress?: (completed: number, total: number, currentFile: string) => void,
+): Promise<{ scored: number; skipped: number; failed: number }> {
+	const catalog = loadExistingCatalog();
+	let toScore = catalog;
+
+	if (options.fileIds && options.fileIds.length > 0) {
+		const ids = new Set(options.fileIds);
+		toScore = catalog.filter(e => ids.has(e.fileId));
+	}
+
+	if (!options.force) {
+		toScore = toScore.filter(e => !e.timestampScores || e.timestampScores.length === 0);
+	}
+
+	console.log(`[cataloger] Re-scoring ${toScore.length} entries (${catalog.length} total, force=${!!options.force})`);
+
+	let scored = 0;
+	let skipped = 0;
+	let failed = 0;
+
+	for (const entry of toScore) {
+		const duration = entry.duration ? parseInt(entry.duration) : 0;
+		if (duration < 15) {
+			skipped++;
+			continue;
+		}
+
+		if (onProgress) onProgress(scored + failed + skipped, toScore.length, entry.filename);
+
+		try {
+			// Download video to temp
+			const video = await getVideoMetadata(entry.fileId);
+			const videoFile: VideoFile = {
+				id: entry.fileId,
+				name: entry.filename,
+				mimeType: video.mimeType || 'video/mp4',
+				size: video.size || '0',
+				createdTime: video.createdTime || '',
+				modifiedTime: video.modifiedTime || '',
+				parentFolderId: (video.parents && video.parents[0]) || '',
+			};
+
+			const videoPath = await downloadVideoToTemp(videoFile);
+			const actualDuration = getVideoDuration(videoPath);
+
+			// Run timestamp scoring
+			const scores = await scoreVideoTimestamps(videoPath, entry.fileId, actualDuration);
+
+			// Update the entry in the catalog
+			const catalogIndex = catalog.findIndex(e => e.fileId === entry.fileId);
+			if (catalogIndex >= 0 && scores) {
+				catalog[catalogIndex]!.timestampScores = scores;
+				scored++;
+				console.log(`[cataloger] Scored ${entry.filename}: ${scores.length} timestamps, top=${scores[0]?.actionQuality}/10 at ${scores[0]?.timestamp}s`);
+			} else {
+				skipped++;
+			}
+
+			// Clean up
+			cleanupTempFiles(entry.fileId);
+
+			// Rate limit
+			await sleep(2000);
+		} catch (err) {
+			failed++;
+			console.error(`[cataloger] Re-score failed for ${entry.filename}: ${err}`);
+			cleanupTempFiles(entry.fileId);
+		}
+
+		// Incremental save every 5
+		if ((scored + failed) % 5 === 0 && scored > 0) {
+			try {
+				await saveCatalog(catalog);
+				console.log(`[cataloger] Incremental re-score save (${scored} scored)`);
+			} catch { /* continue */ }
+		}
+	}
+
+	// Final save
+	if (scored > 0) {
+		try {
+			await saveCatalog(catalog);
+		} catch (err) {
+			console.error('[cataloger] Failed to save re-scored catalog:', err);
+		}
+	}
+
+	console.log(`[cataloger] Re-score complete: ${scored} scored, ${skipped} skipped, ${failed} failed`);
+	return { scored, skipped, failed };
+}
+
 // --- Scene Analysis Helper ---
 
 /**

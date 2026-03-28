@@ -620,6 +620,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	// Copy feedback
 	const [copied, setCopied] = useState(false);
 
+	// Human feedback for revision
+	const [revisionFeedback, setRevisionFeedback] = useState('');
+
 	// Music state
 	const [customMusicUrl, setCustomMusicUrl] = useState('');
 	const [musicEnabled, setMusicEnabled] = useState(true); // auto-add music for Tier 2+ platforms
@@ -1253,6 +1256,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						editMode: selectedMode === 'auto' ? 'game_day' : selectedMode,
 						originalEditPlan: job.usedEditPlan || editPlanData,
 						review: job.review,
+						humanFeedback: revisionFeedback.trim() || undefined,
 					}),
 				});
 
@@ -3993,7 +3997,29 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 																</div>
 															)}
 
-															{/* Revise & Re-render button or max reached message */}
+															{/* Feedback input + Revise & Re-render */}
+															{!maxRevisionsReached && (
+																<textarea
+																	value={revisionFeedback}
+																	onChange={(e) => setRevisionFeedback(e.target.value)}
+																	placeholder="Tell the editor what to fix... (e.g. 'clip 1 is empty space, use action shots of kids playing')"
+																	style={{
+																		width: '100%',
+																		padding: '6px 8px',
+																		borderRadius: 4,
+																		border: `1px solid ${S.borderColor}`,
+																		background: '#1a1f2e',
+																		color: S.textPrimary,
+																		fontFamily: S.mono,
+																		fontSize: 9,
+																		resize: 'vertical',
+																		minHeight: 36,
+																		maxHeight: 80,
+																		marginBottom: 4,
+																		boxSizing: 'border-box' as const,
+																	}}
+																/>
+															)}
 															{maxRevisionsReached ? (
 																<div style={{
 																	width: '100%',
@@ -4372,7 +4398,29 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 																</div>
 															)}
 
-															{/* Revise & Re-render button or max reached message */}
+															{/* Feedback input + Revise & Re-render */}
+															{!maxRevisionsReached && (
+																<textarea
+																	value={revisionFeedback}
+																	onChange={(e) => setRevisionFeedback(e.target.value)}
+																	placeholder="Tell the editor what to fix... (e.g. 'clip 1 is empty space, use action shots of kids playing')"
+																	style={{
+																		width: '100%',
+																		padding: '6px 8px',
+																		borderRadius: 4,
+																		border: `1px solid ${S.borderColor}`,
+																		background: '#1a1f2e',
+																		color: S.textPrimary,
+																		fontFamily: S.mono,
+																		fontSize: 9,
+																		resize: 'vertical',
+																		minHeight: 36,
+																		maxHeight: 80,
+																		marginBottom: 4,
+																		boxSizing: 'border-box' as const,
+																	}}
+																/>
+															)}
 															{maxRevisionsReached ? (
 																<div style={{
 																	width: '100%',

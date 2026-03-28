@@ -443,6 +443,7 @@ export async function generateRevisedEditPlan(
 	footageContext: string,
 	mode: string,
 	platform: string,
+	humanFeedback?: string,
 ): Promise<Record<string, unknown> | null> {
 	// Map each issue to the clip index it most likely affects (by timestamp)
 	const originalClips = Array.isArray(originalEditPlan.clips) ? originalEditPlan.clips as Array<{ trimStart?: number; duration?: number; fileId?: string; filename?: string; purpose?: string }> : [];
@@ -532,6 +533,7 @@ ADDITIONAL RULES:
 - Target total duration for ${platform}: match platform guidelines
 - Follow ${mode} mode structure for pacing and energy
 
+${humanFeedback ? `\nHUMAN EDITOR FEEDBACK (HIGHEST PRIORITY — address these notes first):\n${humanFeedback}\n` : ''}
 Return ONLY the revised JSON edit plan (same format as the original) wrapped in \`\`\`json fences. Include a "revisionNotes" field explaining what you changed and why for each clip.`;
 
 	const result = await generateText({

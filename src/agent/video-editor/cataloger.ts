@@ -625,14 +625,16 @@ function applyFilenameHeuristics(entry: CatalogEntry, filename: string): void {
 
 // --- Timestamp-Aware Action Scoring ---
 
-const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/chess nonprofit video for video editing. Each frame is from a specific timestamp. Score each frame on 4 axes (1-5 scale):
+const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/chess nonprofit (CLC) video for video editing. Each frame is from a specific timestamp. Score each frame on 4 axes (1-5 scale):
 
-- movement: How much physical motion/action is visible? (1=static/empty, 5=peak action like a serve or rally)
-- people: How many people are engaged/visible? (1=empty/backs of heads, 5=multiple people actively engaged)
-- tennis: How relevant is this to tennis/chess activity? (1=irrelevant/ground/sky, 5=direct gameplay)
-- energy: Overall excitement/visual interest? (1=dead air/empty space, 5=celebration/intensity)
+- movement: How much physical motion/action is visible? (1=static/empty/ground/sky, 2=slight movement, 3=moderate activity, 4=active gameplay, 5=peak action like serve/rally/celebration)
+- people: Are KIDS/PLAYERS actively visible and engaged? (1=empty/no people/backs only, 2=distant figures, 3=people visible but passive/spectating, 4=kids clearly visible and active, 5=close-up of kids playing/celebrating)
+  IMPORTANT: Spectators sitting and watching = 2-3, NOT 4-5. We want clips of kids PLAYING, not crowds watching.
+- tennis: How directly does this show tennis/chess GAMEPLAY? (1=irrelevant/empty space, 2=court visible but no play, 3=people near court/equipment, 4=active drills/practice, 5=rally/match/direct gameplay)
+  IMPORTANT: An empty court or people standing around = 1-2. Actual ball-hitting, serving, rallying = 4-5.
+- energy: How visually compelling is this for a social media clip? (1=boring/static/empty, 2=mildly interesting, 3=decent content, 4=engaging action, 5=viral-worthy moment)
 
-Also provide a brief 10-word-max description of what you see.
+Also provide a brief 10-word-max description of what you see. Be specific — "kids rallying on blue hard court" not just "tennis activity".
 
 Return ONLY a JSON array, one object per frame in the order provided:
 [{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "brief": "Two kids rallying on hard court"}]
@@ -733,7 +735,8 @@ async function scoreVideoTimestamps(
 			}>;
 
 			for (const score of scores) {
-				const actionQuality = Math.round((score.movement + score.people + score.tennis + score.energy) / 4 * 2);
+				// Weight tennis and movement higher — we want gameplay, not spectators
+				const actionQuality = Math.round((score.movement * 1.5 + score.people + score.tennis * 1.5 + score.energy) / 5 * 2);
 				allScores.push({
 					timestamp: score.timestamp,
 					actionQuality: Math.min(10, Math.max(1, actionQuality)),

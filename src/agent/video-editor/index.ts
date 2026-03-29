@@ -1690,6 +1690,15 @@ const agent = createAgent('video-editor', {
 						if (entry.quality === 'excellent') score += 2;
 						else if (entry.quality === 'good') score += 1;
 
+						// Boost clips with high timestamp action scores (actual gameplay)
+						if (entry.timestampScores && entry.timestampScores.length > 0) {
+							const bestScore = entry.timestampScores[0]!.actionQuality;
+							if (bestScore >= 8) score += 4;
+							else if (bestScore >= 6) score += 2;
+							// Penalize clips where best score is low (spectators/empty)
+							if (bestScore <= 3) score -= 3;
+						}
+
 						return { fileId: entry.fileId, score };
 					})
 					.filter(r => r.score > 0)
@@ -1825,11 +1834,14 @@ When NAMED SCENE SEGMENTS are available (SCENE TIMELINE with S1, S2, S3...), you
 When segments are NOT available, fall back to timestamp-based editing. When it's NOT available, all trim points are ESTIMATES and you must say so.
 
 When TIMESTAMP ACTION SCORES are available, you MUST:
-- Use the highest-scoring timestamps as your trimStart values — these are visually confirmed to have action/people/energy
+- Use the highest-scoring timestamps as your trimStart values — these are visually confirmed by GPT-4o vision
 - For hooks, pick from "BEST HOOK CANDIDATES" — these are the most visually compelling moments
-- Prefer timestamps with high tennis/people/movement scores over low ones
-- The scores are based on actual frame analysis by GPT-4o vision, so they are reliable
-- You can use a timestamp with a lower score if it serves the narrative, but NEVER use a timestamp with score 1-3 for a hook or peak moment
+- STRONGLY prefer timestamps where tennis=4-5 AND movement=4-5 — these show actual gameplay, not spectators
+- A timestamp with people=5 but tennis=2 means SPECTATORS WATCHING, not kids playing. AVOID these for action clips.
+- A timestamp with tennis=5 and movement=5 is ALWAYS better than one with tennis=2 and people=5
+- NEVER use a timestamp with actionQuality below 5 for a hook or peak moment — only 5+ for those
+- If a clip only has low scores (all under 5), DO NOT USE IT — pick a different source clip that has higher scores
+- When multiple clips from the catalog have timestamp scores, ONLY use clips that have at least one timestamp scoring 7+
 
 The user's topic "${topic}" describes what they WANT the video to be about. Select clips whose catalog descriptions MATCH that topic. If the catalog says "Kids playing tennis" and the topic asks for "redball tennis tournament", that's a reasonable match — but you still can't invent specific gameplay moments that aren't in the catalog description.
 

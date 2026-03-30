@@ -57,7 +57,7 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 
 			{/* Layer 2: Video clips with transitions */}
 			<TransitionSeries>
-				{clips.map((clip, index) => {
+				{clips.flatMap((clip, index) => {
 					const clipFrames = Math.max(
 						Math.ceil(clip.length * fps),
 						transitionDurationFrames * 2 + fps, // min: 2 transitions + 1 second

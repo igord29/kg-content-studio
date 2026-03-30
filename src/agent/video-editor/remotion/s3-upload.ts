@@ -294,22 +294,26 @@ export async function uploadPreprocessedClipsToS3(
 			batch.map(async (clip) => {
 				const s3Key = `temp-clips/${renderPrefix}/${clip.processedId}.mp4`;
 
-				// Read local preprocessed file
-				logger?.info('[s3-upload] Reading local file %s (%s)...', clip.processedId, clip.localPath);
-				const buffer = fs.readFileSync(clip.localPath);
-				const sizeMB = (buffer.length / (1024 * 1024)).toFixed(1);
-
-				// Upload to S3
+				// Stream local preprocessed file (avoid buffering entire video in memory)
+				const fileSizeBytes = fs.statSync(clip.localPath).size;
+				const sizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(1);
 				logger?.info('[s3-upload] Uploading %s to s3://%s/%s (%sMB)...',
 					clip.processedId, bucketName, s3Key, sizeMB);
 				const uploadStart = Date.now();
 
-				await s3.send(new PutObjectCommand({
-					Bucket: bucketName,
-					Key: s3Key,
-					Body: buffer,
-					ContentType: 'video/mp4',
-				}));
+				const { Upload } = await import('@aws-sdk/lib-storage');
+				const upload = new Upload({
+					client: s3,
+					params: {
+						Bucket: bucketName,
+						Key: s3Key,
+						Body: fs.createReadStream(clip.localPath),
+						ContentType: 'video/mp4',
+					},
+					partSize: 10 * 1024 * 1024,
+					queueSize: 1,
+				});
+				await upload.done();
 
 				const uploadTime = ((Date.now() - uploadStart) / 1000).toFixed(1);
 				logger?.info('[s3-upload] Uploaded %s in %ss', clip.processedId, uploadTime);
@@ -320,7 +324,7 @@ export async function uploadPreprocessedClipsToS3(
 					fileId: clip.processedId, // Use processedId as the key identifier
 					s3Key,
 					s3Url,
-					sizeBytes: buffer.length,
+					sizeBytes: fileSizeBytes,
 				} satisfies S3UploadedClip;
 			}),
 		);

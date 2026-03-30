@@ -738,11 +738,14 @@ async function scoreVideoTimestamps(
 				brief: string;
 			}>;
 
-			for (const score of scores) {
+			// Use original timestamps (not model-returned ones) to avoid hallucinated values
+			for (let k = 0; k < scores.length && k < framePaths.length; k++) {
+				const score = scores[k]!;
+				const originalTs = framePaths[k]!.timestamp;
 				// Weight tennis and movement higher — we want gameplay, not spectators
 				const actionQuality = Math.round((score.movement * 1.5 + score.people + score.tennis * 1.5 + score.energy) / 5 * 2);
 				allScores.push({
-					timestamp: score.timestamp,
+					timestamp: originalTs,
 					actionQuality: Math.min(10, Math.max(1, actionQuality)),
 					movement: score.movement,
 					people: score.people,

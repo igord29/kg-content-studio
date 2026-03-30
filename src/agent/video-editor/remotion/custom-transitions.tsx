@@ -9,8 +9,8 @@
  * - remotion-dev/light-leak-example (lightLeak)
  */
 
-import React, { useMemo, useState } from 'react';
-import { AbsoluteFill, interpolate, random } from 'remotion';
+import React, { useMemo } from 'react';
+import { AbsoluteFill, interpolate } from 'remotion';
 import type {
 	TransitionPresentation,
 	TransitionPresentationComponentProps,
@@ -78,7 +78,8 @@ const CircleWipePresentation: React.FC<TransitionPresentationComponentProps<Wipe
 	const r = radius * presentationProgress;
 	const cx = passedProps.width / 2;
 	const cy = passedProps.height / 2;
-	const [clipId] = useState(() => String(random(null)));
+	// Deterministic ID — no useState (breaks in Remotion SSR/Lambda)
+	const clipId = `circle-wipe-${presentationDirection}`;
 
 	return (
 		<AbsoluteFill>
@@ -115,7 +116,7 @@ const ClockWipePresentation: React.FC<TransitionPresentationComponentProps<WipeP
 	const radius = Math.sqrt(passedProps.width ** 2 + passedProps.height ** 2) / 2;
 	const cx = passedProps.width / 2;
 	const cy = passedProps.height / 2;
-	const [clipId] = useState(() => String(random(null)));
+	const clipId = `clock-wipe-${presentationDirection}`;
 
 	// Build pie arc path
 	const angle = presentationProgress * 360;

@@ -31,7 +31,9 @@ import catalogSeedData from './catalog-seed.json';
 // --- Constants ---
 
 const TEMP_DIR = path.join(process.cwd(), '.temp-cataloger');
-const CATALOG_RESULTS_PATH = path.join(process.cwd(), 'catalog-results.json');
+// Use persistent volume (/data) on Railway, fall back to cwd for local dev
+const PERSISTENT_DIR = fs.existsSync('/data') ? '/data' : process.cwd();
+const CATALOG_RESULTS_PATH = path.join(PERSISTENT_DIR, 'catalog-results.json');
 
 const BATCH_SIZE = 5;               // Smaller batches -- each video is heavier now
 const DELAY_BETWEEN_BATCHES = 5000; // 5 seconds between batches

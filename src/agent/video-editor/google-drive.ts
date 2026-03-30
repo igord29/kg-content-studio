@@ -417,7 +417,9 @@ export async function generateBlankCatalog(folderId?: string): Promise<CatalogEn
  */
 export async function saveCatalog(catalog: CatalogEntry[], parentFolderId?: string): Promise<string> {
   const catalogJson = JSON.stringify(catalog, null, 2);
-  const localPath = path.join(process.cwd(), 'catalog-results.json');
+  // Use persistent volume (/data) on Railway, fall back to cwd for local dev
+  const persistDir = fs.existsSync('/data') ? '/data' : process.cwd();
+  const localPath = path.join(persistDir, 'catalog-results.json');
   
   // Always save locally first as a fallback
   try {

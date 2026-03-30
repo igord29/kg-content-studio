@@ -99,6 +99,8 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 								effect={effect}
 								filter={clip.filter}
 								speedKeyframes={clip.speedKeyframes}
+								cropX={clip.cropX}
+								cropY={clip.cropY}
 							/>
 						</TransitionSeries.Sequence>,
 					);

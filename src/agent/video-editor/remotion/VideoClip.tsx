@@ -16,6 +16,10 @@ interface VideoClipProps {
 	effect?: string;   // 'zoomIn' | 'zoomOut' | 'slideRight' | 'slideLeft'
 	filter?: string;   // color grade name
 	speedKeyframes?: SpeedKeyframe[];
+	/** Vertical crop origin as percentage (0-100). Default 75 = focus on lower 25% where players are. */
+	cropY?: number;
+	/** Horizontal crop origin as percentage (0-100). Default 50 = center. */
+	cropX?: number;
 }
 
 // Effect pool (mirrors CLIP_EFFECT_POOLS from shotstack.ts)
@@ -134,15 +138,16 @@ function getPlaybackRate(progress: number, keyframes?: SpeedKeyframe[]): number 
 	}));
 }
 
-export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speedKeyframes }) => {
+export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speedKeyframes, cropY = 75, cropX = 50 }) => {
 	const frame = useCurrentFrame();
 	const { durationInFrames } = useVideoConfig();
 	const progress = frame / Math.max(1, durationInFrames);
 
-	// Ken Burns effects — zoomed in on court level to focus on players.
-	// Base scale 1.6x crops out banners/sky, keeping action in frame.
-	// Transform origin at 65% vertical centers on court-level action.
-	const BASE_SCALE = 1.6;
+	// Ken Burns effects — zoomed in to focus on players.
+	// Base scale 2.0x aggressively crops sky/banners, keeping players in frame.
+	// cropY/cropX control per-clip focus point (default: 75% down, center).
+	const BASE_SCALE = 2.0;
+	const originStr = `${cropX}% ${cropY}%`;
 	let transform = '';
 	switch (effect) {
 		case 'zoomIn': {
@@ -191,11 +196,9 @@ export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speed
 					width: '100%',
 					height: '100%',
 					objectFit: 'cover',
-					// Focus crop on lower-center of frame where players are,
-					// not upper-center where banners/signage tend to be
-					objectPosition: 'center 65%',
+					objectPosition: originStr,
 					transform,
-					transformOrigin: 'center 65%',
+					transformOrigin: originStr,
 					filter: cssFilter || undefined,
 				}}
 			/>

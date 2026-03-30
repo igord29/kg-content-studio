@@ -636,10 +636,12 @@ const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/che
   IMPORTANT: An empty court or people standing around = 1-2. Actual ball-hitting, serving, rallying = 4-5.
 - energy: How visually compelling is this for a social media clip? (1=boring/static/empty, 2=mildly interesting, 3=decent content, 4=engaging action, 5=viral-worthy moment)
 
-Also provide a brief 10-word-max description of what you see. Be specific — "kids rallying on blue hard court" not just "tennis activity".
+Also provide:
+- brief: 10-word-max description. Be specific — "kids rallying on blue hard court" not just "tennis activity".
+- subjectPosition: Where are the main subjects (people/action) in the frame? Use one of: "center", "bottom-center", "bottom-left", "bottom-right", "top-center", "left", "right". This helps us crop the 16:9 video to 9:16 vertical format by focusing on where the players actually are.
 
 Return ONLY a JSON array, one object per frame in the order provided:
-[{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "brief": "Two kids rallying on hard court"}]
+[{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "brief": "Two kids rallying on hard court", "subjectPosition": "bottom-center"}]
 
 No markdown, no explanation, just the JSON array.`;
 
@@ -736,6 +738,7 @@ async function scoreVideoTimestamps(
 				tennis: number;
 				energy: number;
 				brief: string;
+				subjectPosition?: string;
 			}>;
 
 			// Use original timestamps (not model-returned ones) to avoid hallucinated values
@@ -752,6 +755,7 @@ async function scoreVideoTimestamps(
 					tennis: score.tennis,
 					energy: score.energy,
 					brief: score.brief,
+					subjectPosition: score.subjectPosition || 'bottom-center',
 				});
 			}
 		} catch (err) {

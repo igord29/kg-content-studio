@@ -124,6 +124,7 @@ export interface CatalogEntry {
     tennis: number;         // 1-5
     energy: number;         // 1-5
     brief: string;          // 10-word-max description
+    subjectPosition?: string; // where subjects are in frame: center, bottom-center, bottom-left, etc.
   }>;
 }
 

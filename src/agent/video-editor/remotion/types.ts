@@ -29,6 +29,8 @@ export interface CLCVideoProps {
 		transitionType?: string; // mapped from Shotstack: 'fade' | 'slide' | 'wipe' | 'clockWipe'
 		transitionDirection?: string; // 'from-left' | 'from-right' | 'from-top' | 'from-bottom'
 		speedKeyframes?: SpeedKeyframe[]; // optional in-clip speed ramps
+		cropX?: number;   // horizontal focus point 0-100 (default 50 = center)
+		cropY?: number;   // vertical focus point 0-100 (default 75 = court level)
 	}>;
 	mode: string;              // 'game_day' | 'our_story' | 'quick_hit' | 'showcase'
 	width: number;

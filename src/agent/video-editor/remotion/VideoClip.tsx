@@ -20,6 +20,8 @@ interface VideoClipProps {
 	cropY?: number;
 	/** Horizontal crop origin as percentage (0-100). Default 50 = center. */
 	cropX?: number;
+	/** Zoom level override. Default 1.0 = no zoom (fit to frame). Higher = more cropped in. */
+	zoom?: number;
 }
 
 // Effect pool (mirrors CLIP_EFFECT_POOLS from shotstack.ts)
@@ -138,15 +140,16 @@ function getPlaybackRate(progress: number, keyframes?: SpeedKeyframe[]): number 
 	}));
 }
 
-export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speedKeyframes, cropY = 75, cropX = 50 }) => {
+export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speedKeyframes, cropY = 50, cropX = 50, zoom = 1.0 }) => {
 	const frame = useCurrentFrame();
 	const { durationInFrames } = useVideoConfig();
 	const progress = frame / Math.max(1, durationInFrames);
 
-	// Ken Burns effects — zoomed in to focus on players.
-	// Base scale 2.0x aggressively crops sky/banners, keeping players in frame.
-	// cropY/cropX control per-clip focus point (default: 75% down, center).
-	const BASE_SCALE = 2.0;
+	// Ken Burns effects — zoom level is per-clip based on content type.
+	// Tennis wide shots: zoom=2.0, cropY=75 (focus on court level)
+	// Interviews: zoom=1.0, cropY=50 (center on face)
+	// Chess: zoom=1.2, cropY=50 (slight zoom, centered)
+	const BASE_SCALE = Math.max(1.0, zoom);
 	const originStr = `${cropX}% ${cropY}%`;
 	let transform = '';
 	switch (effect) {

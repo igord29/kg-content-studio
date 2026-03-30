@@ -433,6 +433,10 @@ const agent = createAgent('video-editor', {
 					}
 					ctx.logger.warn('[render] Could not validate fileId: %s (filename: %s)', clip.fileId, clip.filename);
 					return clip;
+				}).map(clip => {
+					// Enrich with content type from catalog for smart framing
+					const catEntry = catalogForValidation.find(e => e.fileId === clip.fileId);
+					return { ...clip, contentType: catEntry?.contentType || 'unknown' };
 				});
 
 				const overlays = (editPlanObj.textOverlays || []) as Array<{

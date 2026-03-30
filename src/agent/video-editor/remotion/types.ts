@@ -31,6 +31,7 @@ export interface CLCVideoProps {
 		speedKeyframes?: SpeedKeyframe[]; // optional in-clip speed ramps
 		cropX?: number;   // horizontal focus point 0-100 (default 50 = center)
 		cropY?: number;   // vertical focus point 0-100 (default 75 = court level)
+		zoom?: number;    // zoom level: 1.0 = no zoom, 2.0 = 2x crop in
 	}>;
 	mode: string;              // 'game_day' | 'our_story' | 'quick_hit' | 'showcase'
 	width: number;

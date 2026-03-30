@@ -439,15 +439,32 @@ export async function submitRemotionRenderDirect(
 	const transitionDurationFrames = Math.round(remotionMode.transitionDuration * fps);
 
 	// Build clip props using S3 URLs (fast same-region access for Lambda)
+	// Smart zoom/crop defaults based on content type from catalog
+	const CONTENT_TYPE_FRAMING: Record<string, { zoom: number; cropY: number; cropX: number }> = {
+		tennis_action: { zoom: 2.0, cropY: 75, cropX: 50 },   // Zoom into court level
+		event:         { zoom: 1.5, cropY: 65, cropX: 50 },   // Moderate zoom, show some context
+		interview:     { zoom: 1.0, cropY: 50, cropX: 50 },   // No zoom, center on face
+		chess:         { zoom: 1.2, cropY: 50, cropX: 50 },   // Slight zoom, centered
+		establishing:  { zoom: 1.0, cropY: 50, cropX: 50 },   // Full frame, show the venue
+		mixed:         { zoom: 1.3, cropY: 60, cropX: 50 },   // Light zoom
+		unknown:       { zoom: 1.0, cropY: 50, cropX: 50 },   // Safe default
+	};
+
 	const clipProps: CLCVideoProps['clips'] = config.clips.map((clip) => {
 		const s3Info = s3Clips.get(clip.fileId);
 		if (!s3Info) {
 			throw new Error(`S3 upload missing for clip ${clip.fileId}`);
 		}
+		// Look up content type framing from the clip's purpose or default
+		const contentType = (clip as any).contentType || 'unknown';
+		const framing = CONTENT_TYPE_FRAMING[contentType] || CONTENT_TYPE_FRAMING['unknown']!;
 		return {
 			src: s3Info.s3Url,
 			length: clip.duration || 5,
 			trimStart: clip.trimStart || 0,
+			zoom: (clip as any).zoom || framing.zoom,
+			cropX: (clip as any).cropX || framing.cropX,
+			cropY: (clip as any).cropY || framing.cropY,
 		};
 	});
 

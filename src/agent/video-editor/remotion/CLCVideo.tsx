@@ -101,6 +101,7 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 								speedKeyframes={clip.speedKeyframes}
 								cropX={clip.cropX}
 								cropY={clip.cropY}
+								zoom={clip.zoom}
 							/>
 						</TransitionSeries.Sequence>,
 					);

@@ -467,10 +467,10 @@ const agent = createAgent('video-editor', {
 					clips.length, platform, editMode, totalEditDuration);
 
 				// --- Render Pipeline Selection ---
-				// Force direct pipeline (skip preprocessor) until preprocessor reliability is fixed.
-				// The preprocessor Lambda invocations hang during batch processing, causing renders
-				// to sit at "still preprocessing" forever. Direct pipeline works: Drive → S3 → Remotion Lambda.
-				const usePreprocessor = false;
+				// Use preprocessor if available (FFmpeg deshake + sharpen + trim on Lambda).
+				// Falls back to direct pipeline (raw clips → S3 → Remotion Lambda) if not deployed.
+				const { isPreprocessorAvailable } = await import('./remotion/preprocessor-invoke');
+				const usePreprocessor = isPreprocessorAvailable();
 
 				if (usePreprocessor) {
 					// --- Preprocessed Pipeline (Drive → S3 → FFmpeg Lambda → S3 → Remotion Lambda) ---
@@ -499,9 +499,11 @@ const agent = createAgent('video-editor', {
 						},
 						renderId,
 						ctx.logger,
-					).catch((err) => {
+					).catch(async (err) => {
 						const msg = err instanceof Error ? err.message : String(err);
-						ctx.logger.error('[render-remotion] Async pipeline error: %s', msg);
+						ctx.logger.error('[render-remotion] Preprocessed pipeline error: %s', msg);
+						const { failRender } = await import('./remotion/render');
+						failRender(renderId, msg);
 					});
 
 					return {

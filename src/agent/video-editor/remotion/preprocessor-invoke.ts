@@ -159,7 +159,7 @@ export async function invokePreprocessorForClips(
 	logger?: Logger,
 ): Promise<PreprocessedS3Clip[]> {
 	const renderPrefix = `render_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-	const concurrency = 3;
+	const concurrency = 2; // Keep low to avoid Lambda concurrency limits + OOM
 
 	logger?.info('[preprocessor] Preprocessing %d clips via Lambda (concurrency=%d, prefix=%s)...',
 		clips.length, concurrency, renderPrefix);

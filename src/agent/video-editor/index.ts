@@ -73,6 +73,7 @@ import {
 	type MusicTrack,
 } from './music';
 import { formatSceneAnalysisForPrompt, formatSegmentTimelineForPrompt, generateNamedSegments } from './scene-analyzer';
+import { getSkillsForPrompt } from './remotion/skills';
 import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
 import {
 	type VideoUsageSummary,
@@ -1805,9 +1806,13 @@ ${formatUsageContextForPrompt(usageSummaryMap.get(v.id || ''), ce)}`;
 				return sum + dur;
 			}, 0);
 
+			// Inject domain-specific skills based on topic/mode/platform
+			const targetPlatform = input.platforms?.[0] || 'tiktok';
+			const skillsContext = getSkillsForPrompt(topic, editMode, targetPlatform as string);
+
 			const userMessage = `
 Task: Generate a complete edit plan that tells a compelling story. Read ALL the footage descriptions first, find the narrative thread, and build an edit that lets the viewer understand and feel what's happening — not just see a montage of clips.
-
+${skillsContext}
 Topic: ${topic}
 Purpose: ${purpose}
 Requested Mode: ${editMode === 'auto' ? 'Choose the best mode based on the footage and purpose' : editMode}

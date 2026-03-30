@@ -139,34 +139,36 @@ export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speed
 	const { durationInFrames } = useVideoConfig();
 	const progress = frame / Math.max(1, durationInFrames);
 
-	// Ken Burns effects — subtle camera motion on every clip
+	// Ken Burns effects — zoomed in on court level to focus on players.
+	// Base scale 1.6x crops out banners/sky, keeping action in frame.
+	// Transform origin at 65% vertical centers on court-level action.
+	const BASE_SCALE = 1.6;
 	let transform = '';
 	switch (effect) {
 		case 'zoomIn': {
-			const scale = interpolate(progress, [0, 1], [1.0, 1.15]);
+			const scale = interpolate(progress, [0, 1], [BASE_SCALE, BASE_SCALE + 0.15]);
 			transform = `scale(${scale})`;
 			break;
 		}
 		case 'zoomOut': {
-			const scale = interpolate(progress, [0, 1], [1.15, 1.0]);
+			const scale = interpolate(progress, [0, 1], [BASE_SCALE + 0.15, BASE_SCALE]);
 			transform = `scale(${scale})`;
 			break;
 		}
 		case 'slideRight': {
 			const x = interpolate(progress, [0, 1], [-3, 3]);
-			const scale = interpolate(progress, [0, 1], [1.05, 1.1]);
+			const scale = interpolate(progress, [0, 1], [BASE_SCALE, BASE_SCALE + 0.1]);
 			transform = `translateX(${x}%) scale(${scale})`;
 			break;
 		}
 		case 'slideLeft': {
 			const x = interpolate(progress, [0, 1], [3, -3]);
-			const scale = interpolate(progress, [0, 1], [1.05, 1.1]);
+			const scale = interpolate(progress, [0, 1], [BASE_SCALE, BASE_SCALE + 0.1]);
 			transform = `translateX(${x}%) scale(${scale})`;
 			break;
 		}
 		default: {
-			// Subtle default zoom to prevent static feel
-			const scale = interpolate(progress, [0, 1], [1.0, 1.05]);
+			const scale = interpolate(progress, [0, 1], [BASE_SCALE, BASE_SCALE + 0.05]);
 			transform = `scale(${scale})`;
 		}
 	}
@@ -191,9 +193,9 @@ export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speed
 					objectFit: 'cover',
 					// Focus crop on lower-center of frame where players are,
 					// not upper-center where banners/signage tend to be
-					objectPosition: 'center 60%',
+					objectPosition: 'center 65%',
 					transform,
-					transformOrigin: 'center 60%',
+					transformOrigin: 'center 65%',
 					filter: cssFilter || undefined,
 				}}
 			/>

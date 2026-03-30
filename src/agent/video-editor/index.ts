@@ -1906,10 +1906,113 @@ IMPORTANT JSON RULES:
 - totalDuration should match the platform target durations listed above, NOT default to 15 seconds.
 `;
 
+			// Build multimodal content: text prompt + top-scored frame images
+			// so Claude can SEE the footage when making editorial decisions
+			const messageContent: Array<{ type: 'text'; text: string } | { type: 'image'; image: Uint8Array }> = [];
+
+			// Extract and include top-scored frame images (up to 2 per clip, max 10 total)
+			let frameCount = 0;
+			const MAX_FRAMES = 10;
+			try {
+				const fs = await import('fs');
+				const path = await import('path');
+				const { execSync } = await import('child_process');
+				const { getAuth } = await import('./google-drive');
+				const { drive_v3 } = await import('@googleapis/drive');
+
+				// Only include frames for clips that have timestamp scores
+				const clipsWithFrames: Array<{ fileId: string; filename: string; timestamp: number; brief: string }> = [];
+				for (const v of videoDetails) {
+					const ce = catalogMap.get(v.id || '');
+					if (ce?.timestampScores && ce.timestampScores.length > 0 && frameCount < MAX_FRAMES) {
+						// Take top 2 timestamps per clip
+						const topTs = ce.timestampScores.slice(0, 2);
+						for (const ts of topTs) {
+							if (frameCount >= MAX_FRAMES) break;
+							clipsWithFrames.push({
+								fileId: ce.fileId,
+								filename: ce.filename,
+								timestamp: ts.timestamp,
+								brief: ts.brief,
+							});
+							frameCount++;
+						}
+					}
+				}
+
+				if (clipsWithFrames.length > 0) {
+					ctx.logger.info('[video-editor] Extracting %d frames for visual edit context...', clipsWithFrames.length);
+
+					// Download each clip briefly, extract the frame, include it
+					const authClient = getAuth();
+					const drive = new drive_v3.Drive({ auth: authClient });
+					const os = await import('os');
+					const tempDir = path.join(os.tmpdir(), `editframes_${Date.now()}`);
+					fs.mkdirSync(tempDir, { recursive: true });
+
+					// Deduplicate downloads
+					const downloadedPaths = new Map<string, string>();
+
+					for (const frame of clipsWithFrames) {
+						try {
+							let videoPath = downloadedPaths.get(frame.fileId);
+							if (!videoPath) {
+								videoPath = path.join(tempDir, `${frame.fileId}.mp4`);
+								const response = await drive.files.get(
+									{ fileId: frame.fileId, alt: 'media' },
+									{ responseType: 'stream' },
+								);
+								await new Promise<void>((resolve, reject) => {
+									const ws = fs.createWriteStream(videoPath!);
+									(response.data as NodeJS.ReadableStream).pipe(ws);
+									ws.on('finish', resolve);
+									ws.on('error', reject);
+								});
+								downloadedPaths.set(frame.fileId, videoPath);
+							}
+
+							// Extract frame at timestamp (low-res for prompt context)
+							const framePath = path.join(tempDir, `frame_${frame.fileId}_${frame.timestamp}.jpg`);
+							execSync(
+								`ffmpeg -y -ss ${frame.timestamp} -i "${videoPath}" -frames:v 1 -vf scale=384:-1 -q:v 8 "${framePath}"`,
+								{ timeout: 15000, stdio: 'pipe' },
+							);
+
+							if (fs.existsSync(framePath)) {
+								const imgBuffer = fs.readFileSync(framePath);
+								messageContent.push({
+									type: 'image',
+									image: new Uint8Array(imgBuffer),
+								});
+								messageContent.push({
+									type: 'text',
+									text: `[Frame: ${frame.filename} at ${frame.timestamp}s — "${frame.brief}"]`,
+								});
+							}
+						} catch (err) {
+							ctx.logger.warn('[video-editor] Frame extraction failed for %s@%ds: %s',
+								frame.filename, frame.timestamp, err);
+						}
+					}
+
+					// Clean up temp dir
+					try { fs.rmSync(tempDir, { recursive: true }); } catch { /* ignore */ }
+					ctx.logger.info('[video-editor] Included %d frame images for visual editing context', messageContent.filter(m => m.type === 'image').length);
+				}
+			} catch (err) {
+				ctx.logger.warn('[video-editor] Frame image extraction failed (non-fatal): %s', err);
+			}
+
+			// Add the main text prompt after images
+			messageContent.push({ type: 'text', text: userMessage });
+
 			const result = await generateText({
 				model: anthropic('claude-sonnet-4-6'),
 				system: videoDirectorPrompt,
-				prompt: userMessage,
+				messages: [{
+					role: 'user',
+					content: messageContent,
+				}],
 			});
 
 			// Parse structured edit plan from AI response

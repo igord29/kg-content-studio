@@ -20,6 +20,11 @@ const SKILL_REGISTRY: Array<{
 	triggers: string[];
 }> = [
 	{
+		name: 'editorial-intelligence',
+		file: 'editorial-intelligence.md',
+		triggers: [], // Always injected — see detectSkills()
+	},
+	{
 		name: 'clc-tennis',
 		file: 'clc-tennis.md',
 		triggers: ['tennis', 'court', 'rally', 'serve', 'match', 'game_day', 'quick_hit', 'us open', 'usopen', 'hempstead', 'brooklyn', 'long beach'],
@@ -82,6 +87,11 @@ export function detectSkills(topic: string, mode: string, platform: string): str
 		if (skill.triggers.some(t => searchText.includes(t))) {
 			matched.push(skill.name);
 		}
+	}
+
+	// Always include editorial intelligence (the core of good editing)
+	if (!matched.includes('editorial-intelligence')) {
+		matched.unshift('editorial-intelligence');
 	}
 
 	// Always include CLC tennis skills (it's our domain)

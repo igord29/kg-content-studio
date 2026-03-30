@@ -9,6 +9,7 @@ import { slide } from '@remotion/transitions/slide';
 import { fade } from '@remotion/transitions/fade';
 import { wipe } from '@remotion/transitions/wipe';
 import { flip } from '@remotion/transitions/flip';
+import { cube, circleWipe, clockWipe as clockWipeCustom, wheelspin } from './custom-transitions';
 
 // Map Shotstack transition names → Remotion transition presentations
 // Using `any` for return type because Remotion's transition generic types
@@ -27,9 +28,19 @@ export function getRemotionTransition(
 			return wipe({
 				direction: (direction as 'from-left' | 'from-right' | 'from-top-left' | 'from-bottom-right') || 'from-left',
 			});
+		case 'cube':
+			return cube({
+				direction: (direction as 'from-left' | 'from-right' | 'from-top' | 'from-bottom') || 'from-right',
+				perspective: 1000,
+			});
+		case 'circleWipe':
+			return circleWipe({ width: 1080, height: 1920 });
 		case 'clockWipe':
-			// clockWipe requires width/height props — use wipe as substitute
-			return wipe({ direction: 'from-top-left' });
+			return clockWipeCustom({ width: 1080, height: 1920 });
+		case 'wheelspin':
+			return wheelspin({
+				anchor: (direction as 'left' | 'right' | 'top' | 'bottom') || 'left',
+			});
 		case 'flip':
 			return flip({ direction: 'from-right' });
 		case 'fade':
@@ -63,30 +74,31 @@ const SHOTSTACK_TO_REMOTION: Record<string, TransitionMapping> = {
 // Per-mode transition pools (mirrors shotstack.ts TRANSITION_POOLS)
 const MODE_TRANSITION_POOLS: Record<string, TransitionMapping[]> = {
 	game_day: [
-		{ type: 'slide', direction: 'from-right' },
+		{ type: 'cube', direction: 'from-right' },
 		{ type: 'slide', direction: 'from-left' },
-		{ type: 'wipe', direction: 'from-left' },
+		{ type: 'circleWipe' },
 		{ type: 'fade' },
-		{ type: 'wipe', direction: 'from-top-left' },  // clockWipe substitute
+		{ type: 'wheelspin', direction: 'left' },
+		{ type: 'clockWipe' },
 	],
 	our_story: [
 		{ type: 'fade' },
 		{ type: 'fade' },
-		{ type: 'wipe', direction: 'from-top-left' },
+		{ type: 'circleWipe' },
 		{ type: 'fade' },
 	],
 	quick_hit: [
-		{ type: 'slide', direction: 'from-right' },
+		{ type: 'cube', direction: 'from-right' },
 		{ type: 'fade' },
-		{ type: 'wipe', direction: 'from-left' },
-		{ type: 'wipe', direction: 'from-top-left' },  // clockWipe substitute
+		{ type: 'circleWipe' },
+		{ type: 'wheelspin', direction: 'right' },
 	],
 	showcase: [
 		{ type: 'fade' },
-		{ type: 'fade' },
-		{ type: 'wipe', direction: 'from-top-left' },
+		{ type: 'circleWipe' },
+		{ type: 'clockWipe' },
 		{ type: 'slide', direction: 'from-right' },
-		{ type: 'wipe', direction: 'from-top-left' },  // clockWipe substitute
+		{ type: 'fade' },
 	],
 };
 

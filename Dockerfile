@@ -18,8 +18,11 @@ RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
 FROM oven/bun:1.3.8-debian
 WORKDIR /app
 
-# FFmpeg needed for video preprocessing + scene analysis
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# FFmpeg + s5cmd (12x faster S3 uploads than aws-cli)
+RUN apt-get update && apt-get install -y ffmpeg curl && \
+    curl -fsSL https://github.com/peak/s5cmd/releases/download/v2.3.0/s5cmd_2.3.0_linux_amd64.deb -o /tmp/s5cmd.deb && \
+    dpkg -i /tmp/s5cmd.deb && rm /tmp/s5cmd.deb && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy only what's needed to run
 COPY --from=builder /app/.agentuity .agentuity/

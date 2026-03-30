@@ -189,8 +189,11 @@ export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speed
 					width: '100%',
 					height: '100%',
 					objectFit: 'cover',
+					// Focus crop on lower-center of frame where players are,
+					// not upper-center where banners/signage tend to be
+					objectPosition: 'center 60%',
 					transform,
-					transformOrigin: 'center center',
+					transformOrigin: 'center 60%',
 					filter: cssFilter || undefined,
 				}}
 			/>

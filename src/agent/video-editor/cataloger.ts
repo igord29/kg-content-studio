@@ -652,7 +652,7 @@ async function scoreVideoTimestamps(
 	videoPath: string,
 	fileId: string,
 	duration: number,
-	intervalSeconds: number = 5,
+	intervalSeconds: number = 10,
 	batchSize: number = 12,
 ): Promise<CatalogEntry['timestampScores']> {
 	if (duration < 15) {
@@ -717,8 +717,10 @@ async function scoreVideoTimestamps(
 
 		// Call GPT-4o
 		try {
+			// Use gpt-4o-mini for scoring — 10-20x cheaper than gpt-4o,
+			// plenty accurate for "is this kids playing tennis or empty space?"
 			const result = await generateText({
-				model: openai('gpt-4o'),
+				model: openai('gpt-4o-mini'),
 				messages: [{ role: 'user', content: contentParts }],
 			});
 

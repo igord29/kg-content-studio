@@ -310,9 +310,9 @@ export async function describeSceneTimestamps(
 		text: `These ${validTimestamps.length} frames are from specific timestamps in a single video of youth tennis/chess activities:\n${frameLabels}\n\nAnalyze each frame individually. Each corresponds to a detected scene change or high-motion moment. Tell me what is ACTUALLY happening in each frame.`,
 	});
 
-	// Send to GPT-4o vision
+	// Use gpt-4o-mini for scene descriptions — much cheaper, adequate for this task
 	const result = await generateText({
-		model: openai('gpt-4o'),
+		model: openai('gpt-4o-mini'),
 		system: SCENE_DESCRIPTION_PROMPT,
 		messages: [{
 			role: 'user',

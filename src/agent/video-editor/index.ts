@@ -1417,6 +1417,7 @@ const agent = createAgent('video-editor', {
 						sizeBytes: v.size,
 						created: v.createdTime,
 						thumbnail: getHighResThumbnailUrl(v.thumbnailLink, 320),
+						webViewLink: v.webViewLink || undefined,
 						// Catalog fields
 						description: ce?.activity || '',
 						suspectedLocation: ce?.suspectedLocation || 'Unknown',

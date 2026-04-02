@@ -11,6 +11,7 @@ interface DriveVideo {
 	sizeBytes: string;
 	created: string;
 	thumbnail?: string;
+	webViewLink?: string;
 	// Catalog fields
 	description: string;
 	suspectedLocation: string;
@@ -341,7 +342,7 @@ function LocationBadge({ location, needsReview, editable, videoId, onUpdate }: {
 						position: 'fixed',
 						top: dropdownPos.top,
 						left: dropdownPos.left,
-						zIndex: 10000,
+						zIndex: 30000,
 						background: '#1a1f2e',
 						border: '1px solid #2a3148',
 						borderRadius: 6,
@@ -497,7 +498,7 @@ function ContentTypeBadge({ type, editable, videoId, onUpdate }: {
 						position: 'fixed',
 						top: dropdownPos.top,
 						left: dropdownPos.left,
-						zIndex: 10000,
+						zIndex: 30000,
 						background: '#1a1f2e',
 						border: '1px solid #2a3148',
 						borderRadius: 6,
@@ -682,6 +683,9 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	// Selection
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 	const [hoveredVideoId, setHoveredVideoId] = useState<string | null>(null);
+
+	// Inline video preview
+	const [previewVideo, setPreviewVideo] = useState<DriveVideo | null>(null);
 
 	// Edit config
 	const [selectedMode, setSelectedMode] = useState('auto');
@@ -2558,6 +2562,31 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 													(e.currentTarget as HTMLImageElement).remove();
 												}}
 											/>
+										)}
+										{/* Play button overlay on thumbnail */}
+										{hoveredVideoId === video.id && (
+											<div
+												onClick={(e) => {
+													e.stopPropagation();
+													setPreviewVideo(video);
+												}}
+												style={{
+													position: 'absolute',
+													inset: 0,
+													zIndex: 2,
+													display: 'flex',
+													alignItems: 'center',
+													justifyContent: 'center',
+													background: 'rgba(0,0,0,0.45)',
+													cursor: 'pointer',
+													borderRadius: 4,
+												}}
+												title="Preview video"
+											>
+												<svg width="18" height="18" viewBox="0 0 24 24" fill="white">
+													<path d="M8 5v14l11-7z" />
+												</svg>
+											</div>
 										)}
 									</div>
 									{/* Hover preview: enlarged thumbnail tooltip — outside overflow:hidden container */}
@@ -4709,6 +4738,155 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					)}
 				</div>
 			</div>
+
+			{/* Inline video preview modal */}
+			{previewVideo && createPortal(
+				<div
+					onClick={() => setPreviewVideo(null)}
+					style={{
+						position: 'fixed',
+						inset: 0,
+						zIndex: 20000,
+						background: 'rgba(0,0,0,0.8)',
+						display: 'flex',
+						alignItems: 'center',
+						justifyContent: 'center',
+						padding: 24,
+					}}
+				>
+					<div
+						onClick={(e) => e.stopPropagation()}
+						style={{
+							background: '#0d1017',
+							borderRadius: 12,
+							border: `1px solid ${S.borderColor}`,
+							boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
+							width: '80vw',
+							maxWidth: 900,
+							overflow: 'hidden',
+							display: 'flex',
+							flexDirection: 'column',
+						}}
+					>
+						{/* Header with video info + editable tags */}
+						<div style={{
+							padding: '12px 16px',
+							borderBottom: `1px solid ${S.borderColor}`,
+							display: 'flex',
+							justifyContent: 'space-between',
+							alignItems: 'flex-start',
+							gap: 12,
+						}}>
+							<div style={{ flex: 1, minWidth: 0 }}>
+								<div style={{
+									fontFamily: S.serif,
+									fontSize: 14,
+									color: '#fff',
+									marginBottom: 6,
+									whiteSpace: 'nowrap',
+									overflow: 'hidden',
+									textOverflow: 'ellipsis',
+								}}>
+									{previewVideo.name}
+								</div>
+								<div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+									<LocationBadge
+										location={previewVideo.suspectedLocation}
+										needsReview={previewVideo.needsManualReview}
+										editable={true}
+										videoId={previewVideo.id}
+										onUpdate={(id, field, value) => {
+											handleUpdateCatalogEntry(id, field, value);
+											setPreviewVideo(prev => prev ? {
+												...prev,
+												suspectedLocation: field === 'location' ? value : prev.suspectedLocation,
+												contentType: field === 'contentType' ? value : prev.contentType,
+												needsManualReview: false,
+											} : null);
+										}}
+									/>
+									<ContentTypeBadge
+										type={previewVideo.contentType}
+										editable={true}
+										videoId={previewVideo.id}
+										onUpdate={(id, field, value) => {
+											handleUpdateCatalogEntry(id, field, value);
+											setPreviewVideo(prev => prev ? {
+												...prev,
+												suspectedLocation: field === 'location' ? value : prev.suspectedLocation,
+												contentType: field === 'contentType' ? value : prev.contentType,
+												needsManualReview: false,
+											} : null);
+										}}
+									/>
+									{previewVideo.duration && (
+										<span style={{ fontFamily: S.mono, fontSize: 9, color: S.textMuted }}>{previewVideo.duration}</span>
+									)}
+									{previewVideo.description && (
+										<span style={{ fontFamily: S.mono, fontSize: 9, color: S.textMuted }}>— {previewVideo.description}</span>
+									)}
+								</div>
+							</div>
+							<div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+								{previewVideo.webViewLink && (
+									<a
+										href={previewVideo.webViewLink}
+										target="_blank"
+										rel="noopener noreferrer"
+										style={{
+											padding: '4px 10px',
+											borderRadius: 4,
+											border: `1px solid ${S.borderColor}`,
+											background: 'transparent',
+											color: S.textMuted,
+											fontFamily: S.mono,
+											fontSize: 9,
+											textDecoration: 'none',
+											letterSpacing: 0.5,
+										}}
+									>
+										Open in Drive
+									</a>
+								)}
+								<button
+									onClick={() => setPreviewVideo(null)}
+									style={{
+										padding: '4px 10px',
+										borderRadius: 4,
+										border: `1px solid ${S.borderColor}`,
+										background: 'transparent',
+										color: S.textMuted,
+										cursor: 'pointer',
+										fontFamily: S.mono,
+										fontSize: 9,
+										letterSpacing: 0.5,
+									}}
+									type="button"
+								>
+									Close ✕
+								</button>
+							</div>
+						</div>
+						{/* Embedded Google Drive video player */}
+						<div style={{ position: 'relative', width: '100%', paddingTop: '56.25%' }}>
+							<iframe
+								src={`https://drive.google.com/file/d/${previewVideo.id}/preview`}
+								style={{
+									position: 'absolute',
+									top: 0,
+									left: 0,
+									width: '100%',
+									height: '100%',
+									border: 'none',
+								}}
+								allow="autoplay"
+								allowFullScreen
+							/>
+						</div>
+					</div>
+				</div>,
+				document.body
+			)}
 
 			<style>{`
 				@keyframes fadeSlideUp {

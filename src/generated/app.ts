@@ -544,7 +544,8 @@ if (typeof Bun !== 'undefined') {
 			} catch (err) {
 				otel.logger.error(`Error during shutdown: ${err instanceof Error ? err.message : String(err)}`);
 			}
-			process.exit(0);
+			// Let the runtime/platform handle process termination — calling
+			// process.exit() is blocked by Agentuity's runtime protection.
 		};
 
 		process.once('SIGTERM', () => handleShutdown('SIGTERM'));

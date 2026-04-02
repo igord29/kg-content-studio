@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 // --- Types ---
 
@@ -242,12 +243,49 @@ function LocationBadge({ location, needsReview, editable, videoId, onUpdate }: {
 	onUpdate?: (videoId: string, field: 'location' | 'contentType', value: string) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const triggerRef = useRef<HTMLSpanElement>(null);
+	const dropdownRef = useRef<HTMLDivElement>(null);
+	const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
+
 	const normalized = ALL_LOCATIONS.includes(location) ? location : 'Unknown';
 	const fallback = { bg: '#2a2a2a', text: '#999', border: '#444' };
 	const colors = LOCATION_COLORS[normalized] ?? LOCATION_COLORS['Unknown'] ?? fallback;
 	const label = normalized === 'Unknown' && needsReview
 		? 'Unknown - Review'
 		: normalized;
+
+	// Position dropdown and track scroll/resize
+	useEffect(() => {
+		if (!open || !triggerRef.current) return;
+		const update = () => {
+			if (triggerRef.current) {
+				const rect = triggerRef.current.getBoundingClientRect();
+				setDropdownPos({ top: rect.bottom + 2, left: rect.left });
+			}
+		};
+		update();
+		window.addEventListener('scroll', update, true);
+		window.addEventListener('resize', update);
+		return () => {
+			window.removeEventListener('scroll', update, true);
+			window.removeEventListener('resize', update);
+		};
+	}, [open]);
+
+	// Close dropdown when clicking outside
+	useEffect(() => {
+		if (!open) return;
+		const handler = (e: MouseEvent) => {
+			const target = e.target as Node;
+			if (
+				triggerRef.current?.contains(target) ||
+				dropdownRef.current?.contains(target)
+			) return;
+			setOpen(false);
+		};
+		document.addEventListener('mousedown', handler);
+		return () => document.removeEventListener('mousedown', handler);
+	}, [open]);
 
 	if (!editable || !videoId || !onUpdate) {
 		return (
@@ -271,6 +309,7 @@ function LocationBadge({ location, needsReview, editable, videoId, onUpdate }: {
 	return (
 		<span style={{ position: 'relative', display: 'inline-block' }}>
 			<span
+				ref={triggerRef}
 				onClick={(e) => {
 					e.stopPropagation();
 					setOpen(!open);
@@ -293,15 +332,16 @@ function LocationBadge({ location, needsReview, editable, videoId, onUpdate }: {
 			>
 				{label} &#9662;
 			</span>
-			{open && (
+			{open && dropdownPos && createPortal(
 				<div
+					ref={dropdownRef}
 					onClick={(e) => e.stopPropagation()}
+					onMouseDown={(e) => e.stopPropagation()}
 					style={{
-						position: 'absolute',
-						top: '100%',
-						left: 0,
-						zIndex: 100,
-						marginTop: 2,
+						position: 'fixed',
+						top: dropdownPos.top,
+						left: dropdownPos.left,
+						zIndex: 10000,
 						background: '#1a1f2e',
 						border: '1px solid #2a3148',
 						borderRadius: 6,
@@ -351,7 +391,8 @@ function LocationBadge({ location, needsReview, editable, videoId, onUpdate }: {
 							</div>
 						);
 					})}
-				</div>
+				</div>,
+				document.body
 			)}
 		</span>
 	);
@@ -364,9 +405,45 @@ function ContentTypeBadge({ type, editable, videoId, onUpdate }: {
 	onUpdate?: (videoId: string, field: 'location' | 'contentType', value: string) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const triggerRef = useRef<HTMLSpanElement>(null);
+	const dropdownRef = useRef<HTMLDivElement>(null);
+	const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
 	const ctFallback = { bg: '#2a2a2a', text: '#999' };
 	const colors = CONTENT_TYPE_COLORS[type] ?? CONTENT_TYPE_COLORS['unknown'] ?? ctFallback;
 	const label = CONTENT_TYPE_LABELS[type] || 'Unknown';
+
+	// Position dropdown and track scroll/resize
+	useEffect(() => {
+		if (!open || !triggerRef.current) return;
+		const update = () => {
+			if (triggerRef.current) {
+				const rect = triggerRef.current.getBoundingClientRect();
+				setDropdownPos({ top: rect.bottom + 2, left: rect.left });
+			}
+		};
+		update();
+		window.addEventListener('scroll', update, true);
+		window.addEventListener('resize', update);
+		return () => {
+			window.removeEventListener('scroll', update, true);
+			window.removeEventListener('resize', update);
+		};
+	}, [open]);
+
+	// Close dropdown when clicking outside
+	useEffect(() => {
+		if (!open) return;
+		const handler = (e: MouseEvent) => {
+			const target = e.target as Node;
+			if (
+				triggerRef.current?.contains(target) ||
+				dropdownRef.current?.contains(target)
+			) return;
+			setOpen(false);
+		};
+		document.addEventListener('mousedown', handler);
+		return () => document.removeEventListener('mousedown', handler);
+	}, [open]);
 
 	if (!editable || !videoId || !onUpdate) {
 		return (
@@ -389,6 +466,7 @@ function ContentTypeBadge({ type, editable, videoId, onUpdate }: {
 	return (
 		<span style={{ position: 'relative', display: 'inline-block' }}>
 			<span
+				ref={triggerRef}
 				onClick={(e) => {
 					e.stopPropagation();
 					setOpen(!open);
@@ -410,15 +488,16 @@ function ContentTypeBadge({ type, editable, videoId, onUpdate }: {
 			>
 				{label} &#9662;
 			</span>
-			{open && (
+			{open && dropdownPos && createPortal(
 				<div
+					ref={dropdownRef}
 					onClick={(e) => e.stopPropagation()}
+					onMouseDown={(e) => e.stopPropagation()}
 					style={{
-						position: 'absolute',
-						top: '100%',
-						left: 0,
-						zIndex: 100,
-						marginTop: 2,
+						position: 'fixed',
+						top: dropdownPos.top,
+						left: dropdownPos.left,
+						zIndex: 10000,
 						background: '#1a1f2e',
 						border: '1px solid #2a3148',
 						borderRadius: 6,
@@ -469,7 +548,8 @@ function ContentTypeBadge({ type, editable, videoId, onUpdate }: {
 							</div>
 						);
 					})}
-				</div>
+				</div>,
+				document.body
 			)}
 		</span>
 	);
@@ -672,6 +752,42 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	// Clip usage / freshness tracking
 	const [usageSummaryMap, setUsageSummaryMap] = useState<Map<string, { fileId: string; filename: string; totalUses: number; lastUsedDate: string; freshnessScore: number }>>(new Map());
 	const [freshOnlyFilter, setFreshOnlyFilter] = useState(false);
+
+	// Resizable panels
+	const [leftWidth, setLeftWidth] = useState(380);
+	const [rightWidth, setRightWidth] = useState(400);
+	const draggingRef = useRef<'left' | 'right' | null>(null);
+	const dragStartRef = useRef<{ x: number; leftW: number; rightW: number }>({ x: 0, leftW: 380, rightW: 400 });
+
+	useEffect(() => {
+		const onMouseMove = (e: MouseEvent) => {
+			if (!draggingRef.current) return;
+			const dx = e.clientX - dragStartRef.current.x;
+			if (draggingRef.current === 'left') {
+				setLeftWidth(Math.max(250, Math.min(600, dragStartRef.current.leftW + dx)));
+			} else {
+				setRightWidth(Math.max(280, Math.min(600, dragStartRef.current.rightW - dx)));
+			}
+		};
+		const onMouseUp = () => {
+			draggingRef.current = null;
+			document.body.style.cursor = '';
+			document.body.style.userSelect = '';
+		};
+		window.addEventListener('mousemove', onMouseMove);
+		window.addEventListener('mouseup', onMouseUp);
+		return () => {
+			window.removeEventListener('mousemove', onMouseMove);
+			window.removeEventListener('mouseup', onMouseUp);
+		};
+	}, []);
+
+	const startDrag = useCallback((side: 'left' | 'right', e: React.MouseEvent) => {
+		draggingRef.current = side;
+		dragStartRef.current = { x: e.clientX, leftW: leftWidth, rightW: rightWidth };
+		document.body.style.cursor = 'col-resize';
+		document.body.style.userSelect = 'none';
+	}, [leftWidth, rightWidth]);
 
 	// --- Catalog summary computed from enriched videos ---
 
@@ -2019,15 +2135,17 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 			{/* Three-panel layout */}
 			<div style={{
-				display: 'grid',
-				gridTemplateColumns: '380px 1fr 400px',
+				display: 'flex',
 				height: 'calc(100vh - 96px)',
 				overflow: 'hidden',
 			}}>
 
 				{/* LEFT PANEL: Video Library */}
 				<div style={{
-					borderRight: `1px solid ${S.borderColor}`,
+					width: leftWidth,
+					minWidth: 250,
+					maxWidth: 600,
+					flexShrink: 0,
 					display: 'flex',
 					flexDirection: 'column',
 					overflow: 'hidden',
@@ -2705,9 +2823,25 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					</div>
 				</div>
 
+				{/* Left resize handle */}
+				<div
+					onMouseDown={(e) => startDrag('left', e)}
+					style={{
+						width: 5,
+						cursor: 'col-resize',
+						background: 'transparent',
+						borderLeft: `1px solid ${S.borderColor}`,
+						flexShrink: 0,
+						transition: 'background 0.15s',
+					}}
+					onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = S.accent + '40'; }}
+					onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+				/>
+
 				{/* CENTER PANEL: Edit Configuration */}
 				<div style={{
-					borderRight: `1px solid ${S.borderColor}`,
+					flex: 1,
+					minWidth: 200,
 					overflow: 'auto',
 					padding: '20px 24px',
 				}}>
@@ -3300,8 +3434,27 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					)}
 				</div>
 
+				{/* Right resize handle */}
+				<div
+					onMouseDown={(e) => startDrag('right', e)}
+					style={{
+						width: 5,
+						cursor: 'col-resize',
+						background: 'transparent',
+						borderLeft: `1px solid ${S.borderColor}`,
+						flexShrink: 0,
+						transition: 'background 0.15s',
+					}}
+					onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = S.accent + '40'; }}
+					onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+				/>
+
 				{/* RIGHT PANEL: Edit Plan / Review */}
 				<div style={{
+					width: rightWidth,
+					minWidth: 280,
+					maxWidth: 600,
+					flexShrink: 0,
 					overflow: 'auto',
 					padding: '20px 20px',
 					display: 'flex',

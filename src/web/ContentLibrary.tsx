@@ -134,17 +134,19 @@ function TabBar({
 	activeTab,
 	onTabChange,
 	counts,
+	isMobile,
 }: {
 	activeTab: MediaTab;
 	onTabChange: (tab: MediaTab) => void;
 	counts: Record<MediaTab, number>;
+	isMobile?: boolean;
 }) {
 	return (
 		<div style={{
 			display: 'flex',
 			gap: 0,
 			borderBottom: `1px solid ${S.borderColor}`,
-			padding: '0 28px',
+			padding: isMobile ? '0 8px' : '0 28px',
 		}}>
 			{TAB_CONFIG.map((tab) => {
 				const active = activeTab === tab.id;
@@ -1329,7 +1331,7 @@ export function ContentLibrary({ onBack }: { onBack: () => void }) {
 			</header>
 
 			{/* Tab Bar */}
-			<TabBar activeTab={activeTab} onTabChange={setActiveTab} counts={tabCounts} />
+			<TabBar activeTab={activeTab} onTabChange={setActiveTab} counts={tabCounts} isMobile={isMobile} />
 
 			{/* Content area */}
 			<main style={{ padding: isMobile ? '16px 12px' : '24px 28px', maxWidth: 1200, margin: '0 auto' }}>

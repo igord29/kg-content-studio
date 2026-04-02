@@ -2181,7 +2181,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 			{/* Three-panel layout */}
 			<div style={{
 				display: 'flex',
-				height: isMobile ? 'calc(100vh - 140px)' : 'calc(100vh - 96px)',
+				height: isMobile ? 'calc(100svh - 140px)' : 'calc(100vh - 96px)',
 				overflow: 'hidden',
 			}}>
 
@@ -3653,7 +3653,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 								border: `1px solid ${S.borderColor}`,
 								borderRadius: 8,
 								padding: 16,
-								maxHeight: 'calc(100vh - 520px)',
+								maxHeight: isMobile ? 'calc(100svh - 280px)' : 'calc(100vh - 520px)',
 								overflow: 'auto',
 								flex: '0 1 auto',
 							}}>

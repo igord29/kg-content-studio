@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { VideoUploader } from './VideoUploader';
 import { BlogRenderer, isBlogWithMarkers } from './BlogRenderer';
+import { useIsMobile } from './useMediaQuery';
 
 // --- Types ---
 
@@ -1088,6 +1089,7 @@ function ImageLightbox({
 // --- Main Component ---
 
 export function ContentLibrary({ onBack }: { onBack: () => void }) {
+	const isMobile = useIsMobile();
 	const [activeTab, setActiveTab] = useState<MediaTab>('text');
 
 	// Text entries
@@ -1287,7 +1289,7 @@ export function ContentLibrary({ onBack }: { onBack: () => void }) {
 		<div style={{ minHeight: '100vh', background: S.bg, color: S.textPrimary, fontFamily: S.serif }}>
 			{/* Header */}
 			<header style={{
-				padding: '20px 28px', borderBottom: `1px solid ${S.borderColor}`,
+				padding: isMobile ? '12px 16px' : '20px 28px', borderBottom: `1px solid ${S.borderColor}`,
 				display: 'flex', justifyContent: 'space-between', alignItems: 'center',
 			}}>
 				<div>
@@ -1330,7 +1332,7 @@ export function ContentLibrary({ onBack }: { onBack: () => void }) {
 			<TabBar activeTab={activeTab} onTabChange={setActiveTab} counts={tabCounts} />
 
 			{/* Content area */}
-			<main style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
+			<main style={{ padding: isMobile ? '16px 12px' : '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
 				{isLoading && (
 					<div style={{ padding: 60, textAlign: 'center', fontFamily: S.mono, fontSize: 12, color: S.textMuted, letterSpacing: 1 }}>
 						Loading library...

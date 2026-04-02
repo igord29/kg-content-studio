@@ -1,4 +1,5 @@
 import { useCallback, useState, type ChangeEvent } from 'react';
+import { useIsMobile } from './useMediaQuery';
 
 interface Venue {
 	name: string;
@@ -78,6 +79,7 @@ interface VenueProspectorProps {
 }
 
 export function VenueProspector({ onBack }: VenueProspectorProps) {
+	const isMobile = useIsMobile();
 	const [step, setStep] = useState<'mode' | 'search' | 'profile' | 'outreach' | 'generating' | 'result'>('mode');
 	const [searchType, setSearchType] = useState<'venue-search' | 'venue-profile' | 'outreach-plan'>('venue-search');
 
@@ -192,7 +194,7 @@ export function VenueProspector({ onBack }: VenueProspectorProps) {
 		}}>
 			{/* Header */}
 			<header style={{
-				padding: '24px 40px',
+				padding: isMobile ? '16px' : '24px 40px',
 				borderBottom: '1px solid #141824',
 			}}>
 				<button
@@ -210,7 +212,7 @@ export function VenueProspector({ onBack }: VenueProspectorProps) {
 				</p>
 			</header>
 
-			<main style={{ padding: '32px 40px', maxWidth: 900, margin: '0 auto' }}>
+			<main style={{ padding: isMobile ? '20px 16px' : '32px 40px', maxWidth: 900, margin: '0 auto' }}>
 				{/* Step: Mode */}
 				{step === 'mode' && (
 					<div style={{ animation: 'fadeSlideUp 0.4s ease-out' }}>

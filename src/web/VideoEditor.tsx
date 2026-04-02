@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useIsMobile } from './useMediaQuery';
 
 // --- Types ---
 
@@ -686,6 +687,10 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 
 	// Inline video preview
 	const [previewVideo, setPreviewVideo] = useState<DriveVideo | null>(null);
+
+	// Mobile layout
+	const isMobile = useIsMobile();
+	const [mobileTab, setMobileTab] = useState<'library' | 'config' | 'plan'>('library');
 
 	// Edit config
 	const [selectedMode, setSelectedMode] = useState('auto');
@@ -2092,7 +2097,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		}}>
 			{/* Header */}
 			<header style={{
-				padding: '20px 28px',
+				padding: isMobile ? '12px 16px' : '20px 28px',
 				borderBottom: `1px solid ${S.borderColor}`,
 				display: 'flex',
 				justifyContent: 'space-between',
@@ -2137,18 +2142,54 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 				<StatusBadge connected={driveConnected} />
 			</header>
 
+			{/* Mobile tab bar */}
+			{isMobile && (
+				<div style={{
+					display: 'flex',
+					borderBottom: `1px solid ${S.borderColor}`,
+					background: S.cardBg,
+				}}>
+					{([
+						{ id: 'library' as const, label: 'Library', count: videos.length },
+						{ id: 'config' as const, label: 'Edit Config', count: selectedIds.size },
+						{ id: 'plan' as const, label: 'Edit Plan' },
+					]).map(tab => (
+						<button
+							key={tab.id}
+							onClick={() => setMobileTab(tab.id)}
+							style={{
+								flex: 1,
+								padding: '10px 8px',
+								background: mobileTab === tab.id ? '#2D6A4F20' : 'transparent',
+								border: 'none',
+								borderBottom: mobileTab === tab.id ? `2px solid ${S.accent}` : '2px solid transparent',
+								color: mobileTab === tab.id ? S.accentLight : S.textMuted,
+								fontFamily: S.mono,
+								fontSize: 10,
+								letterSpacing: 0.5,
+								cursor: 'pointer',
+							}}
+							type="button"
+						>
+							{tab.label}
+							{'count' in tab && tab.count ? ` (${tab.count})` : ''}
+						</button>
+					))}
+				</div>
+			)}
+
 			{/* Three-panel layout */}
 			<div style={{
 				display: 'flex',
-				height: 'calc(100vh - 96px)',
+				height: isMobile ? 'calc(100vh - 140px)' : 'calc(100vh - 96px)',
 				overflow: 'hidden',
 			}}>
 
 				{/* LEFT PANEL: Video Library */}
-				<div style={{
-					width: leftWidth,
-					minWidth: 250,
-					maxWidth: 600,
+				{(!isMobile || mobileTab === 'library') && <div style={{
+					width: isMobile ? '100%' : leftWidth,
+					minWidth: isMobile ? undefined : 250,
+					maxWidth: isMobile ? undefined : 600,
 					flexShrink: 0,
 					display: 'flex',
 					flexDirection: 'column',
@@ -2851,10 +2892,10 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							);
 						})}
 					</div>
-				</div>
+				</div>}
 
 				{/* Left resize handle */}
-				<div
+				{!isMobile && <div
 					onMouseDown={(e) => startDrag('left', e)}
 					style={{
 						width: 5,
@@ -2866,14 +2907,14 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					}}
 					onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = S.accent + '40'; }}
 					onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
-				/>
+				/>}
 
 				{/* CENTER PANEL: Edit Configuration */}
-				<div style={{
+				{(!isMobile || mobileTab === 'config') && <div style={{
 					flex: 1,
-					minWidth: 200,
+					minWidth: isMobile ? undefined : 200,
 					overflow: 'auto',
-					padding: '20px 24px',
+					padding: isMobile ? '16px' : '20px 24px',
 				}}>
 					<Label>Edit Configuration</Label>
 
@@ -3462,10 +3503,10 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							{genError}
 						</div>
 					)}
-				</div>
+				</div>}
 
 				{/* Right resize handle */}
-				<div
+				{!isMobile && <div
 					onMouseDown={(e) => startDrag('right', e)}
 					style={{
 						width: 5,
@@ -3477,16 +3518,16 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 					}}
 					onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = S.accent + '40'; }}
 					onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
-				/>
+				/>}
 
 				{/* RIGHT PANEL: Edit Plan / Review */}
-				<div style={{
-					width: rightWidth,
-					minWidth: 280,
-					maxWidth: 600,
+				{(!isMobile || mobileTab === 'plan') && <div style={{
+					width: isMobile ? '100%' : rightWidth,
+					minWidth: isMobile ? undefined : 280,
+					maxWidth: isMobile ? undefined : 600,
 					flexShrink: 0,
 					overflow: 'auto',
-					padding: '20px 20px',
+					padding: isMobile ? '16px' : '20px 20px',
 					display: 'flex',
 					flexDirection: 'column',
 				}}>
@@ -4736,7 +4777,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							</div>
 						</div>
 					)}
-				</div>
+				</div>}
 			</div>
 
 			{/* Inline video preview modal */}
@@ -4761,7 +4802,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							borderRadius: 12,
 							border: `1px solid ${S.borderColor}`,
 							boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
-							width: '80vw',
+							width: isMobile ? '95vw' : '80vw',
 							maxWidth: 900,
 							overflow: 'hidden',
 							display: 'flex',

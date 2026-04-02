@@ -10,6 +10,7 @@ import { GrantWriter } from './GrantWriter';
 import { DonorResearcher } from './DonorResearcher';
 import { VenueProspector } from './VenueProspector';
 import { ContentLibrary } from './ContentLibrary';
+import { useIsMobile } from './useMediaQuery';
 
 type ActiveTool = 'home' | 'content' | 'video' | 'grants' | 'donors' | 'venues' | 'library';
 
@@ -23,6 +24,7 @@ const TOOLS = [
 ];
 
 export function ContentStudio() {
+	const isMobile = useIsMobile();
 	const [activeTool, setActiveTool] = useState<ActiveTool>('home');
 
 	const handleBackToHome = () => setActiveTool('home');
@@ -74,12 +76,12 @@ export function ContentStudio() {
 			}}>
 				{/* Header */}
 				<header style={{
-					padding: '40px 40px 32px',
+					padding: isMobile ? '24px 16px 20px' : '40px 40px 32px',
 					borderBottom: '1px solid #141824',
 					textAlign: 'center',
 				}}>
 					<h1 style={{
-						fontSize: 32,
+						fontSize: isMobile ? 24 : 32,
 						fontWeight: 700,
 						letterSpacing: '-0.02em',
 						color: '#ffffff',
@@ -100,7 +102,7 @@ export function ContentStudio() {
 
 				{/* Main content */}
 				<main style={{
-					padding: '48px 40px',
+					padding: isMobile ? '24px 16px' : '48px 40px',
 					maxWidth: 900,
 					margin: '0 auto',
 				}}>
@@ -131,7 +133,7 @@ export function ContentStudio() {
 					{/* Tool grid */}
 					<div style={{
 						display: 'grid',
-						gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+						gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(260px, 1fr))',
 						gap: 16,
 						animation: 'fadeSlideUp 0.5s ease-out 0.1s both',
 					}}>
@@ -140,7 +142,7 @@ export function ContentStudio() {
 								key={tool.id}
 								onClick={() => setActiveTool(tool.id)}
 								style={{
-									padding: '28px 24px',
+									padding: isMobile ? '20px 16px' : '28px 24px',
 									borderRadius: 12,
 									border: '1px solid #1e2538',
 									background: '#111520',
@@ -295,7 +297,7 @@ export function ContentStudio() {
 
 				{/* Footer */}
 				<footer style={{
-					padding: '24px 40px',
+					padding: isMobile ? '16px' : '24px 40px',
 					borderTop: '1px solid #141824',
 					textAlign: 'center',
 				}}>

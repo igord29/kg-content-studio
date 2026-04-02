@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useIsMobile } from './useMediaQuery';
 
 export type ImageModeChoice = 'agent-pick' | 'user-pick' | 'skip';
 
@@ -231,6 +232,7 @@ interface StylePickerProps {
 }
 
 export function StylePicker({ onSubmit }: StylePickerProps) {
+	const isMobile = useIsMobile();
 	const [phase, setPhase] = useState<'choose-mode' | 'pick-styles'>('choose-mode');
 	const [selected, setSelected] = useState<string[]>([]);
 	const [variationCount, setVariationCount] = useState(2);
@@ -551,7 +553,7 @@ export function StylePicker({ onSubmit }: StylePickerProps) {
 			{/* Style grid */}
 			<div className="clc-style-grid" style={{
 				display: 'grid',
-				gridTemplateColumns: 'repeat(3, 1fr)',
+				gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)',
 				gap: 10,
 				marginBottom: 20,
 			}}>

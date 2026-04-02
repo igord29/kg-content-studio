@@ -1,4 +1,5 @@
 import { useCallback, useState, type ChangeEvent } from 'react';
+import { useIsMobile } from './useMediaQuery';
 
 interface GrantResult {
 	content: string;
@@ -35,6 +36,7 @@ interface GrantWriterProps {
 }
 
 export function GrantWriter({ onBack }: GrantWriterProps) {
+	const isMobile = useIsMobile();
 	const [step, setStep] = useState<'type' | 'details' | 'generating' | 'result'>('type');
 
 	// Grant type
@@ -128,7 +130,7 @@ export function GrantWriter({ onBack }: GrantWriterProps) {
 		}}>
 			{/* Header */}
 			<header style={{
-				padding: '24px 40px',
+				padding: isMobile ? '16px' : '24px 40px',
 				borderBottom: '1px solid #141824',
 			}}>
 				<button
@@ -167,7 +169,7 @@ export function GrantWriter({ onBack }: GrantWriterProps) {
 				</p>
 			</header>
 
-			<main style={{ padding: '32px 40px', maxWidth: 800, margin: '0 auto' }}>
+			<main style={{ padding: isMobile ? '20px 16px' : '32px 40px', maxWidth: 800, margin: '0 auto' }}>
 				{/* Step: Type Selection */}
 				{step === 'type' && (
 					<div style={{ animation: 'fadeSlideUp 0.4s ease-out' }}>
@@ -180,7 +182,7 @@ export function GrantWriter({ onBack }: GrantWriterProps) {
 
 						<div style={{
 							display: 'grid',
-							gridTemplateColumns: 'repeat(2, 1fr)',
+							gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)',
 							gap: 12,
 						}}>
 							{GRANT_TYPES.map((type) => (
@@ -291,7 +293,7 @@ export function GrantWriter({ onBack }: GrantWriterProps) {
 								FUNDER INFORMATION
 							</div>
 
-							<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+							<div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 12 }}>
 								<div>
 									<label style={{
 										display: 'block',
@@ -458,7 +460,7 @@ export function GrantWriter({ onBack }: GrantWriterProps) {
 								/>
 							</div>
 
-							<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+							<div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
 								<div>
 									<label style={{
 										display: 'block',
@@ -535,7 +537,7 @@ export function GrantWriter({ onBack }: GrantWriterProps) {
 								REQUIREMENTS (OPTIONAL)
 							</div>
 
-							<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+							<div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 12 }}>
 								<div>
 									<label style={{
 										display: 'block',

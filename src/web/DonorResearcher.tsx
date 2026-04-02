@@ -1,4 +1,5 @@
 import { useCallback, useState, type ChangeEvent } from 'react';
+import { useIsMobile } from './useMediaQuery';
 
 interface Prospect {
 	name: string;
@@ -65,6 +66,7 @@ interface DonorResearcherProps {
 }
 
 export function DonorResearcher({ onBack }: DonorResearcherProps) {
+	const isMobile = useIsMobile();
 	const [step, setStep] = useState<'mode' | 'search' | 'deep-dive' | 'connections' | 'generating' | 'result'>('mode');
 	const [searchType, setSearchType] = useState<'prospect-search' | 'deep-dive' | 'connection-map'>('prospect-search');
 
@@ -171,7 +173,7 @@ export function DonorResearcher({ onBack }: DonorResearcherProps) {
 		}}>
 			{/* Header */}
 			<header style={{
-				padding: '24px 40px',
+				padding: isMobile ? '16px' : '24px 40px',
 				borderBottom: '1px solid #141824',
 			}}>
 				<button
@@ -210,7 +212,7 @@ export function DonorResearcher({ onBack }: DonorResearcherProps) {
 				</p>
 			</header>
 
-			<main style={{ padding: '32px 40px', maxWidth: 900, margin: '0 auto' }}>
+			<main style={{ padding: isMobile ? '20px 16px' : '32px 40px', maxWidth: 900, margin: '0 auto' }}>
 				{/* Step: Mode Selection */}
 				{step === 'mode' && (
 					<div style={{ animation: 'fadeSlideUp 0.4s ease-out' }}>

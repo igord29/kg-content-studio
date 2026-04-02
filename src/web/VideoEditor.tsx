@@ -2464,8 +2464,6 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 								<button
 									key={video.id}
 									onClick={() => toggleVideo(video.id)}
-									onMouseEnter={() => setHoveredVideoId(video.id)}
-									onMouseLeave={() => setHoveredVideoId(null)}
 									style={{
 										width: '100%',
 										padding: '8px 12px',
@@ -2501,7 +2499,10 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 									</div>
 
 									{/* Thumbnail — always reserve space; show placeholder when missing */}
-									<div style={{
+									<div
+										onMouseEnter={() => setHoveredVideoId(video.id)}
+										onMouseLeave={() => setHoveredVideoId(null)}
+										style={{
 										width: 56,
 										height: 42,
 										borderRadius: 4,
@@ -2565,7 +2566,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 											style={{
 												position: 'absolute',
 												top: -10,
-												left: 90,
+												left: 60,
 												zIndex: 200,
 												width: 280,
 												borderRadius: 8,

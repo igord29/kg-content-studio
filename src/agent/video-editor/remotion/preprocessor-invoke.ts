@@ -91,12 +91,19 @@ async function invokePreprocessorForClip(
 		clip.filename || clip.fileId, clip.trimStart, clip.duration,
 		clip.speed ?? 1.0, clip.stabilize !== false ? 'yes' : 'no');
 
+	// Socket timeout must exceed Lambda's 300s max execution time.
+	// Default ~120s causes "socket hang up" when FFmpeg deshake runs long.
+	const { NodeHttpHandler } = await import('@smithy/node-http-handler');
 	const lambda = new LambdaClient({
 		region,
 		credentials: {
 			accessKeyId: process.env.REMOTION_AWS_ACCESS_KEY_ID!,
 			secretAccessKey: process.env.REMOTION_AWS_SECRET_ACCESS_KEY!,
 		},
+		requestHandler: new NodeHttpHandler({
+			requestTimeout: 350_000,    // 5 min 50s — safely above Lambda's 300s limit
+			connectionTimeout: 10_000,  // 10s to establish connection
+		}),
 	});
 
 	const result = await lambda.send(new InvokeCommand({

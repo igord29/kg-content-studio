@@ -62,20 +62,16 @@ async function getLambdaClient(region: string): Promise<any> {
 	if (cachedLambdaClient) return cachedLambdaClient;
 
 	const { LambdaClient } = await import('@aws-sdk/client-lambda');
-	const { NodeHttpHandler } = await import('@smithy/node-http-handler');
 
+	// DO NOT use NodeHttpHandler — Bun's Node.js HTTP compatibility layer
+	// causes "socket hang up" on every Lambda invocation. The default SDK
+	// handler uses Bun's native fetch which works correctly.
 	cachedLambdaClient = new LambdaClient({
 		region,
 		credentials: {
 			accessKeyId: process.env.REMOTION_AWS_ACCESS_KEY_ID!,
 			secretAccessKey: process.env.REMOTION_AWS_SECRET_ACCESS_KEY!,
 		},
-		requestHandler: new NodeHttpHandler({
-			// Must exceed Lambda's 300s max execution time.
-			// Default ~120s caused "socket hang up" when FFmpeg deshake ran long.
-			requestTimeout: 350_000,    // 5 min 50s
-			connectionTimeout: 10_000,  // 10s to establish connection
-		}),
 	});
 
 	return cachedLambdaClient;
@@ -130,11 +126,21 @@ async function invokePreprocessorForClip(
 
 	const lambda = await getLambdaClient(region);
 
-	const result = await lambda.send(new InvokeCommand({
-		FunctionName: functionName,
-		InvocationType: 'RequestResponse', // Synchronous — wait for result
-		Payload: Buffer.from(JSON.stringify(payload)),
-	}));
+	// AbortController timeout: 350s (safely above Lambda's 300s max).
+	// This replaces NodeHttpHandler's requestTimeout which broke in Bun.
+	const abortController = new AbortController();
+	const timeout = setTimeout(() => abortController.abort(), 350_000);
+
+	let result;
+	try {
+		result = await lambda.send(new InvokeCommand({
+			FunctionName: functionName,
+			InvocationType: 'RequestResponse', // Synchronous — wait for result
+			Payload: Buffer.from(JSON.stringify(payload)),
+		}), { abortSignal: abortController.signal });
+	} finally {
+		clearTimeout(timeout);
+	}
 
 	// Parse Lambda response
 	if (result.FunctionError) {

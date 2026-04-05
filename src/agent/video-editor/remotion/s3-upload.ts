@@ -70,12 +70,13 @@ async function downloadDriveFile(
 
 /**
  * Check if s5cmd is available on the system.
+ * Uses spawnSync (brief, <1s) — acceptable for a one-time check.
  */
 function isS5cmdAvailable(): boolean {
 	try {
-		const { execSync } = require('child_process');
-		execSync('s5cmd version', { stdio: 'pipe', timeout: 5000 });
-		return true;
+		const { spawnSync } = require('child_process');
+		const result = spawnSync('s5cmd', ['version'], { stdio: 'pipe', timeout: 5000 });
+		return result.status === 0;
 	} catch {
 		return false;
 	}
@@ -84,6 +85,10 @@ function isS5cmdAvailable(): boolean {
 /**
  * Upload all files in a directory to S3 using s5cmd (parallel, 12x faster than aws-cli).
  * Falls back to AWS SDK if s5cmd is not installed (local dev).
+ *
+ * IMPORTANT: Uses spawn() (non-blocking) instead of execSync().
+ * execSync blocks the Node.js event loop, which prevents Railway's
+ * health check from responding → Railway kills the container.
  */
 async function s5cmdUpload(
 	tempDir: string,
@@ -92,25 +97,49 @@ async function s5cmdUpload(
 	region: string,
 	logger?: Logger,
 ): Promise<void> {
-	const { execSync } = await import('child_process');
+	const { spawn } = await import('child_process');
 
 	const s3Dest = `s3://${bucketName}/${s3Prefix}/`;
 	logger?.info('[s3-upload] s5cmd: uploading %s → %s', tempDir, s3Dest);
 	const start = Date.now();
 
-	execSync(
-		`s5cmd --endpoint-url https://s3.${region}.amazonaws.com cp "${tempDir}/*.mp4" "${s3Dest}"`,
-		{
-			timeout: 300_000,
-			stdio: 'pipe',
-			env: {
-				...process.env,
-				AWS_ACCESS_KEY_ID: process.env.REMOTION_AWS_ACCESS_KEY_ID,
-				AWS_SECRET_ACCESS_KEY: process.env.REMOTION_AWS_SECRET_ACCESS_KEY,
-				AWS_REGION: region,
+	await new Promise<void>((resolve, reject) => {
+		const proc = spawn(
+			's5cmd',
+			['--endpoint-url', `https://s3.${region}.amazonaws.com`, 'cp', `${tempDir}/*.mp4`, s3Dest],
+			{
+				stdio: 'pipe',
+				env: {
+					...process.env,
+					AWS_ACCESS_KEY_ID: process.env.REMOTION_AWS_ACCESS_KEY_ID,
+					AWS_SECRET_ACCESS_KEY: process.env.REMOTION_AWS_SECRET_ACCESS_KEY,
+					AWS_REGION: region,
+				},
 			},
-		},
-	);
+		);
+
+		let stderr = '';
+		proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+
+		const timeout = setTimeout(() => {
+			proc.kill('SIGTERM');
+			reject(new Error('s5cmd upload timed out after 300s'));
+		}, 300_000);
+
+		proc.on('close', (code) => {
+			clearTimeout(timeout);
+			if (code === 0) {
+				resolve();
+			} else {
+				reject(new Error(`s5cmd exited with code ${code}: ${stderr.slice(-500)}`));
+			}
+		});
+
+		proc.on('error', (err) => {
+			clearTimeout(timeout);
+			reject(err);
+		});
+	});
 
 	const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 	logger?.info('[s3-upload] s5cmd: upload complete in %ss', elapsed);

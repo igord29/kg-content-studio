@@ -776,7 +776,12 @@ export async function submitRemotionRenderWithPreprocessing(
 	logger?: Logger,
 ): Promise<void> {
 	try {
-		logger?.info('[remotion-lambda] Render %s: starting preprocessed pipeline...', renderId);
+		const memLog = () => {
+			const m = process.memoryUsage();
+			return `rss=${(m.rss / 1024 / 1024).toFixed(0)}MB heap=${(m.heapUsed / 1024 / 1024).toFixed(0)}/${(m.heapTotal / 1024 / 1024).toFixed(0)}MB`;
+		};
+
+		logger?.info('[remotion-lambda] Render %s: starting preprocessed pipeline... [mem: %s]', renderId, memLog());
 
 		// Step 1: Get Lambda infrastructure config
 		const infra = await getInfra(logger);
@@ -787,6 +792,8 @@ export async function submitRemotionRenderWithPreprocessing(
 			invokePreprocessorForClips,
 			buildPreprocessorConfigs,
 		} = await import('./preprocessor-invoke');
+
+		logger?.info('[remotion-lambda] After imports [mem: %s]', memLog());
 
 		const fileIds = config.clips.map(c => c.fileId);
 		logger?.info('[remotion-lambda] Uploading %d raw clips from Drive to S3 bucket %s...',
@@ -799,13 +806,15 @@ export async function submitRemotionRenderWithPreprocessing(
 			logger,
 		);
 
+		logger?.info('[remotion-lambda] S3 upload complete [mem: %s]', memLog());
+
 		// Update status: raw upload complete, starting preprocessing
 		updateRenderEntry(renderId, { status: 'rendering' });
 
 		// Step 3: Build preprocessor configs and invoke Lambda for each clip
 		const preprocessorConfigs = buildPreprocessorConfigs(config.clips, s3Clips);
 
-		logger?.info('[remotion-lambda] Invoking preprocessor Lambda for %d clips...', preprocessorConfigs.length);
+		logger?.info('[remotion-lambda] Invoking preprocessor Lambda for %d clips... [mem: %s]', preprocessorConfigs.length, memLog());
 
 		const processedClips = await invokePreprocessorForClips(
 			preprocessorConfigs,

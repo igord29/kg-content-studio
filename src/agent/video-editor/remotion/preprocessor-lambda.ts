@@ -10,7 +10,7 @@
  * This runs on a dedicated Lambda (separate from Remotion render) because:
  *   - Agentuity server has 60s timeout / 500m CPU (can't run FFmpeg on 300MB files)
  *   - Remotion Lambda has 30s delayRender timeout (too short for transcoding)
- *   - This Lambda: 1024MB RAM, 300s timeout, 512MB disk — ideal for FFmpeg
+ *   - This Lambda: 3072MB RAM, 300s timeout, 2048MB disk — ideal for FFmpeg
  *
  * FFmpeg binary comes from a Lambda Layer at /opt/bin/ffmpeg.
  *
@@ -19,7 +19,9 @@
 
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { execSync } from 'child_process';
-import { writeFileSync, readFileSync, unlinkSync, existsSync, statSync } from 'fs';
+import { createReadStream, createWriteStream, unlinkSync, existsSync, statSync } from 'fs';
+import { pipeline } from 'stream/promises';
+import type { Readable } from 'stream';
 
 // --- Types ---
 
@@ -151,7 +153,7 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 	const outputPath = '/tmp/output.mp4';
 
 	try {
-		// Step 1: Download raw clip from S3
+		// Step 1: Stream raw clip from S3 directly to disk (avoids loading into memory)
 		console.log('[preprocessor] Downloading from s3://%s/%s...', event.bucketName, event.inputS3Key);
 		const dlStart = Date.now();
 
@@ -162,8 +164,8 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 			Key: event.inputS3Key,
 		}));
 
-		const bodyBytes = await getResult.Body!.transformToByteArray();
-		writeFileSync(inputPath, Buffer.from(bodyBytes));
+		// Stream to disk — avoids the ~600MB double-buffer that caused OOM kills
+		await pipeline(getResult.Body! as Readable, createWriteStream(inputPath));
 
 		const inputSize = statSync(inputPath).size;
 		const dlTime = ((Date.now() - dlStart) / 1000).toFixed(1);
@@ -217,15 +219,16 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 		console.log('[preprocessor] FFmpeg complete: %dMB output in %ss',
 			(outputSize / (1024 * 1024)).toFixed(1), ffTime);
 
-		// Step 4: Upload processed clip to S3
+		// Step 4: Stream processed clip from disk to S3 (avoids loading into memory)
 		console.log('[preprocessor] Uploading to s3://%s/%s...', event.bucketName, event.outputS3Key);
 		const upStart = Date.now();
 
-		const outputBuffer = readFileSync(outputPath);
+		const outputSize2 = statSync(outputPath).size;
 		await s3.send(new PutObjectCommand({
 			Bucket: event.bucketName,
 			Key: event.outputS3Key,
-			Body: outputBuffer,
+			Body: createReadStream(outputPath),
+			ContentLength: outputSize2,
 			ContentType: 'video/mp4',
 		}));
 

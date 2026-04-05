@@ -301,7 +301,8 @@ function writeHandler(): string {
 
 const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { execSync } = require('child_process');
-const { writeFileSync, readFileSync, unlinkSync, existsSync, statSync } = require('fs');
+const { createReadStream, createWriteStream, unlinkSync, existsSync, statSync } = require('fs');
+const { pipeline } = require('stream/promises');
 const path = require('path');
 
 // --- FFmpeg binary discovery ---
@@ -395,7 +396,7 @@ exports.handler = async function(event) {
   const outputPath = '/tmp/output.mp4';
 
   try {
-    // Step 1: Download raw clip from S3
+    // Step 1: Stream raw clip from S3 directly to disk (avoids OOM from double-buffering)
     console.log('[preprocessor] Downloading from s3://%s/%s...', event.bucketName, event.inputS3Key);
     const dlStart = Date.now();
 
@@ -405,8 +406,9 @@ exports.handler = async function(event) {
       Key: event.inputS3Key,
     }));
 
-    const bodyBytes = await getResult.Body.transformToByteArray();
-    writeFileSync(inputPath, Buffer.from(bodyBytes));
+    // Stream to disk — previously loaded entire file into memory TWICE
+    // (transformToByteArray + Buffer.from), which OOM-killed the Lambda
+    await pipeline(getResult.Body, createWriteStream(inputPath));
 
     const inputSize = statSync(inputPath).size;
     const dlTime = ((Date.now() - dlStart) / 1000).toFixed(1);
@@ -457,15 +459,16 @@ exports.handler = async function(event) {
     const outputSize = statSync(outputPath).size;
     console.log('[preprocessor] FFmpeg done: ' + (outputSize / (1024 * 1024)).toFixed(1) + 'MB output in ' + ffTime + 's');
 
-    // Step 4: Upload processed clip to S3
+    // Step 4: Stream processed clip from disk to S3 (avoids loading into memory)
     console.log('[preprocessor] Uploading to s3://%s/%s...', event.bucketName, event.outputS3Key);
     const upStart = Date.now();
 
-    const outputBuffer = readFileSync(outputPath);
+    const outputSize2 = statSync(outputPath).size;
     await s3.send(new PutObjectCommand({
       Bucket: event.bucketName,
       Key: event.outputS3Key,
-      Body: outputBuffer,
+      Body: createReadStream(outputPath),
+      ContentLength: outputSize2,
       ContentType: 'video/mp4',
     }));
 
@@ -691,11 +694,14 @@ async function deployLambda(zipBuffer: Buffer, roleArn: string): Promise<string>
 		);
 
 		// Update configuration
+		// 3072MB RAM: streaming S3 I/O keeps Node.js lean (~50MB), but FFmpeg's
+		// deshake filter buffers decoded frames internally (~500-800MB for 1080p).
+		// 3GB gives enough headroom for FFmpeg + Node.js + OS overhead.
 		await lambda.send(new UpdateFunctionConfigurationCommand({
 			FunctionName: FUNCTION_NAME,
 			Runtime: 'nodejs20.x',
 			Handler: 'index.handler',
-			MemorySize: 2048,
+			MemorySize: 3008,
 			Timeout: 300,
 			EphemeralStorage: { Size: 2048 },
 			Role: roleArn,
@@ -711,7 +717,7 @@ async function deployLambda(zipBuffer: Buffer, roleArn: string): Promise<string>
 			Runtime: 'nodejs20.x',
 			Handler: 'index.handler',
 			Role: roleArn,
-			MemorySize: 2048,
+			MemorySize: 3008,
 			Timeout: 300,
 			EphemeralStorage: { Size: 2048 },
 			Architectures: ['x86_64'],

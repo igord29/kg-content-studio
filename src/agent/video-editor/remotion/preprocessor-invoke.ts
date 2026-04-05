@@ -2,12 +2,17 @@
  * Preprocessor Lambda Client
  *
  * Invokes the dedicated FFmpeg preprocessor Lambda for each video clip.
- * Runs clips in parallel (concurrency 3) and returns processed S3 URLs.
+ * Runs clips sequentially (concurrency 1) to minimize memory on the
+ * resource-constrained Railway server.
  *
  * This runs on the Agentuity server. It:
  *   1. Takes raw clips already uploaded to S3 (from uploadClipsToS3)
  *   2. Invokes the preprocessor Lambda for each clip (FFmpeg deshake + sharpen + trim)
  *   3. Returns processed S3 URLs that Remotion Lambda can fetch
+ *
+ * IMPORTANT: Uses a single shared LambdaClient across all invocations.
+ * Creating a new client per clip wastes ~50MB each (TLS context, connection
+ * pool, HTTPS agent) which crashed the Railway server on 7-clip renders.
  *
  * File: src/agent/video-editor/remotion/preprocessor-invoke.ts
  */
@@ -44,6 +49,38 @@ export interface PreprocessedS3Clip {
 	processingTimeMs: number;
 }
 
+// --- Shared Lambda Client ---
+
+/**
+ * Cached LambdaClient — reused across all clip invocations.
+ * Creating a new client per clip wasted ~50MB each (TLS context,
+ * HTTPS agent, connection pool) and crashed the Railway server.
+ */
+let cachedLambdaClient: any = null;
+
+async function getLambdaClient(region: string): Promise<any> {
+	if (cachedLambdaClient) return cachedLambdaClient;
+
+	const { LambdaClient } = await import('@aws-sdk/client-lambda');
+	const { NodeHttpHandler } = await import('@smithy/node-http-handler');
+
+	cachedLambdaClient = new LambdaClient({
+		region,
+		credentials: {
+			accessKeyId: process.env.REMOTION_AWS_ACCESS_KEY_ID!,
+			secretAccessKey: process.env.REMOTION_AWS_SECRET_ACCESS_KEY!,
+		},
+		requestHandler: new NodeHttpHandler({
+			// Must exceed Lambda's 300s max execution time.
+			// Default ~120s caused "socket hang up" when FFmpeg deshake ran long.
+			requestTimeout: 350_000,    // 5 min 50s
+			connectionTimeout: 10_000,  // 10s to establish connection
+		}),
+	});
+
+	return cachedLambdaClient;
+}
+
 // --- Preprocessor Invocation ---
 
 /**
@@ -70,7 +107,7 @@ async function invokePreprocessorForClip(
 	renderPrefix: string,
 	logger?: Logger,
 ): Promise<PreprocessedS3Clip> {
-	const { LambdaClient, InvokeCommand } = await import('@aws-sdk/client-lambda');
+	const { InvokeCommand } = await import('@aws-sdk/client-lambda');
 
 	const functionName = getPreprocessorFunctionName();
 	const outputS3Key = `temp-clips/${renderPrefix}/processed_${clip.fileId}_${Date.now()}.mp4`;
@@ -91,20 +128,7 @@ async function invokePreprocessorForClip(
 		clip.filename || clip.fileId, clip.trimStart, clip.duration,
 		clip.speed ?? 1.0, clip.stabilize !== false ? 'yes' : 'no');
 
-	// Socket timeout must exceed Lambda's 300s max execution time.
-	// Default ~120s causes "socket hang up" when FFmpeg deshake runs long.
-	const { NodeHttpHandler } = await import('@smithy/node-http-handler');
-	const lambda = new LambdaClient({
-		region,
-		credentials: {
-			accessKeyId: process.env.REMOTION_AWS_ACCESS_KEY_ID!,
-			secretAccessKey: process.env.REMOTION_AWS_SECRET_ACCESS_KEY!,
-		},
-		requestHandler: new NodeHttpHandler({
-			requestTimeout: 350_000,    // 5 min 50s — safely above Lambda's 300s limit
-			connectionTimeout: 10_000,  // 10s to establish connection
-		}),
-	});
+	const lambda = await getLambdaClient(region);
 
 	const result = await lambda.send(new InvokeCommand({
 		FunctionName: functionName,
@@ -148,10 +172,11 @@ async function invokePreprocessorForClip(
 }
 
 /**
- * Invoke the preprocessor Lambda for multiple clips in parallel.
+ * Invoke the preprocessor Lambda for multiple clips.
  *
- * Processes clips with concurrency limit to avoid overwhelming Lambda.
- * Returns a list of preprocessed clip results in the same order as input.
+ * Processes clips SEQUENTIALLY (concurrency 1) to minimize memory pressure
+ * on the Railway server. Each Lambda invocation is just an HTTP call (~5KB),
+ * but the server must stay alive for the full duration (up to 300s per clip).
  *
  * @param clips - Clip configs with S3 keys from raw upload
  * @param bucketName - S3 bucket (same as Remotion bucket)
@@ -166,53 +191,39 @@ export async function invokePreprocessorForClips(
 	logger?: Logger,
 ): Promise<PreprocessedS3Clip[]> {
 	const renderPrefix = `render_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-	const concurrency = 2; // Keep low to avoid Lambda concurrency limits + OOM
 
-	logger?.info('[preprocessor] Preprocessing %d clips via Lambda (concurrency=%d, prefix=%s)...',
-		clips.length, concurrency, renderPrefix);
+	logger?.info('[preprocessor] Preprocessing %d clips via Lambda (sequential, prefix=%s)...',
+		clips.length, renderPrefix);
 	const startTime = Date.now();
 
-	const results: PreprocessedS3Clip[] = new Array(clips.length);
+	// Warm up the shared Lambda client once before processing clips
+	await getLambdaClient(region);
+
+	const results: PreprocessedS3Clip[] = [];
 	const errors: string[] = [];
 
-	// Process in batches of `concurrency`
-	for (let i = 0; i < clips.length; i += concurrency) {
-		const batch = clips.slice(i, i + concurrency);
-		const batchIndices = batch.map((_, j) => i + j);
+	// Process clips one at a time to minimize server memory usage.
+	// Lambda does all the heavy work — we're just waiting on HTTP responses.
+	for (let i = 0; i < clips.length; i++) {
+		const clip = clips[i]!;
 
-		logger?.info('[preprocessor] Processing batch %d/%d (clips %d-%d)...',
-			Math.floor(i / concurrency) + 1,
-			Math.ceil(clips.length / concurrency),
-			i + 1, Math.min(i + concurrency, clips.length));
+		logger?.info('[preprocessor] Processing clip %d/%d...', i + 1, clips.length);
 
-		const batchResults = await Promise.allSettled(
-			batch.map((clip) =>
-				invokePreprocessorForClip(clip, bucketName, region, renderPrefix, logger)
-			),
-		);
-
-		for (let j = 0; j < batchResults.length; j++) {
-			const result = batchResults[j]!;
-			const clipIndex = batchIndices[j]!;
-			const clip = batch[j]!;
-
-			if (result.status === 'fulfilled') {
-				results[clipIndex] = result.value;
-			} else {
-				const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
-				errors.push(`${clip.filename || clip.fileId}: ${msg}`);
-				logger?.error?.('[preprocessor] Failed to preprocess %s: %s', clip.filename || clip.fileId, msg);
-			}
+		try {
+			const result = await invokePreprocessorForClip(clip, bucketName, region, renderPrefix, logger);
+			results.push(result);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			errors.push(`${clip.filename || clip.fileId}: ${msg}`);
+			logger?.error?.('[preprocessor] Failed to preprocess %s: %s', clip.filename || clip.fileId, msg);
 		}
 	}
 
 	const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-	const totalOutputSize = results
-		.filter(Boolean)
-		.reduce((s, r) => s + r.outputSizeBytes, 0);
+	const totalOutputSize = results.reduce((s, r) => s + r.outputSizeBytes, 0);
 
 	logger?.info('[preprocessor] Preprocessing complete: %d/%d clips, %dMB total output, %ss',
-		results.filter(Boolean).length, clips.length,
+		results.length, clips.length,
 		(totalOutputSize / (1024 * 1024)).toFixed(0), elapsed);
 
 	if (errors.length > 0) {

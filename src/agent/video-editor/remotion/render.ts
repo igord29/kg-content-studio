@@ -811,19 +811,32 @@ export async function submitRemotionRenderWithPreprocessing(
 		// Update status: raw upload complete, starting preprocessing
 		updateRenderEntry(renderId, { status: 'rendering' });
 
-		// Step 3: Build preprocessor configs and invoke Lambda for each clip
-		const preprocessorConfigs = buildPreprocessorConfigs(config.clips, s3Clips);
+		// Step 3: Try preprocessing, fall back to raw clips if it fails.
+		// Preprocessing adds deshake + sharpen via Lambda, but "socket hang up"
+		// errors on Bun/Railway have made it unreliable. Raw clips still render
+		// fine — just without stabilization/sharpening.
+		let useProcessedClips = false;
+		let processedClipResults: Awaited<ReturnType<typeof invokePreprocessorForClips>> | null = null;
 
-		logger?.info('[remotion-lambda] Invoking preprocessor Lambda for %d clips... [mem: %s]', preprocessorConfigs.length, memLog());
+		try {
+			const preprocessorConfigs = buildPreprocessorConfigs(config.clips, s3Clips);
+			logger?.info('[remotion-lambda] Attempting preprocessor Lambda for %d clips... [mem: %s]', preprocessorConfigs.length, memLog());
 
-		const processedClips = await invokePreprocessorForClips(
-			preprocessorConfigs,
-			infra.bucketName,
-			infra.region,
-			logger,
-		);
+			processedClipResults = await invokePreprocessorForClips(
+				preprocessorConfigs,
+				infra.bucketName,
+				infra.region,
+				logger,
+			);
+			useProcessedClips = true;
+			logger?.info('[remotion-lambda] Preprocessing succeeded for all %d clips', processedClipResults.length);
+		} catch (preprocessErr) {
+			const msg = preprocessErr instanceof Error ? preprocessErr.message : String(preprocessErr);
+			logger?.warn?.('[remotion-lambda] Preprocessing failed, falling back to raw clips: %s', msg);
+			// Continue with raw S3 clips — video will render without deshake/sharpen
+		}
 
-		// Step 4: Build Remotion props with processed S3 URLs
+		// Step 4: Build Remotion props
 		const platformSettings = PLATFORM_SETTINGS[config.platform] || PLATFORM_SETTINGS['youtube']!;
 		const fps = 30;
 
@@ -836,13 +849,31 @@ export async function submitRemotionRenderWithPreprocessing(
 		const remotionMode = REMOTION_MODE_SETTINGS[config.mode] || REMOTION_MODE_SETTINGS['game_day']!;
 		const transitionDurationFrames = Math.round(remotionMode.transitionDuration * fps);
 
-		// Build clip props using processed S3 URLs
-		// trimStart=0 because FFmpeg already trimmed during preprocessing
-		const clipProps: CLCVideoProps['clips'] = processedClips.map((pc) => ({
-			src: pc.outputS3Url,
-			length: pc.effectiveDuration,
-			trimStart: 0,
-		}));
+		// Build clip props — use processed S3 URLs if preprocessing succeeded,
+		// otherwise fall back to raw S3 URLs with original trim points
+		let clipProps: CLCVideoProps['clips'];
+
+		if (useProcessedClips && processedClipResults) {
+			// Preprocessed: trimStart=0 because FFmpeg already trimmed
+			clipProps = processedClipResults.map((pc) => ({
+				src: pc.outputS3Url,
+				length: pc.effectiveDuration,
+				trimStart: 0,
+			}));
+			logger?.info('[remotion-lambda] Using %d preprocessed clips (stabilized + sharpened)', clipProps.length);
+		} else {
+			// Fallback: use raw S3 clips with original trim/duration from edit plan
+			clipProps = config.clips.map((clip) => {
+				const s3Info = s3Clips.get(clip.fileId);
+				if (!s3Info) throw new Error(`S3 upload missing for clip ${clip.fileId}`);
+				return {
+					src: s3Info.s3Url,
+					length: clip.duration || 5,
+					trimStart: clip.trimStart || 0,
+				};
+			});
+			logger?.info('[remotion-lambda] Using %d raw clips (no preprocessing — fallback mode)', clipProps.length);
+		}
 
 		// Build text overlay props
 		const textOverlays: CLCVideoProps['textOverlays'] = (config.textOverlays || []).map((overlay, index, arr) => {
@@ -906,14 +937,16 @@ export async function submitRemotionRenderWithPreprocessing(
 			status: 'rendering',
 		});
 
-		// Schedule cleanup of both raw AND processed S3 clips after 30 minutes
+		// Schedule cleanup of S3 clips after 30 minutes
 		const rawClipsList = [...s3Clips.values()];
-		const processedS3Keys = processedClips.map(pc => ({
-			fileId: pc.fileId,
-			s3Key: pc.outputS3Key,
-			s3Url: pc.outputS3Url,
-			sizeBytes: pc.outputSizeBytes,
-		}));
+		const processedS3Keys = (useProcessedClips && processedClipResults)
+			? processedClipResults.map(pc => ({
+				fileId: pc.fileId,
+				s3Key: pc.outputS3Key,
+				s3Url: pc.outputS3Url,
+				sizeBytes: pc.outputSizeBytes,
+			}))
+			: [];
 		const allClips = [...rawClipsList, ...processedS3Keys];
 
 		setTimeout(async () => {

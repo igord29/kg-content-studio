@@ -12,13 +12,14 @@ RUN bun install --frozen-lockfile
 # Copy source and build scripts
 COPY . .
 
+# CRITICAL: Force Remotion version to match Lambda function (4.0.441) BEFORE build.
+# The Agentuity Vite bundler bakes node_modules into .agentuity/app.js at build time.
+# If any transitive dep pulled in a newer Remotion, the bundled version would mismatch
+# the deployed Lambda. This ensures the correct version is in node_modules BEFORE bundling.
+RUN bun add @remotion/lambda@4.0.441 @remotion/lambda-client@4.0.441 remotion@4.0.441 @remotion/serverless@4.0.441 @remotion/serverless-client@4.0.441 @remotion/streaming@4.0.441 --exact
+
 # Agentuity CLI's Vite bundler requires npm in PATH (provided by node base image)
 RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
-
-# CRITICAL: Force Remotion version to match Lambda function (4.0.441).
-# The Agentuity build step can pull in newer Remotion versions via transitive
-# deps. This post-build install overwrites any mismatched versions.
-RUN bun add @remotion/lambda@4.0.441 @remotion/lambda-client@4.0.441 remotion@4.0.441 @remotion/serverless@4.0.441 @remotion/serverless-client@4.0.441 @remotion/streaming@4.0.441 --exact
 
 # --- Runtime stage (smaller image) ---
 FROM oven/bun:1.3.8-debian

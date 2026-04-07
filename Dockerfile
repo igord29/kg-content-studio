@@ -5,7 +5,7 @@ WORKDIR /app
 RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local BUN_VERSION=1.3.8 bash
 
 # Copy dependency manifests first for layer caching
-# CACHE_BUST: 2026-04-07b — force fresh install
+# CACHE_BUST: 2026-04-07c — force rebuild of ALL layers
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 

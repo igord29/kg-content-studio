@@ -12,14 +12,22 @@ RUN bun install --frozen-lockfile
 # Copy source and build scripts
 COPY . .
 
-# CRITICAL: Force Remotion version to match Lambda function (4.0.441) BEFORE build.
-# The Agentuity Vite bundler bakes node_modules into .agentuity/app.js at build time.
-# If any transitive dep pulled in a newer Remotion, the bundled version would mismatch
-# the deployed Lambda. This ensures the correct version is in node_modules BEFORE bundling.
-RUN bun add @remotion/lambda@4.0.441 @remotion/lambda-client@4.0.441 remotion@4.0.441 @remotion/serverless@4.0.441 @remotion/serverless-client@4.0.441 @remotion/streaming@4.0.441 --exact
-
 # Agentuity CLI's Vite bundler requires npm in PATH (provided by node base image)
 RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
+
+# CRITICAL: Force all Remotion packages to exactly 4.0.441 to match the deployed Lambda.
+# Dynamic imports load from node_modules at runtime — version must match AWS Lambda.
+# npm pack + install bypasses bun's resolution entirely.
+RUN INSTALLED=$(node -e "console.log(require('@remotion/lambda/package.json').version)") && \
+    echo "=== Remotion version after build: $INSTALLED ===" && \
+    if [ "$INSTALLED" != "4.0.441" ]; then \
+      echo "MISMATCH detected ($INSTALLED != 4.0.441). Forcing exact version..." && \
+      npm install --save-exact @remotion/lambda@4.0.441 @remotion/lambda-client@4.0.441 remotion@4.0.441 @remotion/serverless@4.0.441 @remotion/serverless-client@4.0.441 @remotion/streaming@4.0.441 2>&1 && \
+      AFTER=$(node -e "console.log(require('@remotion/lambda/package.json').version)") && \
+      echo "=== Remotion version after fix: $AFTER ===" ; \
+    else \
+      echo "=== OK: Remotion 4.0.441 matches Lambda ===" ; \
+    fi
 
 # --- Runtime stage (smaller image) ---
 FROM oven/bun:1.3.8-debian

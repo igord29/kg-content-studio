@@ -5,7 +5,7 @@ WORKDIR /app
 RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local BUN_VERSION=1.3.8 bash
 
 # Copy dependency manifests first for layer caching
-# CACHE_BUST: 2026-04-07 — force fresh install to fix remotion 4.0.441 vs 4.0.445 mismatch
+# CACHE_BUST: 2026-04-07b — force fresh install
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
@@ -14,6 +14,11 @@ COPY . .
 
 # Agentuity CLI's Vite bundler requires npm in PATH (provided by node base image)
 RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
+
+# CRITICAL: Force Remotion version to match Lambda function (4.0.441).
+# The Agentuity build step can pull in newer Remotion versions via transitive
+# deps. This post-build install overwrites any mismatched versions.
+RUN bun add @remotion/lambda@4.0.441 @remotion/lambda-client@4.0.441 remotion@4.0.441 @remotion/serverless@4.0.441 @remotion/serverless-client@4.0.441 @remotion/streaming@4.0.441 --exact
 
 # --- Runtime stage (smaller image) ---
 FROM oven/bun:1.3.8-debian

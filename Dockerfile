@@ -15,18 +15,18 @@ COPY . .
 # Agentuity CLI's Vite bundler requires npm in PATH (provided by node base image)
 RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
 
-# CRITICAL: Force all Remotion packages to exactly 4.0.441 to match the deployed Lambda.
+# CRITICAL: Force all Remotion packages to exactly 4.0.446 to match the deployed Lambda.
 # Dynamic imports load from node_modules at runtime — version must match AWS Lambda.
 # npm pack + install bypasses bun's resolution entirely.
 RUN INSTALLED=$(node -e "console.log(require('@remotion/lambda/package.json').version)") && \
     echo "=== Remotion version after build: $INSTALLED ===" && \
-    if [ "$INSTALLED" != "4.0.441" ]; then \
-      echo "MISMATCH detected ($INSTALLED != 4.0.441). Forcing exact version..." && \
-      npm install --save-exact @remotion/lambda@4.0.441 @remotion/lambda-client@4.0.441 remotion@4.0.441 @remotion/serverless@4.0.441 @remotion/serverless-client@4.0.441 @remotion/streaming@4.0.441 2>&1 && \
+    if [ "$INSTALLED" != "4.0.446" ]; then \
+      echo "MISMATCH detected ($INSTALLED != 4.0.446). Forcing exact version..." && \
+      npm install --save-exact @remotion/lambda@4.0.446 @remotion/lambda-client@4.0.446 remotion@4.0.446 @remotion/serverless@4.0.446 @remotion/serverless-client@4.0.446 @remotion/streaming@4.0.446 2>&1 && \
       AFTER=$(node -e "console.log(require('@remotion/lambda/package.json').version)") && \
       echo "=== Remotion version after fix: $AFTER ===" ; \
     else \
-      echo "=== OK: Remotion 4.0.441 matches Lambda ===" ; \
+      echo "=== OK: Remotion 4.0.446 matches Lambda ===" ; \
     fi
 
 # --- Runtime stage (smaller image) ---

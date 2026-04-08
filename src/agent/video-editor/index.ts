@@ -1871,10 +1871,13 @@ EDITING RULES:
 - Scrub through the ENTIRE duration of each source video — don't just grab the first few seconds.
 - The same fileId CAN appear multiple times with different trimStart values to pull different moments.
 - Each clip entry uses trimStart (seconds into the source) and duration (seconds to use).
-- When scene analysis is NOT available, SPREAD trim points across the video duration:
-  - For a 60s clip: sample regions around 5s, 15s, 25s, 35s, 45s, 55s
-  - For a 100s clip: sample regions around 8s, 20s, 35s, 50s, 65s, 80s
-  - This maximizes variety since you can't know what's at each timestamp.
+- MINIMUM TIMESTAMP GAP (CRITICAL): When using the same source fileId for multiple clips, each clip's trimStart MUST be at least 15 seconds apart. This prevents the "same scene repeating" problem. For a 180s video, use trim points like 5s, 25s, 50s, 80s, 115s, 155s — NOT 5s, 9s, 14s, 18s.
+- When scene analysis is NOT available, SPREAD trim points EVENLY across the FULL video duration:
+  - For a 60s clip with 3 uses: trimStart at ~5s, ~25s, ~50s
+  - For a 100s clip with 4 uses: trimStart at ~5s, ~30s, ~60s, ~85s
+  - For a 180s clip with 5 uses: trimStart at ~10s, ~45s, ~85s, ~125s, ~160s
+  - FORMULA: divide the video duration by (number of clips + 1) to get the spacing. Never cluster multiple clips in the first 30 seconds.
+  - This maximizes visual variety since you can't know what's at each timestamp.
 - Hold clips long enough for the viewer to process them. A 4-second clip is more powerful than two 2-second flashes.
 - Include quiet/breathing moments between high-energy clips. The contrast makes both stronger.
 - End with intention — the last clip should feel like a resolution, not like you ran out of footage.

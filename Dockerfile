@@ -5,7 +5,7 @@ WORKDIR /app
 RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local BUN_VERSION=1.3.8 bash
 
 # Copy dependency manifests first for layer caching
-# CACHE_BUST: 2026-04-07c — force rebuild of ALL layers
+# CACHE_BUST: 2026-04-08a
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
@@ -15,18 +15,27 @@ COPY . .
 # Agentuity CLI's Vite bundler requires npm in PATH (provided by node base image)
 RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
 
-# CRITICAL: Force all Remotion packages to exactly 4.0.446 to match the deployed Lambda.
-# Dynamic imports load from node_modules at runtime — version must match AWS Lambda.
-# npm pack + install bypasses bun's resolution entirely.
+# Pin Remotion to exactly match the deployed Lambda function.
+# The Agentuity build step can re-resolve packages. If the version drifted,
+# overwrite with the exact version using npm (which doesn't re-resolve transitive deps).
+# FAIL the build if we can't match — deploying a mismatched version wastes time.
+ARG REMOTION_TARGET_VERSION=4.0.446
 RUN INSTALLED=$(node -e "console.log(require('@remotion/lambda/package.json').version)") && \
-    echo "=== Remotion version after build: $INSTALLED ===" && \
-    if [ "$INSTALLED" != "4.0.446" ]; then \
-      echo "MISMATCH detected ($INSTALLED != 4.0.446). Forcing exact version..." && \
-      npm install --save-exact @remotion/lambda@4.0.446 @remotion/lambda-client@4.0.446 remotion@4.0.446 @remotion/serverless@4.0.446 @remotion/serverless-client@4.0.446 @remotion/streaming@4.0.446 2>&1 && \
+    echo "Remotion version after build: $INSTALLED (target: $REMOTION_TARGET_VERSION)" && \
+    if [ "$INSTALLED" != "$REMOTION_TARGET_VERSION" ]; then \
+      echo "Version mismatch — fixing with npm..." && \
+      npm install --no-save \
+        @remotion/lambda@$REMOTION_TARGET_VERSION \
+        @remotion/lambda-client@$REMOTION_TARGET_VERSION \
+        remotion@$REMOTION_TARGET_VERSION \
+        @remotion/serverless@$REMOTION_TARGET_VERSION \
+        @remotion/serverless-client@$REMOTION_TARGET_VERSION \
+        @remotion/streaming@$REMOTION_TARGET_VERSION 2>&1 | tail -3 && \
       AFTER=$(node -e "console.log(require('@remotion/lambda/package.json').version)") && \
-      echo "=== Remotion version after fix: $AFTER ===" ; \
+      echo "Remotion version after fix: $AFTER" && \
+      [ "$AFTER" = "$REMOTION_TARGET_VERSION" ] || (echo "FATAL: still $AFTER" && exit 1); \
     else \
-      echo "=== OK: Remotion 4.0.446 matches Lambda ===" ; \
+      echo "OK: Remotion $INSTALLED matches Lambda"; \
     fi
 
 # --- Runtime stage (smaller image) ---

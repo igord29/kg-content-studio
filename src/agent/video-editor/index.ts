@@ -1761,6 +1761,46 @@ const agent = createAgent('video-editor', {
 				}
 			}
 
+			// Auto-run scene analysis on selected videos that don't have it yet.
+			// This gives the director real scene boundaries, high-motion moments,
+			// and hook candidates instead of blindly guessing timestamps.
+			const videosNeedingAnalysis = videoIds.filter(id => {
+				const ce = catalogMap.get(id);
+				return ce && !ce.sceneAnalysis;
+			});
+
+			if (videosNeedingAnalysis.length > 0) {
+				ctx.logger.info('[video-editor] Running FFmpeg scene analysis on %d/%d videos (missing scene data)...',
+					videosNeedingAnalysis.length, videoIds.length);
+
+				const { analyzeVideoScenes, generateNamedSegments: genSegments } = await import('./scene-analyzer');
+
+				for (const fileId of videosNeedingAnalysis) {
+					const ce = catalogMap.get(fileId);
+					if (!ce) continue;
+
+					try {
+						ctx.logger.info('[video-editor] Analyzing scenes: %s (%s)', ce.filename, fileId.slice(0, 8));
+						const analysis = await analyzeVideoScenes(fileId, ce.filename);
+
+						// Generate named segments for editorial intelligence
+						const segments = genSegments(analysis, ce.activity || '', ce.contentType || 'unknown');
+						analysis.namedSegments = segments;
+
+						// Update catalog entry in memory (catalogMap refs same objects)
+						ce.sceneAnalysis = analysis as any;
+
+						ctx.logger.info('[video-editor] Scene analysis complete for %s: %d scene changes, %d segments, %d hooks',
+							ce.filename, analysis.sceneChanges.length,
+							segments.length, analysis.recommendedHooks.length);
+					} catch (err) {
+						ctx.logger.warn('[video-editor] Scene analysis failed for %s (non-fatal): %s',
+							ce.filename, err instanceof Error ? err.message : String(err));
+						// Continue without scene data — director will use timestamp spreading
+					}
+				}
+			}
+
 			// Build footage context from catalog data
 			const footageContext = videoDetails.map((v, index) => {
 				const ce = catalogMap.get(v.id || '');

@@ -241,10 +241,19 @@ export async function invokePreprocessorForClips(
 
 /**
  * Check if the preprocessor Lambda is available.
- * Returns true if the env var is set.
+ *
+ * DISABLED: Bun's AWS SDK HTTP handler cannot hold Lambda invoke connections
+ * open long enough for FFmpeg processing (~60-120s). Every invocation gets
+ * "socket hang up" after ~12s. The render pipeline falls back to raw clips
+ * automatically, but wastes 90+ seconds trying and failing first.
+ *
+ * Re-enable when either:
+ * 1. Bun fixes long-lived HTTP connections in their AWS SDK compat layer
+ * 2. We switch to async Lambda invocation (InvocationType: 'Event') + S3 polling
  */
 export function isPreprocessorAvailable(): boolean {
-	return !!process.env.PREPROCESSOR_FUNCTION_NAME;
+	return false;
+	// Original: return !!process.env.PREPROCESSOR_FUNCTION_NAME;
 }
 
 /**

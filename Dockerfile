@@ -19,7 +19,7 @@ RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
 # The Agentuity build step can re-resolve packages. If the version drifted,
 # overwrite with the exact version using npm (which doesn't re-resolve transitive deps).
 # FAIL the build if we can't match — deploying a mismatched version wastes time.
-ARG REMOTION_TARGET_VERSION=4.0.446
+ARG REMOTION_TARGET_VERSION=4.0.447
 RUN INSTALLED=$(node -e "console.log(require('@remotion/lambda/package.json').version)") && \
     echo "Remotion version after build: $INSTALLED (target: $REMOTION_TARGET_VERSION)" && \
     if [ "$INSTALLED" != "$REMOTION_TARGET_VERSION" ]; then \

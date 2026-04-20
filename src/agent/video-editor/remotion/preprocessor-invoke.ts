@@ -93,8 +93,64 @@ function getPreprocessorFunctionName(): string {
 }
 
 /**
+ * Poll S3 for a processed clip to appear. The preprocessor Lambda writes
+ * the output to a known S3 key — we just check until it exists.
+ */
+async function pollS3ForClip(
+	bucketName: string,
+	outputS3Key: string,
+	region: string,
+	maxWaitMs: number = 300_000,
+	pollIntervalMs: number = 5_000,
+	logger?: Logger,
+): Promise<{ sizeBytes: number }> {
+	const { S3Client, HeadObjectCommand } = await import('@aws-sdk/client-s3');
+	const s3 = new S3Client({
+		region,
+		credentials: {
+			accessKeyId: process.env.REMOTION_AWS_ACCESS_KEY_ID!,
+			secretAccessKey: process.env.REMOTION_AWS_SECRET_ACCESS_KEY!,
+		},
+	});
+
+	const startTime = Date.now();
+	let attempts = 0;
+
+	while (Date.now() - startTime < maxWaitMs) {
+		attempts++;
+		try {
+			const head = await s3.send(new HeadObjectCommand({
+				Bucket: bucketName,
+				Key: outputS3Key,
+			}));
+			// File exists — preprocessing is done
+			return { sizeBytes: head.ContentLength || 0 };
+		} catch (err: any) {
+			if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
+				// Not ready yet — wait and retry
+				if (attempts % 6 === 0) {
+					const elapsed = Math.round((Date.now() - startTime) / 1000);
+					logger?.info('[preprocessor] Still waiting for %s (%ds elapsed)...', outputS3Key.split('/').pop(), elapsed);
+				}
+				await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+			} else {
+				throw err;
+			}
+		}
+	}
+
+	throw new Error(`Preprocessor timed out after ${Math.round(maxWaitMs / 1000)}s waiting for ${outputS3Key}`);
+}
+
+/**
  * Invoke the preprocessor Lambda for a single clip.
- * Uses synchronous invocation (RequestResponse) — waits for result.
+ * Uses ASYNC invocation (Event) + S3 polling to avoid Bun's socket timeout.
+ *
+ * Flow:
+ *   1. Fire Lambda with InvocationType='Event' (returns 202 immediately)
+ *   2. Lambda runs FFmpeg in background (60-120s)
+ *   3. Lambda writes processed clip to predictable S3 key
+ *   4. We poll S3 with HeadObject until the file appears
  */
 async function invokePreprocessorForClip(
 	clip: PreprocessorClipConfig,
@@ -106,7 +162,8 @@ async function invokePreprocessorForClip(
 	const { InvokeCommand } = await import('@aws-sdk/client-lambda');
 
 	const functionName = getPreprocessorFunctionName();
-	const outputS3Key = `temp-clips/${renderPrefix}/processed_${clip.fileId}_${Date.now()}.mp4`;
+	// Use a deterministic key so we know where to poll
+	const outputS3Key = `temp-clips/${renderPrefix}/processed_${clip.fileId}_t${clip.trimStart}.mp4`;
 
 	const payload: PreprocessRequest = {
 		bucketName,
@@ -120,60 +177,48 @@ async function invokePreprocessorForClip(
 		stabilize: clip.stabilize,
 	};
 
-	logger?.info('[preprocessor] Invoking Lambda for %s (trim=%ds, dur=%ds, speed=%sx, stabilize=%s)...',
+	logger?.info('[preprocessor] Firing async Lambda for %s (trim=%ds, dur=%ds, speed=%sx, stabilize=%s)...',
 		clip.filename || clip.fileId, clip.trimStart, clip.duration,
 		clip.speed ?? 1.0, clip.stabilize !== false ? 'yes' : 'no');
 
 	const lambda = await getLambdaClient(region);
+	const startTime = Date.now();
 
-	// AbortController timeout: 350s (safely above Lambda's 300s max).
-	// This replaces NodeHttpHandler's requestTimeout which broke in Bun.
-	const abortController = new AbortController();
-	const timeout = setTimeout(() => abortController.abort(), 350_000);
+	// Fire-and-forget: InvocationType 'Event' returns 202 immediately.
+	// The Lambda runs asynchronously — no socket to hang up.
+	const result = await lambda.send(new InvokeCommand({
+		FunctionName: functionName,
+		InvocationType: 'Event',
+		Payload: Buffer.from(JSON.stringify(payload)),
+	}));
 
-	let result;
-	try {
-		result = await lambda.send(new InvokeCommand({
-			FunctionName: functionName,
-			InvocationType: 'RequestResponse', // Synchronous — wait for result
-			Payload: Buffer.from(JSON.stringify(payload)),
-		}), { abortSignal: abortController.signal });
-	} finally {
-		clearTimeout(timeout);
+	if (result.StatusCode !== 202) {
+		throw new Error(`Preprocessor async invoke failed for ${clip.filename || clip.fileId}: status ${result.StatusCode}`);
 	}
 
-	// Parse Lambda response
-	if (result.FunctionError) {
-		const errorPayload = result.Payload
-			? JSON.parse(Buffer.from(result.Payload).toString())
-			: { errorMessage: 'Unknown Lambda error' };
-		throw new Error(`Preprocessor Lambda error for ${clip.filename || clip.fileId}: ${errorPayload.errorMessage || JSON.stringify(errorPayload)}`);
-	}
+	logger?.info('[preprocessor] Lambda invoked (202). Polling S3 for output: %s', outputS3Key.split('/').pop());
 
-	if (!result.Payload) {
-		throw new Error(`Preprocessor Lambda returned no payload for ${clip.filename || clip.fileId}`);
-	}
+	// Poll S3 until the processed clip appears (up to 5 minutes)
+	const { sizeBytes } = await pollS3ForClip(bucketName, outputS3Key, region, 300_000, 5_000, logger);
 
-	const response: PreprocessResult = JSON.parse(Buffer.from(result.Payload).toString());
+	const elapsed = Date.now() - startTime;
+	const outputS3Url = `https://${bucketName}.s3.${region}.amazonaws.com/${outputS3Key}`;
+	const effectiveDuration = clip.duration / (clip.speed ?? 1.0);
 
-	if (!response.success) {
-		throw new Error(`Preprocessor failed for ${clip.filename || clip.fileId}: ${response.error}`);
-	}
-
-	logger?.info('[preprocessor] %s processed: %dMB, effectiveDur=%ds, took %dms',
+	logger?.info('[preprocessor] %s ready: %dMB, effectiveDur=%ds, total=%dms',
 		clip.filename || clip.fileId,
-		(response.outputSizeBytes / (1024 * 1024)).toFixed(1),
-		response.effectiveDuration.toFixed(1),
-		response.processingTimeMs);
+		(sizeBytes / (1024 * 1024)).toFixed(1),
+		effectiveDuration.toFixed(1),
+		elapsed);
 
 	return {
 		fileId: clip.fileId,
 		inputS3Key: clip.inputS3Key,
-		outputS3Key: response.outputS3Key,
-		outputS3Url: response.outputS3Url,
-		effectiveDuration: response.effectiveDuration,
-		outputSizeBytes: response.outputSizeBytes,
-		processingTimeMs: response.processingTimeMs,
+		outputS3Key,
+		outputS3Url,
+		effectiveDuration,
+		outputSizeBytes: sizeBytes,
+		processingTimeMs: elapsed,
 	};
 }
 
@@ -242,18 +287,13 @@ export async function invokePreprocessorForClips(
 /**
  * Check if the preprocessor Lambda is available.
  *
- * DISABLED: Bun's AWS SDK HTTP handler cannot hold Lambda invoke connections
- * open long enough for FFmpeg processing (~60-120s). Every invocation gets
- * "socket hang up" after ~12s. The render pipeline falls back to raw clips
- * automatically, but wastes 90+ seconds trying and failing first.
- *
- * Re-enable when either:
- * 1. Bun fixes long-lived HTTP connections in their AWS SDK compat layer
- * 2. We switch to async Lambda invocation (InvocationType: 'Event') + S3 polling
+ * Re-enabled: switched from synchronous invocation (which caused Bun socket
+ * timeouts) to async invocation (InvocationType: 'Event') + S3 polling.
+ * The Lambda fires instantly and we poll for the result — no long-lived
+ * HTTP connections needed.
  */
 export function isPreprocessorAvailable(): boolean {
-	return false;
-	// Original: return !!process.env.PREPROCESSOR_FUNCTION_NAME;
+	return !!process.env.PREPROCESSOR_FUNCTION_NAME;
 }
 
 /**

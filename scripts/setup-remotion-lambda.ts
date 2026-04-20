@@ -183,7 +183,7 @@ async function main() {
 		console.log('  No compatible function found. Deploying new function...');
 		const deployed = await deployFunction({
 			region,
-			timeoutInSeconds: 240,
+			timeoutInSeconds: 900,
 			memorySizeInMb: 3008,
 			diskSizeInMb: 10240,
 			createCloudWatchLogGroup: true,

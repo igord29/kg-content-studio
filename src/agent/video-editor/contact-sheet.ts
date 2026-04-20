@@ -10,12 +10,15 @@
  *   Individual frames: ~16 images across 3+ API calls → ~$0.02-0.05
  *   Contact sheet: 1 image, 1 API call → ~$0.002-0.005
  *
+ * NOTE: Uses async exec (not execSync) because Bun's execSync can trigger
+ * process.exit(0) on child process completion, which crashes Agentuity's runtime.
+ *
  * File: src/agent/video-editor/contact-sheet.ts
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
 
 // --- Types ---
 
@@ -42,6 +45,37 @@ const DEFAULT_MAX_FRAMES = 30;
 const DEFAULT_THUMBNAIL_WIDTH = 192;
 const DEFAULT_GRID_COLS = 6;
 const DEFAULT_QUALITY = 5;
+
+// --- Helpers ---
+
+/**
+ * Run a shell command asynchronously. Returns stdout on success.
+ * Unlike execSync, this does not trigger process.exit() on Bun.
+ */
+function runCmd(cmd: string, timeoutMs: number = 60000): Promise<string> {
+	return new Promise((resolve, reject) => {
+		exec(cmd, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+			if (error) {
+				// FFmpeg writes to stderr even on success — check if the error is real
+				reject(new Error(stderr || error.message));
+			} else {
+				resolve(stdout);
+			}
+		});
+	});
+}
+
+/**
+ * Run a shell command, but don't reject on non-zero exit — just return.
+ * Used for FFmpeg commands that write to stderr on success.
+ */
+function runCmdSoft(cmd: string, timeoutMs: number = 60000): Promise<void> {
+	return new Promise((resolve) => {
+		exec(cmd, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, () => {
+			resolve();
+		});
+	});
+}
 
 /**
  * Calculate the optimal frame interval based on video duration.
@@ -103,41 +137,19 @@ export async function generateContactSheet(
 	}
 	const outputPath = path.join(tempDir, `contact_${fileId}_${Date.now()}.jpg`);
 
-	// Build FFmpeg filter chain:
-	// 1. fps=1/interval — extract frames at the desired interval
-	// 2. scale=thumbWidth:-1 — resize to thumbnail width
-	// 3. drawtext — burn timestamp onto each thumbnail
-	// 4. tile=colsxrows — arrange into grid
-	//
-	// The drawtext filter shows the timestamp in seconds (e.g., "5.0s")
-	// positioned at the bottom-left of each thumbnail with a semi-transparent
-	// background for readability.
+	// Build FFmpeg filter chain
 	const fpsRate = 1 / frameInterval;
-	// Use %{pts} (raw seconds) instead of %{pts\:hms} to avoid colon escaping
-	// issues on Windows cmd.exe. The AI gets exact timestamps via the prompt text.
 	const filterChain = [
 		`fps=${fpsRate.toFixed(4)}`,
 		`scale=${thumbWidth}:-1`,
-		// Semi-transparent black bar at bottom of each thumbnail
 		`drawbox=x=0:y=ih-18:w=iw:h=18:color=black@0.6:t=fill`,
-		// Timestamp in raw seconds (e.g., "5.00")
 		`drawtext=text=%{pts}s:fontsize=11:fontcolor=white:x=3:y=h-15`,
 		`tile=${gridCols}x${gridRows}`,
 	].join(',');
 
 	const cmd = `ffmpeg -y -ss ${startOffset.toFixed(2)} -i "${videoPath}" -frames:v ${totalFrames} -vf "${filterChain}" -q:v ${quality} "${outputPath}"`;
 
-	try {
-		execSync(cmd, {
-			timeout: 60000, // 60s timeout
-			stdio: 'pipe',
-		});
-	} catch (err: any) {
-		// FFmpeg sometimes outputs to stderr even on success
-		if (!fs.existsSync(outputPath)) {
-			throw new Error(`Contact sheet generation failed: ${err.stderr?.toString() || err.message}`);
-		}
-	}
+	await runCmdSoft(cmd, 60000);
 
 	if (!fs.existsSync(outputPath)) {
 		throw new Error('Contact sheet file was not created');
@@ -183,8 +195,7 @@ export async function generateContactSheetAtTimestamps(
 		fs.mkdirSync(tempDir, { recursive: true });
 	}
 
-	// For specific timestamps, we need to extract individual frames first
-	// then stitch them together, since FFmpeg's fps filter only does uniform intervals
+	// Extract individual frames then stitch — fps filter only does uniform intervals
 	const framePaths: string[] = [];
 	const extractedTimestamps: number[] = [];
 
@@ -193,10 +204,9 @@ export async function generateContactSheetAtTimestamps(
 		const framePath = path.join(tempDir, `cs_frame_${fileId}_${i}.jpg`);
 
 		try {
-			// Use drawtext without single quotes (Windows cmd.exe compatibility)
-			execSync(
+			await runCmdSoft(
 				`ffmpeg -y -ss ${ts.toFixed(2)} -i "${videoPath}" -frames:v 1 -vf "scale=${thumbWidth}:-1,drawbox=x=0:y=ih-18:w=iw:h=18:color=black@0.6:t=fill,drawtext=text=${ts.toFixed(1)}s:fontsize=11:fontcolor=white:x=3:y=h-15" -q:v ${quality} "${framePath}"`,
-				{ timeout: 15000, stdio: 'pipe' },
+				15000,
 			);
 			if (fs.existsSync(framePath)) {
 				framePaths.push(framePath);
@@ -211,27 +221,18 @@ export async function generateContactSheetAtTimestamps(
 		throw new Error('No frames could be extracted for contact sheet');
 	}
 
-	// Stitch individual frames into a grid using FFmpeg concat + tile
+	// Stitch individual frames into a grid
 	const outputPath = path.join(tempDir, `contact_scenes_${fileId}_${Date.now()}.jpg`);
 	const actualRows = Math.ceil(framePaths.length / gridCols);
 
-	// Build input list for FFmpeg concat
 	const inputArgs = framePaths.map(p => `-i "${p}"`).join(' ');
-	// Build filter for horizontal stacking per row, then vertical stacking
-	// Simpler approach: use FFmpeg's concat + tile
 	const filterInputs = framePaths.map((_, i) => `[${i}:v]`).join('');
 	const concatFilter = `${filterInputs}concat=n=${framePaths.length}:v=1:a=0[v];[v]tile=${gridCols}x${actualRows}`;
 
-	try {
-		execSync(
-			`ffmpeg -y ${inputArgs} -filter_complex "${concatFilter}" -q:v ${quality} "${outputPath}"`,
-			{ timeout: 30000, stdio: 'pipe' },
-		);
-	} catch (err: any) {
-		if (!fs.existsSync(outputPath)) {
-			throw new Error(`Scene contact sheet stitching failed: ${err.stderr?.toString() || err.message}`);
-		}
-	}
+	await runCmdSoft(
+		`ffmpeg -y ${inputArgs} -filter_complex "${concatFilter}" -q:v ${quality} "${outputPath}"`,
+		30000,
+	);
 
 	// Clean up individual frames
 	for (const fp of framePaths) {
@@ -242,12 +243,9 @@ export async function generateContactSheetAtTimestamps(
 		throw new Error('Scene contact sheet file was not created');
 	}
 
-	// Use the timestamps that were actually extracted (not a positional slice)
-	const actualTimestamps = extractedTimestamps;
-
 	return {
 		imagePath: outputPath,
-		timestamps: actualTimestamps,
+		timestamps: extractedTimestamps,
 		frameInterval: 0, // not uniform
 		gridCols,
 		gridRows: actualRows,

@@ -1367,7 +1367,7 @@ const agent = createAgent('video-editor', {
 					const { downloadVideo } = await import('./google-drive');
 					const fs = await import('fs');
 					const pathMod = await import('path');
-					const { execSync } = await import('child_process');
+					const { exec: execAsync } = await import('child_process');
 
 					const tempDir = pathMod.join(process.cwd(), '.temp-cataloger');
 					if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
@@ -1375,12 +1375,14 @@ const agent = createAgent('video-editor', {
 
 					await downloadVideo(videoId, videoPath);
 
-					// Get duration
-					const durationStr = execSync(
-						`ffprobe -v error -show_entries format=duration -of csv=p=0 "${videoPath}"`,
-						{ stdio: 'pipe' },
-					).toString().trim();
-					const duration = parseFloat(durationStr) || 0;
+					// Get duration (async exec to avoid Bun process.exit issue)
+					const duration = await new Promise<number>((resolve) => {
+						execAsync(
+							`ffprobe -v error -show_entries format=duration -of csv=p=0 "${videoPath}"`,
+							{ timeout: 15000 },
+							(_err, stdout) => resolve(parseFloat(stdout?.trim() || '0') || 0),
+						);
+					});
 
 					const contactSheet = await generateContactSheet(videoPath, videoId, duration);
 					const timeline = await analyzeContactSheet(contactSheet, entry.activity || '');
@@ -1433,7 +1435,7 @@ const agent = createAgent('video-editor', {
 						const { downloadVideo } = await import('./google-drive');
 						const fs = await import('fs');
 						const pathMod = await import('path');
-						const { execSync } = await import('child_process');
+						const { exec: execAsync } = await import('child_process');
 
 						const tempDir = pathMod.join(process.cwd(), '.temp-cataloger');
 						if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
@@ -1441,11 +1443,13 @@ const agent = createAgent('video-editor', {
 
 						await downloadVideo(entry.fileId, videoPath);
 
-						const durationStr = execSync(
-							`ffprobe -v error -show_entries format=duration -of csv=p=0 "${videoPath}"`,
-							{ stdio: 'pipe' },
-						).toString().trim();
-						const duration = parseFloat(durationStr) || 0;
+						const duration = await new Promise<number>((resolve) => {
+							execAsync(
+								`ffprobe -v error -show_entries format=duration -of csv=p=0 "${videoPath}"`,
+								{ timeout: 15000 },
+								(_err, stdout) => resolve(parseFloat(stdout?.trim() || '0') || 0),
+							);
+						});
 
 						const contactSheet = await generateContactSheet(videoPath, entry.fileId, duration);
 						const timeline = await analyzeContactSheet(contactSheet, entry.activity || '');

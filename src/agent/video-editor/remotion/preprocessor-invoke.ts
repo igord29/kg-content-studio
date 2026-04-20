@@ -225,9 +225,10 @@ async function invokePreprocessorForClip(
 /**
  * Invoke the preprocessor Lambda for multiple clips.
  *
- * Processes clips SEQUENTIALLY (concurrency 1) to minimize memory pressure
- * on the Railway server. Each Lambda invocation is just an HTTP call (~5KB),
- * but the server must stay alive for the full duration (up to 300s per clip).
+ * Fires ALL Lambdas in PARALLEL (async invocation returns instantly),
+ * then polls S3 for all outputs simultaneously. This is dramatically
+ * faster than sequential processing: 11 clips finish in ~120s total
+ * instead of ~120s × 11 = ~22 minutes.
  *
  * @param clips - Clip configs with S3 keys from raw upload
  * @param bucketName - S3 bucket (same as Remotion bucket)
@@ -243,42 +244,40 @@ export async function invokePreprocessorForClips(
 ): Promise<PreprocessedS3Clip[]> {
 	const renderPrefix = `render_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
-	logger?.info('[preprocessor] Preprocessing %d clips via Lambda (sequential, prefix=%s)...',
+	logger?.info('[preprocessor] Preprocessing %d clips via Lambda (PARALLEL fire + poll, prefix=%s)...',
 		clips.length, renderPrefix);
 	const startTime = Date.now();
 
-	// Warm up the shared Lambda client once before processing clips
+	// Warm up the shared Lambda client once before firing
 	await getLambdaClient(region);
 
-	const results: PreprocessedS3Clip[] = [];
-	const errors: string[] = [];
+	// Fire ALL Lambdas in parallel — each returns 202 instantly
+	const promises = clips.map((clip) =>
+		invokePreprocessorForClip(clip, bucketName, region, renderPrefix, logger)
+			.catch((err): PreprocessedS3Clip | null => {
+				const msg = err instanceof Error ? err.message : String(err);
+				logger?.error?.('[preprocessor] Failed to preprocess %s: %s', clip.filename || clip.fileId, msg);
+				return null;
+			}),
+	);
 
-	// Process clips one at a time to minimize server memory usage.
-	// Lambda does all the heavy work — we're just waiting on HTTP responses.
-	for (let i = 0; i < clips.length; i++) {
-		const clip = clips[i]!;
-
-		logger?.info('[preprocessor] Processing clip %d/%d...', i + 1, clips.length);
-
-		try {
-			const result = await invokePreprocessorForClip(clip, bucketName, region, renderPrefix, logger);
-			results.push(result);
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			errors.push(`${clip.filename || clip.fileId}: ${msg}`);
-			logger?.error?.('[preprocessor] Failed to preprocess %s: %s', clip.filename || clip.fileId, msg);
-		}
-	}
+	const settled = await Promise.all(promises);
+	const results = settled.filter((r): r is PreprocessedS3Clip => r !== null);
+	const failedCount = settled.length - results.length;
 
 	const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 	const totalOutputSize = results.reduce((s, r) => s + r.outputSizeBytes, 0);
 
-	logger?.info('[preprocessor] Preprocessing complete: %d/%d clips, %dMB total output, %ss',
+	logger?.info('[preprocessor] Preprocessing complete: %d/%d clips, %dMB total output, %ss (parallel)',
 		results.length, clips.length,
 		(totalOutputSize / (1024 * 1024)).toFixed(0), elapsed);
 
-	if (errors.length > 0) {
-		throw new Error(`Failed to preprocess ${errors.length} clips:\n${errors.join('\n')}`);
+	if (failedCount > 0 && results.length === 0) {
+		throw new Error(`All ${failedCount} clips failed to preprocess`);
+	}
+	if (failedCount > 0) {
+		logger?.warn?.('[preprocessor] %d/%d clips failed preprocessing — continuing with %d successful clips',
+			failedCount, clips.length, results.length);
 	}
 
 	return results;

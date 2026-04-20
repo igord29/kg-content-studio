@@ -354,7 +354,7 @@ export async function submitRemotionRender(
 		framesPerLambda,
 		// Generous timeout: Lambda workers must download full videos from Drive via our proxy
 		// before extracting frames. Default 30s is too short for large clips.
-		timeoutInMilliseconds: 120_000,
+		timeoutInMilliseconds: 240_000,
 	});
 
 	// Step 4: Store mapping in registry
@@ -558,7 +558,7 @@ export async function submitRemotionRenderDirect(
 		privacy: 'public',
 		framesPerLambda,
 		// Generous timeout: still needed for OffthreadVideo to process large clips
-		timeoutInMilliseconds: 120_000,
+		timeoutInMilliseconds: 240_000,
 	});
 
 	// Step 5: Store mapping in registry (update if pre-registered, otherwise create)
@@ -742,7 +742,7 @@ export async function submitRemotionRenderPreprocessed(
 		inputProps: props as unknown as Record<string, unknown>,
 		privacy: 'public',
 		framesPerLambda,
-		timeoutInMilliseconds: 120_000,
+		timeoutInMilliseconds: 240_000,
 	});
 
 	// Step 5: Store mapping in registry
@@ -964,7 +964,7 @@ export async function submitRemotionRenderWithPreprocessing(
 			inputProps: props as unknown as Record<string, unknown>,
 			privacy: 'public',
 			framesPerLambda,
-			timeoutInMilliseconds: 120_000,
+			timeoutInMilliseconds: 240_000,
 		});
 
 		// Step 6: Update render registry with Lambda render ID

@@ -126,6 +126,19 @@ export interface CatalogEntry {
     brief: string;          // 10-word-max description
     subjectPosition?: string; // where subjects are in frame: center, bottom-center, bottom-left, etc.
   }>;
+  visualTimeline?: {
+    frames: Array<{
+      timestamp: number;
+      description: string;
+      isAction: boolean;
+      actionType: string;
+      energy: number;        // 1-5
+      hookPotential: boolean;
+    }>;
+    summary: string;
+    bestMoments: number[];   // top timestamps by action quality
+    actionWindows: Array<{ start: number; end: number; type: string; peakEnergy: number }>;
+  };
 }
 
 export interface FolderStructure {

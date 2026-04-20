@@ -758,6 +758,10 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 	const [refreshingThumbnails, setRefreshingThumbnails] = useState(false);
 	const [thumbnailRefreshResult, setThumbnailRefreshResult] = useState<string | null>(null);
 
+	// Visual timeline analysis (contact sheet → GPT-4o-mini)
+	const [vtRunning, setVtRunning] = useState(false);
+	const [vtResult, setVtResult] = useState<string | null>(null);
+
 	// Clip usage / freshness tracking
 	const [usageSummaryMap, setUsageSummaryMap] = useState<Map<string, { fileId: string; filename: string; totalUses: number; lastUsedDate: string; freshnessScore: number }>>(new Map());
 	const [freshOnlyFilter, setFreshOnlyFilter] = useState(false);
@@ -1806,6 +1810,29 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 			setCatalogRunning(false);
 		}
 	}, [uncatalogedCount, startCatalogPolling]);
+
+	// Run visual timeline analysis on all videos missing visual data
+	const handleAnalyzeVisualTimelines = useCallback(async () => {
+		setVtRunning(true);
+		setVtResult(null);
+		try {
+			const response = await fetch('/api/video-editor', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ task: 'analyze-visual' }),
+			});
+			const data = await response.json();
+			if (data.success) {
+				setVtResult(data.message || `Done: ${data.analyzed || 0} analyzed, ${data.failed || 0} failed`);
+			} else {
+				setVtResult(`Error: ${data.error || data.message || 'Unknown error'}`);
+			}
+		} catch (err) {
+			setVtResult(`Error: ${err instanceof Error ? err.message : 'Request failed'}`);
+		} finally {
+			setVtRunning(false);
+		}
+	}, []);
 
 	// Refresh thumbnails for videos that are missing previews
 	const handleRefreshThumbnails = useCallback(async () => {
@@ -3325,6 +3352,52 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 						>
 							{catalogRunning ? 'Cataloging in progress...' : 'Run Full Catalog (All Videos)'}
 						</button>
+
+						{/* Visual Timeline Analysis button */}
+						<button
+							onClick={handleAnalyzeVisualTimelines}
+							disabled={vtRunning || catalogRunning || !driveConnected}
+							style={{
+								width: '100%',
+								padding: '8px',
+								borderRadius: 6,
+								border: `1px solid ${vtRunning ? S.borderColor : '#6B8AFF'}`,
+								background: vtRunning ? S.borderColor : 'transparent',
+								color: vtRunning ? S.textMuted : '#6B8AFF',
+								cursor: vtRunning || catalogRunning || !driveConnected ? 'not-allowed' : 'pointer',
+								fontFamily: S.mono,
+								fontSize: 9,
+								fontWeight: 700,
+								letterSpacing: 0.5,
+								transition: 'all 0.15s',
+								marginTop: 6,
+								marginBottom: 4,
+							}}
+							type="button"
+						>
+							{vtRunning ? 'Analyzing visual timelines...' : 'Analyze Visual Timelines (All Videos)'}
+						</button>
+						<p style={{
+							fontFamily: S.mono,
+							fontSize: 9,
+							color: S.textMuted,
+							lineHeight: 1.4,
+							marginTop: 2,
+							marginBottom: vtResult ? 4 : 8,
+						}}>
+							Generates dense contact sheets for each video and analyzes them with AI. Improves edit plan accuracy for action/sports content.
+						</p>
+						{vtResult && (
+							<p style={{
+								fontFamily: S.mono,
+								fontSize: 9,
+								color: vtResult.startsWith('Error') ? '#ff6b6b' : '#6BCB77',
+								lineHeight: 1.4,
+								marginBottom: 8,
+							}}>
+								{vtResult}
+							</p>
+						)}
 
 						{/* Refresh Thumbnails button */}
 						{(() => {

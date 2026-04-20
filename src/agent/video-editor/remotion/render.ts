@@ -20,6 +20,14 @@ import type { CLCVideoProps } from './types';
 import type { PreprocessedClip } from '../preprocess';
 import { PLATFORM_SETTINGS } from '../shotstack';
 import { buildProcessedFileProxyUrl } from '../drive-proxy';
+import {
+	logRenderStart,
+	logClipDiagnostics,
+	logRenderSubmitted,
+	logRenderDone,
+	logRenderFailed,
+	buildClipDiagnostics,
+} from '../../../lib/render-logger';
 
 // --- Types ---
 
@@ -99,6 +107,7 @@ export function updateRenderEntry(renderId: string, update: Partial<LambdaRender
 
 /**
  * Mark a pre-registered render as failed.
+ * Also persists the failure to render_logs (fire-and-forget).
  */
 export function failRender(renderId: string, error: string): void {
 	const entry = renderRegistry.get(renderId);
@@ -106,6 +115,8 @@ export function failRender(renderId: string, error: string): void {
 		entry.status = 'failed';
 		entry.error = error;
 	}
+	// Persist to render_logs — fire and forget, already swallows its own errors.
+	void logRenderFailed(renderId, error);
 }
 
 // --- Lambda Infrastructure ---
@@ -406,6 +417,22 @@ export async function submitRemotionRenderDirect(
 
 	logger?.info('[remotion-lambda] Render %s: getting infrastructure config...', renderId);
 
+	// Persist render start to Supabase (fire-and-forget). Captures the full
+	// edit plan so we can diagnose failures even after the Railway container
+	// has been replaced and runtime logs are gone.
+	void logRenderStart({
+		renderId,
+		platform: config.platform,
+		mode: config.mode,
+		editPlan: {
+			clips: config.clips,
+			textOverlays: config.textOverlays || [],
+			musicUrl: config.musicUrl ?? null,
+			mode: config.mode,
+			platform: config.platform,
+		},
+	});
+
 	// Step 1: Get Lambda infrastructure config
 	const infra = await getInfra(logger);
 
@@ -424,6 +451,10 @@ export async function submitRemotionRenderDirect(
 		infra.region,
 		logger,
 	);
+
+	// Persist per-clip upload results — this is the key diagnostic data for
+	// issues like "same scene repeating" or "clip missing from output."
+	void logClipDiagnostics(renderId, buildClipDiagnostics(config.clips, s3Clips));
 
 	// Step 3: Build props with S3 URLs
 	const platformSettings = PLATFORM_SETTINGS[config.platform] || PLATFORM_SETTINGS['youtube']!;
@@ -547,6 +578,10 @@ export async function submitRemotionRenderDirect(
 		};
 		renderRegistry.set(renderId, entry);
 	}
+
+	// Persist the exact props we handed Lambda + its render ID. This is the
+	// last checkpoint under our control — anything after this is Lambda-side.
+	void logRenderSubmitted(renderId, result.renderId, props);
 
 	// Schedule S3 cleanup after 30 minutes (generous: renders take 2-5 min)
 	const s3ClipsList = [...s3Clips.values()];
@@ -1015,6 +1050,8 @@ export async function checkRemotionStatus(renderId: string, logger?: Logger): Pr
 			entry.status = 'failed';
 			entry.error = errorMsg;
 			logger?.error?.('[remotion-lambda] Render %s failed: %s', renderId, errorMsg);
+			// Persist terminal failure (fire-and-forget).
+			void logRenderFailed(renderId, errorMsg);
 			return { id: renderId, status: 'failed', error: errorMsg };
 		}
 
@@ -1023,6 +1060,8 @@ export async function checkRemotionStatus(renderId: string, logger?: Logger): Pr
 			entry.status = 'done';
 			entry.outputUrl = progress.outputFile;
 			logger?.info('[remotion-lambda] Render %s complete: %s', renderId, progress.outputFile);
+			// Persist terminal success (fire-and-forget).
+			void logRenderDone(renderId, progress.outputFile);
 			return { id: renderId, status: 'done', url: progress.outputFile };
 		}
 

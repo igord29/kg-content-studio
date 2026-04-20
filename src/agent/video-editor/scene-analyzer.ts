@@ -770,3 +770,146 @@ ${lines}`;
 
 	return result;
 }
+
+// --- Motion Energy Analysis ---
+
+export interface MotionSegment {
+	start: number;          // seconds
+	end: number;            // seconds
+	avgMotion: number;      // 0-1 normalized motion level
+	classification: 'high' | 'medium' | 'low' | 'static';
+}
+
+export interface MotionEnergy {
+	segments: MotionSegment[];
+	peaks: number[];        // timestamps of maximum motion
+	overallMotion: number;  // 0-1, how active is this video overall
+}
+
+/**
+ * Analyze motion energy in a video using FFmpeg's scene score detection
+ * at a very low threshold to capture motion levels throughout.
+ * Zero API cost — runs entirely locally with FFmpeg.
+ *
+ * Identifies high-motion vs. static segments and peak motion timestamps.
+ */
+export async function analyzeMotionEnergy(
+	videoPath: string,
+	duration: number,
+): Promise<MotionEnergy> {
+	const { execSync } = await import('child_process');
+
+	// Use a very low scene threshold (0.01) to get motion scores for many frames,
+	// not just scene changes. This gives us a motion profile across the video.
+	let output = '';
+	try {
+		output = execSync(
+			`ffmpeg -i "${videoPath}" -vf "select='gte(scene,0.01)',metadata=print:key=lavfi.scene_score" -f null - 2>&1`,
+			{ timeout: 120000, stdio: 'pipe', maxBuffer: 10 * 1024 * 1024 },
+		).toString();
+	} catch (err: any) {
+		output = err.stderr?.toString() || err.stdout?.toString() || '';
+	}
+
+	// Parse timestamps and motion scores
+	const ptsRegex = /pts_time:(\d+\.?\d*)/g;
+	const scoreRegex = /lavfi\.scene_score=(\d+\.?\d*)/g;
+	const timestamps: number[] = [];
+	const scores: number[] = [];
+
+	let match;
+	while ((match = ptsRegex.exec(output)) !== null) {
+		timestamps.push(parseFloat(match[1]!));
+	}
+	while ((match = scoreRegex.exec(output)) !== null) {
+		scores.push(parseFloat(match[1]!));
+	}
+
+	if (timestamps.length === 0) {
+		return { segments: [], peaks: [], overallMotion: 0 };
+	}
+
+	// Build per-timestamp motion data
+	const motionData: Array<{ timestamp: number; score: number }> = [];
+	for (let i = 0; i < Math.min(timestamps.length, scores.length); i++) {
+		motionData.push({
+			timestamp: Math.round(timestamps[i]! * 10) / 10,
+			score: scores[i]!,
+		});
+	}
+
+	// Normalize scores
+	const maxScore = Math.max(...motionData.map(d => d.score), 0.01);
+
+	// Group into segments of similar motion level
+	const segments: MotionSegment[] = [];
+	let currentSegment: MotionSegment | null = null;
+
+	for (const data of motionData) {
+		const normalizedMotion = data.score / maxScore;
+		const classification: MotionSegment['classification'] =
+			normalizedMotion > 0.6 ? 'high'
+			: normalizedMotion > 0.3 ? 'medium'
+			: normalizedMotion > 0.1 ? 'low'
+			: 'static';
+
+		if (currentSegment && currentSegment.classification === classification) {
+			currentSegment.end = data.timestamp;
+			// Running average
+			currentSegment.avgMotion = (currentSegment.avgMotion + normalizedMotion) / 2;
+		} else {
+			if (currentSegment) segments.push(currentSegment);
+			currentSegment = {
+				start: data.timestamp,
+				end: data.timestamp,
+				avgMotion: normalizedMotion,
+				classification,
+			};
+		}
+	}
+	if (currentSegment) segments.push(currentSegment);
+
+	// Find peak motion moments (top 5, at least 3s apart)
+	const sortedByMotion = [...motionData].sort((a, b) => b.score - a.score);
+	const peaks: number[] = [];
+	for (const data of sortedByMotion) {
+		if (peaks.length >= 5) break;
+		const tooClose = peaks.some(p => Math.abs(p - data.timestamp) < 3);
+		if (!tooClose) {
+			peaks.push(data.timestamp);
+		}
+	}
+
+	const avgMotion = motionData.reduce((sum, d) => sum + d.score, 0) / motionData.length / maxScore;
+
+	return {
+		segments,
+		peaks: peaks.sort((a, b) => a - b),
+		overallMotion: Math.round(avgMotion * 100) / 100,
+	};
+}
+
+/**
+ * Format motion energy data for inclusion in AI prompts.
+ */
+export function formatMotionEnergyForPrompt(motion: MotionEnergy): string {
+	if (motion.segments.length === 0) return '';
+
+	const lines: string[] = [];
+
+	const highMotion = motion.segments.filter(s => s.classification === 'high' || s.classification === 'medium');
+	if (highMotion.length > 0) {
+		const windowsStr = highMotion
+			.map(s => `${s.start.toFixed(1)}-${s.end.toFixed(1)}s (${s.classification})`)
+			.join(', ');
+		lines.push(`  Motion Windows: [${windowsStr}]`);
+	}
+
+	if (motion.peaks.length > 0) {
+		lines.push(`  Motion Peaks: [${motion.peaks.map(t => `${t.toFixed(1)}s`).join(', ')}]`);
+	}
+
+	lines.push(`  Overall Motion Level: ${Math.round(motion.overallMotion * 100)}%`);
+
+	return lines.join('\n');
+}

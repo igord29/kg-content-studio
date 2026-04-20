@@ -73,6 +73,7 @@ import {
 	type MusicTrack,
 } from './music';
 import { formatSceneAnalysisForPrompt, formatSegmentTimelineForPrompt, generateNamedSegments } from './scene-analyzer';
+import { formatVisualTimelineForPrompt } from './visual-timeline';
 import { getSkillsForPrompt } from './remotion/skills';
 import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
 import {
@@ -1336,6 +1337,147 @@ const agent = createAgent('video-editor', {
 			}
 		}
 
+		// --- Visual timeline analysis via contact sheets ---
+		// Generates a dense visual timeline for existing catalog entries using
+		// contact sheet images analyzed by GPT-4o-mini (10x cheaper, 3-5x denser than individual frames)
+		if (task === 'analyze-visual') {
+			const videoId = input.videoId as string | undefined;
+			const catalog = loadExistingCatalog();
+
+			if (videoId) {
+				// Single video mode
+				const entry = catalog.find(e => e.fileId === videoId);
+				if (!entry) {
+					return { success: false, error: `Video ${videoId} not found in catalog` };
+				}
+				if (entry.visualTimeline && entry.visualTimeline.frames.length > 0) {
+					return {
+						success: true,
+						message: `Video ${entry.filename} already has visual timeline (${entry.visualTimeline.frames.length} frames, ${entry.visualTimeline.actionWindows.length} action windows)`,
+						catalog: [entry],
+					};
+				}
+
+				ctx.logger.info('[video-editor] Generating visual timeline for: %s (%s)', entry.filename, videoId);
+
+				try {
+					const { generateContactSheet, cleanupContactSheet } = await import('./contact-sheet');
+					const { analyzeContactSheet } = await import('./visual-timeline');
+					const { downloadVideo } = await import('./google-drive');
+					const fs = await import('fs');
+					const pathMod = await import('path');
+					const { execSync } = await import('child_process');
+
+					const tempDir = pathMod.join(process.cwd(), '.temp-cataloger');
+					if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+					const videoPath = pathMod.join(tempDir, `vt_${videoId}.mp4`);
+
+					await downloadVideo(videoId, videoPath);
+
+					// Get duration
+					const durationStr = execSync(
+						`ffprobe -v error -show_entries format=duration -of csv=p=0 "${videoPath}"`,
+						{ stdio: 'pipe' },
+					).toString().trim();
+					const duration = parseFloat(durationStr) || 0;
+
+					const contactSheet = await generateContactSheet(videoPath, videoId, duration);
+					const timeline = await analyzeContactSheet(contactSheet, entry.activity || '');
+
+					entry.visualTimeline = timeline;
+					cleanupContactSheet(contactSheet);
+
+					// Clean up video
+					try { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); } catch { /* best effort */ }
+
+					// Save to catalog
+					const idx = catalog.findIndex(e => e.fileId === videoId);
+					if (idx !== -1) {
+						catalog[idx] = entry;
+						const { saveCatalog: saveCat } = await import('./google-drive');
+						await saveCat(catalog);
+					}
+
+					const actionFrames = timeline.frames.filter(f => f.isAction).length;
+					return {
+						success: true,
+						message: `Visual timeline complete for ${entry.filename}: ${timeline.frames.length} frames, ${actionFrames} action, ${timeline.actionWindows.length} action windows`,
+						catalog: [entry],
+					};
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return { success: false, error: 'Visual timeline analysis failed: ' + msg };
+				}
+			} else {
+				// Batch mode — analyze all catalog entries missing visual timelines
+				const needsAnalysis = catalog.filter(e => !e.visualTimeline || e.visualTimeline.frames.length === 0);
+				if (needsAnalysis.length === 0) {
+					const done = catalog.filter(e => e.visualTimeline && e.visualTimeline.frames.length > 0).length;
+					return { success: true, message: `All ${done} catalog entries already have visual timelines. Nothing to do.` };
+				}
+
+				ctx.logger.info('[video-editor] Batch visual timeline: %d/%d entries need analysis', needsAnalysis.length, catalog.length);
+
+				let analyzed = 0;
+				let failed = 0;
+				for (const entry of needsAnalysis) {
+					try {
+						const { generateContactSheet, cleanupContactSheet } = await import('./contact-sheet');
+						const { analyzeContactSheet } = await import('./visual-timeline');
+						const { downloadVideo } = await import('./google-drive');
+						const fs = await import('fs');
+						const pathMod = await import('path');
+						const { execSync } = await import('child_process');
+
+						const tempDir = pathMod.join(process.cwd(), '.temp-cataloger');
+						if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+						const videoPath = pathMod.join(tempDir, `vt_${entry.fileId}.mp4`);
+
+						await downloadVideo(entry.fileId, videoPath);
+
+						const durationStr = execSync(
+							`ffprobe -v error -show_entries format=duration -of csv=p=0 "${videoPath}"`,
+							{ stdio: 'pipe' },
+						).toString().trim();
+						const duration = parseFloat(durationStr) || 0;
+
+						const contactSheet = await generateContactSheet(videoPath, entry.fileId, duration);
+						const timeline = await analyzeContactSheet(contactSheet, entry.activity || '');
+
+						entry.visualTimeline = timeline;
+						cleanupContactSheet(contactSheet);
+						try { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); } catch { /* best effort */ }
+
+						analyzed++;
+						ctx.logger.info('[video-editor] Visual timeline [%d/%d]: %s — %d frames, %d action windows',
+							analyzed, needsAnalysis.length, entry.filename,
+							timeline.frames.length, timeline.actionWindows.length);
+
+						// Save progress periodically
+						if (analyzed % 5 === 0) {
+							const { saveCatalog: saveCat } = await import('./google-drive');
+							await saveCat(catalog);
+						}
+					} catch (err) {
+						failed++;
+						ctx.logger.warn('[video-editor] Visual timeline failed for %s: %s',
+							entry.filename, err instanceof Error ? err.message : String(err));
+					}
+				}
+
+				// Final save
+				const { saveCatalog: saveCat } = await import('./google-drive');
+				await saveCat(catalog);
+
+				return {
+					success: true,
+					message: `Visual timeline batch complete: ${analyzed} analyzed, ${failed} failed, ${needsAnalysis.length - analyzed - failed} remaining`,
+					analyzed,
+					failed,
+				};
+			}
+		}
+
 		// List available music tracks for the UI
 		if (task === 'list-music') {
 			const mode = input.editMode || undefined;
@@ -1830,6 +1972,13 @@ const agent = createAgent('video-editor', {
 					} else if (!ce.sceneAnalysis) {
 						timestampSection = `\n  ⚠️ NO TIMESTAMP SCORES — all trim points are ESTIMATES. Spread across the ${totalDurSec}s duration.`;
 					}
+
+					// Visual timeline — dense contact-sheet-based analysis (every 2-3s)
+					let visualTimelineSection = '';
+					if (ce.visualTimeline) {
+						visualTimelineSection = '\n  📊 VISUAL TIMELINE (dense frame-by-frame analysis — USE THIS for clip selection):\n' + formatVisualTimelineForPrompt(ce.visualTimeline);
+					}
+
 					return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr})
   - Google Drive fileId: ${v.id}
   - WHAT THE CATALOG DESCRIBES (this is ALL you know about this clip): ${ce.activity}
@@ -1840,7 +1989,7 @@ const agent = createAgent('video-editor', {
   - People: ${ce.peopleCount || 'Unknown'}
   - Readable Text Visible In Frames: ${readableText}
   - Notable Moments Flagged: ${ce.notableMoments || 'None — no specific moments identified'}
-  - Suggested Modes: ${ce.suggestedModes?.join(', ') || 'None'}${sceneSection}${timestampSection}
+  - Suggested Modes: ${ce.suggestedModes?.join(', ') || 'None'}${sceneSection}${timestampSection}${visualTimelineSection}
 ${formatUsageContextForPrompt(usageSummaryMap.get(v.id || ''), ce)}`;
 				} else {
 					return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr}) - Google Drive fileId: ${v.id} - no catalog data available`;
@@ -2091,6 +2240,23 @@ IMPORTANT JSON RULES:
 				}
 			}
 
+			// Run comprehensive edit plan validation (duration bounds, action alignment,
+			// cut safety, file IDs, overlay timing). Auto-fixes trivial issues.
+			let validationResult = null;
+			if (structuredPlan?.clips && Array.isArray(structuredPlan.clips)) {
+				const { validateEditPlan, formatValidationResult } = await import('./edit-plan-validator');
+				validationResult = validateEditPlan(structuredPlan, catalogMap);
+
+				if (validationResult.autoFixCount > 0) {
+					ctx.logger.info('[video-editor] Edit plan validation: auto-fixed %d issues', validationResult.autoFixCount);
+				}
+				if (!validationResult.valid) {
+					ctx.logger.warn('[video-editor] Edit plan validation FAILED:\n%s', formatValidationResult(validationResult));
+				} else if (validationResult.warnings.length > 0) {
+					ctx.logger.info('[video-editor] Edit plan validation passed with %d warnings', validationResult.warnings.length);
+				}
+			}
+
 			return {
 				success: true,
 				editPlan: result.text,           // human-readable markdown for UI display
@@ -2098,6 +2264,14 @@ IMPORTANT JSON RULES:
 				videoCount: videoDetails.length,
 				videos: videoDetails,
 				dedupWarnings: dedupWarnings.length > 0 ? dedupWarnings : undefined,
+				validation: validationResult ? {
+					valid: validationResult.valid,
+					errorCount: validationResult.errors.length,
+					warningCount: validationResult.warnings.length,
+					autoFixCount: validationResult.autoFixCount,
+					errors: validationResult.errors,
+					warnings: validationResult.warnings,
+				} : undefined,
 			};
 		}
 

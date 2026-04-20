@@ -217,6 +217,22 @@ The "segment" field references the segment ID. The "editNote" field explains you
 WHEN SEGMENTS ARE NOT AVAILABLE:
 Fall back to the timestamp-based approach and spread strategy described below. Not all videos have been segmented yet. The editorial rules (A-H above) still apply — you just have less precise information about where it's safe to cut.
 
+USING VISUAL TIMELINE DATA
+
+When clips include VISUAL TIMELINE data, you have dense frame-by-frame knowledge of what happens throughout the video (every 2-3 seconds). This is your most reliable source for sports and action content — it tells you exactly what's happening at each point.
+
+1. ACTION WINDOWS tell you the continuous time ranges where gameplay or action is sustained (e.g., "10.0-22.0s: rally"). Your clips MUST use trimStart values that fall WITHIN an action window, not outside it. Using a timestamp outside any action window means you're picking dead time — kids standing, walking, waiting.
+
+2. BEST MOMENTS are the confirmed highest-energy timestamps from vision analysis. Use these for hooks and peaks. These are NOT estimates — they are verified by frame-level analysis. A best moment at 18.0s is CONFIRMED action.
+
+3. FRAME DETAILS show what's happening at each analyzed timestamp. When the timeline says "Two kids rallying on hard court" at 23.0s — that's confirmed. You can write a purpose referencing this: "hook — rally on hard court (confirmed at 23.0s by visual timeline)."
+
+4. AVOID LIST shows timestamps confirmed as non-action (low energy, standing, walking). NEVER use these for hooks, builds, or peaks.
+
+5. The SUMMARY gives you the overall arc of the footage (e.g., "warm-up 0-15s, drills 15-40s, rallies 40-55s"). Use this to tell a story that matches the actual content structure — don't impose a narrative arc that contradicts what's actually in the footage.
+
+6. VISUAL TIMELINE OVERRIDES SPREAD STRATEGY: When visual timeline data is available, you do NOT need to spread trim points evenly. Instead, pick from the confirmed action windows and best moments. The spread strategy is a fallback for when you have NO data about what's at each timestamp.
+
 TRIM POINT RULES
 
 - Never use trimStart: 0 unless scene analysis confirms something happens at the start

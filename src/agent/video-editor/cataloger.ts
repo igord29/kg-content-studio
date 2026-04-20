@@ -452,6 +452,29 @@ async function analyzeVideoFrames(
 			console.warn(`[cataloger] Timestamp scoring skipped for ${video.name}: ${err}`);
 		}
 
+		// Step 7e: Visual timeline via contact sheet (dense, cheap, high-coverage)
+		// Generates a single contact sheet image with 20-30 thumbnails, then sends
+		// it to GPT-4o-mini in ONE call — 10x cheaper than individual frame scoring
+		// while providing 3-5x denser temporal coverage.
+		let visualTimeline: CatalogEntry['visualTimeline'] | undefined;
+		try {
+			const { generateContactSheet, cleanupContactSheet } = await import('./contact-sheet');
+			const { analyzeContactSheet } = await import('./visual-timeline');
+
+			const contactSheet = await generateContactSheet(videoPath, video.id, duration);
+			console.log(`[cataloger] Contact sheet: ${contactSheet.totalFrames} frames, ${contactSheet.gridCols}x${contactSheet.gridRows} grid, interval=${contactSheet.frameInterval}s`);
+
+			const timeline = await analyzeContactSheet(contactSheet, analysis.activity || '');
+			visualTimeline = timeline;
+
+			const actionFrames = timeline.frames.filter(f => f.isAction).length;
+			console.log(`[cataloger] Visual timeline: ${timeline.frames.length} frames analyzed, ${actionFrames} action, ${timeline.actionWindows.length} action windows, ${timeline.bestMoments.length} best moments`);
+
+			cleanupContactSheet(contactSheet);
+		} catch (err) {
+			console.warn(`[cataloger] Visual timeline skipped for ${video.name}: ${err}`);
+		}
+
 		// Step 8: Clean up temp files
 		cleanupTempFiles(video.id);
 
@@ -480,6 +503,7 @@ async function analyzeVideoFrames(
 			reviewNotes: buildReviewNotes(analysis),
 			sceneAnalysis: sceneAnalysisResult,
 			timestampScores,
+			visualTimeline,
 		};
 
 	} catch (err) {

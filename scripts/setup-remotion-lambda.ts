@@ -184,8 +184,8 @@ async function main() {
 		const deployed = await deployFunction({
 			region,
 			timeoutInSeconds: 240,
-			memorySizeInMb: 2048,
-			diskSizeInMb: 2048,
+			memorySizeInMb: 3008,
+			diskSizeInMb: 10240,
 			createCloudWatchLogGroup: true,
 		});
 		functionName = deployed.functionName;

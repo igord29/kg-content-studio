@@ -99,6 +99,7 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 								effect={effect}
 								filter={clip.filter}
 								speedKeyframes={clip.speedKeyframes}
+								trimStart={clip.trimStart}
 								cropX={clip.cropX}
 								cropY={clip.cropY}
 								zoom={clip.zoom}

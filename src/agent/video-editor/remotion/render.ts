@@ -471,13 +471,17 @@ export async function submitRemotionRenderDirect(
 
 	// Build clip props using S3 URLs (fast same-region access for Lambda)
 	// Smart zoom/crop defaults based on content type from catalog
+	// Framing defaults by content type. objectFit:'cover' already crops
+	// horizontal (16:9) source to fill vertical (9:16) frame — so zoom=1.0
+	// means the natural cover-crop. Zoom > 1.0 adds ADDITIONAL crop on top.
+	// Previous zoom=2.0 for tennis was too aggressive — players invisible.
 	const CONTENT_TYPE_FRAMING: Record<string, { zoom: number; cropY: number; cropX: number }> = {
-		tennis_action: { zoom: 2.0, cropY: 75, cropX: 50 },   // Zoom into court level
-		event:         { zoom: 1.5, cropY: 65, cropX: 50 },   // Moderate zoom, show some context
-		interview:     { zoom: 1.0, cropY: 50, cropX: 50 },   // No zoom, center on face
-		chess:         { zoom: 1.2, cropY: 50, cropX: 50 },   // Slight zoom, centered
+		tennis_action: { zoom: 1.0, cropY: 60, cropX: 50 },   // Cover-crop only, focus slightly below center (court level)
+		event:         { zoom: 1.0, cropY: 55, cropX: 50 },   // Cover-crop, slightly below center
+		interview:     { zoom: 1.0, cropY: 50, cropX: 50 },   // Center on face
+		chess:         { zoom: 1.0, cropY: 50, cropX: 50 },   // Centered
 		establishing:  { zoom: 1.0, cropY: 50, cropX: 50 },   // Full frame, show the venue
-		mixed:         { zoom: 1.3, cropY: 60, cropX: 50 },   // Light zoom
+		mixed:         { zoom: 1.0, cropY: 55, cropX: 50 },   // Slightly below center
 		unknown:       { zoom: 1.0, cropY: 50, cropX: 50 },   // Safe default
 	};
 

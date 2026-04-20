@@ -16,6 +16,8 @@ interface VideoClipProps {
 	effect?: string;   // 'zoomIn' | 'zoomOut' | 'slideRight' | 'slideLeft'
 	filter?: string;   // color grade name
 	speedKeyframes?: SpeedKeyframe[];
+	/** Start offset in seconds — skip this many seconds into the source video. */
+	trimStart?: number;
 	/** Vertical crop origin as percentage (0-100). Default 75 = focus on lower 25% where players are. */
 	cropY?: number;
 	/** Horizontal crop origin as percentage (0-100). Default 50 = center. */
@@ -140,7 +142,7 @@ function getPlaybackRate(progress: number, keyframes?: SpeedKeyframe[]): number 
 	}));
 }
 
-export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speedKeyframes, cropY = 50, cropX = 50, zoom = 1.0 }) => {
+export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speedKeyframes, trimStart = 0, cropY = 50, cropX = 50, zoom = 1.0 }) => {
 	const frame = useCurrentFrame();
 	const { durationInFrames } = useVideoConfig();
 	const progress = frame / Math.max(1, durationInFrames);
@@ -189,10 +191,18 @@ export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speed
 	// single effective rate. For true variable-speed ramping, preprocess with FFmpeg.
 	const playbackRate = getConstantPlaybackRate(speedKeyframes);
 
+	// Convert trimStart (seconds) to frames for Remotion's trimBefore prop.
+	// This tells OffthreadVideo to skip into the source video, showing different
+	// scenes from the same source file instead of always playing from the start.
+	// (trimBefore is the Remotion v4 name for the deprecated startFrom.)
+	const { fps: videoFps } = useVideoConfig();
+	const trimBeforeFrames = Math.round(trimStart * videoFps);
+
 	return (
 		<AbsoluteFill>
 			<OffthreadVideo
 				src={src}
+				startFrom={trimBeforeFrames}
 				playbackRate={playbackRate}
 				delayRenderTimeoutInMilliseconds={120_000}
 				style={{

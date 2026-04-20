@@ -1811,15 +1811,20 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		}
 	}, [uncatalogedCount, startCatalogPolling]);
 
-	// Run visual timeline analysis on all videos missing visual data
+	// Run visual timeline analysis — selected videos only, or all if none selected
 	const handleAnalyzeVisualTimelines = useCallback(async () => {
 		setVtRunning(true);
 		setVtResult(null);
+		const ids = [...selectedIds];
 		try {
+			const body: Record<string, unknown> = { task: 'analyze-visual' };
+			if (ids.length > 0) {
+				body.videoIds = ids;
+			}
 			const response = await fetch('/api/video-editor', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ task: 'analyze-visual' }),
+				body: JSON.stringify(body),
 			});
 			const data = await response.json();
 			if (data.success) {
@@ -1832,7 +1837,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		} finally {
 			setVtRunning(false);
 		}
-	}, []);
+	}, [selectedIds]);
 
 	// Refresh thumbnails for videos that are missing previews
 	const handleRefreshThumbnails = useCallback(async () => {
@@ -3375,7 +3380,11 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 							}}
 							type="button"
 						>
-							{vtRunning ? 'Analyzing visual timelines...' : 'Analyze Visual Timelines (All Videos)'}
+							{vtRunning
+							? 'Analyzing visual timelines...'
+							: selectedIds.size > 0
+								? `Analyze Visual Timelines (${selectedIds.size} Selected)`
+								: 'Analyze Visual Timelines (All Videos)'}
 						</button>
 						<p style={{
 							fontFamily: S.mono,

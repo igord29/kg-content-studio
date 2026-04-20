@@ -1342,6 +1342,7 @@ const agent = createAgent('video-editor', {
 		// contact sheet images analyzed by GPT-4o-mini (10x cheaper, 3-5x denser than individual frames)
 		if (task === 'analyze-visual') {
 			const videoId = input.videoId as string | undefined;
+			const videoIds = input.videoIds as string[] | undefined;
 			const catalog = loadExistingCatalog();
 
 			if (videoId) {
@@ -1409,8 +1410,13 @@ const agent = createAgent('video-editor', {
 					return { success: false, error: 'Visual timeline analysis failed: ' + msg };
 				}
 			} else {
-				// Batch mode — analyze all catalog entries missing visual timelines
-				const needsAnalysis = catalog.filter(e => !e.visualTimeline || e.visualTimeline.frames.length === 0);
+				// Batch mode — analyze selected videos (if videoIds provided) or all missing
+				const targetSet = videoIds && videoIds.length > 0 ? new Set(videoIds) : null;
+				const needsAnalysis = catalog.filter(e => {
+					// If specific IDs provided, only process those
+					if (targetSet && !targetSet.has(e.fileId)) return false;
+					return !e.visualTimeline || e.visualTimeline.frames.length === 0;
+				});
 				if (needsAnalysis.length === 0) {
 					const done = catalog.filter(e => e.visualTimeline && e.visualTimeline.frames.length > 0).length;
 					return { success: true, message: `All ${done} catalog entries already have visual timelines. Nothing to do.` };

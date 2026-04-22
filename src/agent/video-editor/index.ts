@@ -368,6 +368,15 @@ const agent = createAgent('video-editor', {
 			const appUrl = input.appUrl;
 			const renderEngine = (input as any).renderEngine as string | undefined;
 
+			// Diagnostic: log the actual appUrl we received. A prior crash surfaced as
+			// `Y.replace is not a function` in the minified bundle because appUrl was
+			// not a string at submit time. Keep this log permanent; it's cheap and
+			// the cost of missing the next instance of this class of bug is high.
+			ctx.logger.info('[render] entry: task=%s renderEngine=%s appUrl(type=%s, len=%s)=%s',
+				task, renderEngine, typeof appUrl,
+				typeof appUrl === 'string' ? appUrl.length : 'n/a',
+				JSON.stringify(appUrl));
+
 			// editPlan should be the structured JSON from the edit task's editPlanData
 			const editPlanObj = (rawEditPlan && typeof rawEditPlan === 'object')
 				? rawEditPlan as Record<string, unknown>
@@ -382,10 +391,16 @@ const agent = createAgent('video-editor', {
 
 			// --- Remotion Lambda render path ---
 			if (renderEngine === 'remotion') {
-				if (!appUrl) {
+				// Type-strict check (not just truthy): catches objects, numbers, etc. that
+				// would otherwise slip past `!appUrl` and crash later with `Y.replace is
+				// not a function` inside the minified bundle. The tight check here lets
+				// downstream code treat appUrl as a guaranteed non-empty string.
+				if (typeof appUrl !== 'string' || appUrl.length === 0) {
+					ctx.logger.error('[render] Remotion path aborted: appUrl is not a non-empty string (got type=%s value=%s)',
+						typeof appUrl, JSON.stringify(appUrl));
 					return {
 						success: false,
-						error: 'App URL not available. Cannot build proxy URLs for Remotion Lambda.',
+						error: `App URL not available (got ${typeof appUrl}). Cannot build proxy URLs for Remotion Lambda.`,
 					};
 				}
 

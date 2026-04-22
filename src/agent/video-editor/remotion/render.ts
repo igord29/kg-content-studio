@@ -204,6 +204,14 @@ async function submitRenderWithRetry(
 	const correlationId = `clc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 	const outputS3Key = `custom-renders/${correlationId}/out.mp4`;
 
+	// Defense-in-depth: this guard catches any caller that slipped past the outer
+	// validation. The precise previous failure mode was `Y.replace is not a function`
+	// from `appUrl.replace(/\/$/, '')` when appUrl was null/undefined/non-string.
+	if (typeof appUrl !== 'string' || appUrl.length === 0) {
+		throw new Error(
+			`submitRenderWithRetry: appUrl must be a non-empty string (got ${typeof appUrl} ${JSON.stringify(appUrl)})`,
+		);
+	}
 	const webhookUrl = `${appUrl.replace(/\/$/, '')}/api/remotion-webhook`;
 	const webhookSecret = process.env.REMOTION_WEBHOOK_SECRET || null;
 
@@ -1104,12 +1112,22 @@ export async function submitRemotionRenderWithPreprocessing(
 	logger?: Logger,
 ): Promise<void> {
 	try {
+		// DEFENSIVE: appUrl MUST be a non-empty string. If the caller sent anything else
+		// (null, undefined, an object, a number), fail fast with a clear error showing the
+		// actual received value — not a cryptic `Y.replace is not a function` from deep inside.
+		if (typeof appUrl !== 'string' || appUrl.length === 0) {
+			throw new Error(
+				`submitRemotionRenderWithPreprocessing: appUrl must be a non-empty string (got ${typeof appUrl} ${JSON.stringify(appUrl)}). ` +
+				`This URL is the public-facing origin used for the Remotion webhook callback; it's normally injected by src/api/index.ts from x-forwarded-host.`,
+			);
+		}
+
 		const memLog = () => {
 			const m = process.memoryUsage();
 			return `rss=${(m.rss / 1024 / 1024).toFixed(0)}MB heap=${(m.heapUsed / 1024 / 1024).toFixed(0)}/${(m.heapTotal / 1024 / 1024).toFixed(0)}MB`;
 		};
 
-		logger?.info('[remotion-lambda] Render %s: starting preprocessed pipeline... [mem: %s]', renderId, memLog());
+		logger?.info('[remotion-lambda] Render %s: starting preprocessed pipeline (appUrl=%s)... [mem: %s]', renderId, appUrl, memLog());
 
 		// Step 1: Get Lambda infrastructure config
 		const infra = await getInfra(logger);

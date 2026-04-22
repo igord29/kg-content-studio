@@ -207,9 +207,13 @@ async function submitRenderWithRetry(
 	// Defense-in-depth: this guard catches any caller that slipped past the outer
 	// validation. The precise previous failure mode was `Y.replace is not a function`
 	// from `appUrl.replace(/\/$/, '')` when appUrl was null/undefined/non-string.
+	// NOTE: the repr is cycle-safe — we cannot JSON.stringify `appUrl` because a
+	// common misrouting bug (2026-04-22) passed a cyclic logger into this slot
+	// and the stringify crash swallowed the real diagnostic.
 	if (typeof appUrl !== 'string' || appUrl.length === 0) {
+		const ctor = (appUrl as any)?.constructor?.name || 'n/a';
 		throw new Error(
-			`submitRenderWithRetry: appUrl must be a non-empty string (got ${typeof appUrl} ${JSON.stringify(appUrl)})`,
+			`submitRenderWithRetry: appUrl must be a non-empty string (got type=${typeof appUrl} ctor=${ctor})`,
 		);
 	}
 	const webhookUrl = `${appUrl.replace(/\/$/, '')}/api/remotion-webhook`;
@@ -1115,9 +1119,13 @@ export async function submitRemotionRenderWithPreprocessing(
 		// DEFENSIVE: appUrl MUST be a non-empty string. If the caller sent anything else
 		// (null, undefined, an object, a number), fail fast with a clear error showing the
 		// actual received value — not a cryptic `Y.replace is not a function` from deep inside.
+		// NOTE: cycle-safe repr (see same NOTE in submitRenderWithRetry above). The bug
+		// that triggered this hardening was `ctx.logger` being passed here as `appUrl`
+		// due to a missing positional arg at the call site in src/agent/video-editor/index.ts.
 		if (typeof appUrl !== 'string' || appUrl.length === 0) {
+			const ctor = (appUrl as any)?.constructor?.name || 'n/a';
 			throw new Error(
-				`submitRemotionRenderWithPreprocessing: appUrl must be a non-empty string (got ${typeof appUrl} ${JSON.stringify(appUrl)}). ` +
+				`submitRemotionRenderWithPreprocessing: appUrl must be a non-empty string (got type=${typeof appUrl} ctor=${ctor}). ` +
 				`This URL is the public-facing origin used for the Remotion webhook callback; it's normally injected by src/api/index.ts from x-forwarded-host.`,
 			);
 		}

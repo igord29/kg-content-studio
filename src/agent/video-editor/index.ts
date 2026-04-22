@@ -86,6 +86,29 @@ import {
 	buildUsageSummaryMap,
 } from './usage-tracker';
 
+/**
+ * Build a detached logger safe to pass into fire-and-forget async pipelines.
+ *
+ * WHY THIS EXISTS: `ctx.logger` is request-scoped. When the HTTP handler
+ * returns and Agentuity tears down the request context, any subsequent
+ * `ctx.logger.info(...)` from async code that's still running throws
+ * "JSON.stringify cannot serialize cyclic structures" — the logger
+ * internally serializes its bound context, which has cycles (ctx.req
+ * → ctx.res → ctx.req, etc.). We observed this in production on
+ * 2026-04-22 when preprocessed renders silently died right after
+ * the task handler returned.
+ *
+ * This adapter uses bare `console.*` which writes to stdout/stderr.
+ * Railway captures both; the prefix keeps the render id correlatable.
+ */
+function makeAsyncLogger(prefix: string) {
+	return {
+		info: (fmt: string, ...args: unknown[]) => console.info(`[${prefix}] ${fmt}`, ...args),
+		warn: (fmt: string, ...args: unknown[]) => console.warn(`[${prefix}] ${fmt}`, ...args),
+		error: (fmt: string, ...args: unknown[]) => console.error(`[${prefix}] ${fmt}`, ...args),
+	};
+}
+
 const AgentInput = s.object({
 	// Task type: determines which workflow to run
 	task: s.string().optional(), // 'list-videos' | 'folder-summary' | 'catalog' | 'edit' | 'render' | 'render-status' | 'save-render-to-drive' | 'instant-edit' | 'auto-process' | 'render-local' | 'download-render' | 'test-connection' | 'test-shotstack' | 'legacy'
@@ -411,8 +434,12 @@ const agent = createAgent('video-editor', {
 				// not a function` inside the minified bundle. The tight check here lets
 				// downstream code treat appUrl as a guaranteed non-empty string.
 				if (typeof appUrl !== 'string' || appUrl.length === 0) {
-					ctx.logger.error('[render] Remotion path aborted: appUrl is not a non-empty string (got type=%s value=%s)',
-						typeof appUrl, JSON.stringify(appUrl));
+					// NOTE: DO NOT use JSON.stringify(appUrl) here — if appUrl is a cyclic
+					// object (e.g. a misrouted logger), stringify throws
+					// "cannot serialize cyclic structures" and masks the real diagnostic.
+					const ctor = (appUrl as any)?.constructor?.name || 'n/a';
+					ctx.logger.error('[render] Remotion path aborted: appUrl is not a non-empty string (got type=%s ctor=%s)',
+						typeof appUrl, ctor);
 					return {
 						success: false,
 						error: `App URL not available (got ${typeof appUrl}). Cannot build proxy URLs for Remotion Lambda.`,
@@ -522,8 +549,20 @@ const agent = createAgent('video-editor', {
 
 					ctx.logger.info('[render-remotion] Pre-registered render %s. Starting preprocessed pipeline (async)...', renderId);
 
+					// Detached logger for fire-and-forget async: see makeAsyncLogger above.
+					// ctx.logger is request-scoped — its underlying context has cycles, so once
+					// the HTTP handler returns and the context is torn down, any further
+					// ctx.logger.*(...) call from this async block throws
+					// "JSON.stringify cannot serialize cyclic structures".
+					const asyncLogger = makeAsyncLogger(`render:${renderId}`);
+
 					// Fire-and-forget: runs asynchronously beyond the session timeout.
 					// The render registry tracks progress; frontend polls via render-status.
+					//
+					// NOTE on arg order: signature is (config, renderId, appUrl, logger?).
+					// Until 2026-04-22 this call was missing `appUrl`, causing ctx.logger
+					// to be bound to the appUrl parameter — which crashed inside the
+					// guard when the guard tried to JSON.stringify it to report the bad value.
 					submitRemotionRenderWithPreprocessing(
 						{
 							clips,
@@ -533,10 +572,11 @@ const agent = createAgent('video-editor', {
 							platform,
 						},
 						renderId,
-						ctx.logger,
+						appUrl,
+						asyncLogger,
 					).catch(async (err) => {
 						const msg = err instanceof Error ? err.message : String(err);
-						ctx.logger.error('[render-remotion] Preprocessed pipeline error: %s', msg);
+						asyncLogger.error('[render-remotion] Preprocessed pipeline error: %s', msg);
 						const { failRender } = await import('./remotion/render');
 						failRender(renderId, msg);
 					});
@@ -561,6 +601,10 @@ const agent = createAgent('video-editor', {
 
 					ctx.logger.info('[render-remotion] Pre-registered render %s. Starting direct pipeline (async)...', renderId);
 
+					// Detached logger (same reasoning as preprocessed path above —
+					// ctx.logger is request-scoped and cannot survive the async tail).
+					const asyncLogger = makeAsyncLogger(`render:${renderId}`);
+
 					// Fire-and-forget: runs beyond the session timeout.
 					// Frontend polls render-status for progress.
 					submitRemotionRenderDirect(
@@ -572,11 +616,11 @@ const agent = createAgent('video-editor', {
 							platform,
 						},
 						appUrl,
-						ctx.logger,
+						asyncLogger,
 						renderId,
 					).catch(async (err) => {
 						const msg = err instanceof Error ? err.message : String(err);
-						ctx.logger.error('[render-remotion] Direct pipeline error: %s', msg);
+						asyncLogger.error('[render-remotion] Direct pipeline error: %s', msg);
 						const { failRender } = await import('./remotion/render');
 						failRender(renderId, msg);
 					});

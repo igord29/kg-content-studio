@@ -370,12 +370,27 @@ const agent = createAgent('video-editor', {
 
 			// Diagnostic: log the actual appUrl we received. A prior crash surfaced as
 			// `Y.replace is not a function` in the minified bundle because appUrl was
-			// not a string at submit time. Keep this log permanent; it's cheap and
-			// the cost of missing the next instance of this class of bug is high.
+			// not a string at submit time. The repr is cycle-safe (raw JSON.stringify
+			// threw on a cyclic `appUrl` that turned out to be an object, which is the
+			// exact bug we're hunting — keep this log permanent).
+			const appUrlRepr = (() => {
+				if (typeof appUrl === 'string') return JSON.stringify(appUrl);
+				if (appUrl === null || appUrl === undefined) return String(appUrl);
+				const v: any = appUrl;
+				const ctor = v?.constructor?.name || typeof appUrl;
+				const keys = (typeof v === 'object')
+					? Object.keys(v).slice(0, 8).join(',')
+					: '';
+				const preview = (() => {
+					try { return JSON.stringify(v).slice(0, 200); }
+					catch { return `String(x)=${String(v).slice(0, 120)}`; }
+				})();
+				return `[${ctor} keys=${keys || 'none'} preview=${preview}]`;
+			})();
 			ctx.logger.info('[render] entry: task=%s renderEngine=%s appUrl(type=%s, len=%s)=%s',
 				task, renderEngine, typeof appUrl,
 				typeof appUrl === 'string' ? appUrl.length : 'n/a',
-				JSON.stringify(appUrl));
+				appUrlRepr);
 
 			// editPlan should be the structured JSON from the edit task's editPlanData
 			const editPlanObj = (rawEditPlan && typeof rawEditPlan === 'object')

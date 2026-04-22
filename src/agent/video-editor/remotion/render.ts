@@ -53,7 +53,9 @@ interface LambdaInfrastructure {
 
 interface LambdaRenderEntry {
 	localId: string;            // Our render ID: remotion_<ts>_<rand>
-	lambdaRenderId: string;     // Lambda's internal render ID
+	lambdaRenderId: string;     // Remotion's server-generated render ID (known only after webhook fires)
+	correlationId?: string;     // Our ID for webhook-store lookup (set at submit time)
+	outputS3Key?: string;       // Known output path (set at submit time via outName)
 	bucketName: string;
 	functionName: string;
 	region: string;
@@ -126,6 +128,241 @@ export function failRender(renderId: string, error: string): void {
  */
 function getRegion(): string {
 	return process.env.REMOTION_AWS_REGION || 'us-east-1';
+}
+
+/**
+ * Wrap a promise in a timeout that rejects if not settled within ms.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+	let timeoutId: ReturnType<typeof setTimeout>;
+	const timeout = new Promise<never>((_, reject) => {
+		timeoutId = setTimeout(
+			() => reject(new Error(`${label} timed out after ${ms}ms`)),
+			ms,
+		);
+	});
+	return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+}
+
+/**
+ * Submit a render to Remotion Lambda via InvokeWithResponseStream — read ONLY
+ * the first stream message (which contains the server-generated renderId and
+ * confirms Lambda started), then break out of the stream iterator. Lambda
+ * keeps rendering in the background; we track completion via webhook + S3 poll.
+ *
+ * Why this exists (evolution):
+ *   1. `renderMediaOnLambda()` hung on Railway Bun — it reads the entire
+ *      streaming response including render progress, which Bun's HTTP path
+ *      can't keep alive for the full render duration.
+ *   2. NodeHttpHandler caused "socket hang up" on Bun (per team note at
+ *      preprocessor-invoke.ts:86).
+ *   3. RequestResponse + AbortSignal aborted at 45s on Railway — same stream
+ *      read-to-completion issue, just with a timeout.
+ *   4. Direct Event invocation was silently dropped by AWS for the render
+ *      Lambda: verified by inspecting S3 renders/ folder after Railway's
+ *      Event invoke — NO progress.json was written for that invocation time,
+ *      meaning Lambda never executed. This is because the render Lambda uses
+ *      `awslambda.streamifyResponse`, which is designed for
+ *      InvokeWithResponseStream and has undefined Event behavior.
+ *   5. InvokeWithResponseStream + early-close proven to work locally: Lambda
+ *      writes renderId to stream within ~300ms, we read it, close the stream,
+ *      and the Lambda continues rendering in the background (verified via
+ *      progress.json updates and final S3 output).
+ *
+ * Completion detection: we still return correlationId + outputS3Key so the
+ * checkRemotionStatus() poll loop can race webhook store vs S3 HeadObject.
+ */
+async function submitRenderWithRetry(
+	opts: Parameters<typeof import('@remotion/lambda/client').renderMediaOnLambda>[0],
+	appUrl: string,
+	logger?: Logger,
+	maxAttempts = 3,
+): Promise<{
+	correlationId: string;
+	outputS3Key: string;
+	bucketName: string;
+	lambdaRenderId?: string;
+}> {
+	const [lambdaClientMod, { LambdaClient, InvokeWithResponseStreamCommand }] = await Promise.all([
+		import('@remotion/lambda-client'),
+		import('@aws-sdk/client-lambda'),
+	]);
+	const { makeLambdaRenderMediaPayload, renderMediaOnLambdaOptionalToRequired } =
+		(lambdaClientMod as any).LambdaClientInternals;
+
+	const credentials = {
+		accessKeyId: process.env.REMOTION_AWS_ACCESS_KEY_ID!,
+		secretAccessKey: process.env.REMOTION_AWS_SECRET_ACCESS_KEY!,
+	};
+
+	const bucketName = opts.forceBucketName || process.env.REMOTION_BUCKET_NAME;
+	if (!bucketName) {
+		throw new Error('Render requires a bucket name (opts.forceBucketName or REMOTION_BUCKET_NAME env)');
+	}
+
+	// Generate correlation ID + deterministic output path
+	const correlationId = `clc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+	const outputS3Key = `custom-renders/${correlationId}/out.mp4`;
+
+	const webhookUrl = `${appUrl.replace(/\/$/, '')}/api/remotion-webhook`;
+	const webhookSecret = process.env.REMOTION_WEBHOOK_SECRET || null;
+
+	let lastErr: unknown;
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		const start = Date.now();
+		try {
+			const fullInput = renderMediaOnLambdaOptionalToRequired({
+				...opts,
+				outName: { key: outputS3Key, bucketName },
+				webhook: {
+					url: webhookUrl,
+					secret: webhookSecret,
+					customData: { correlationId },
+				},
+				forceBucketName: bucketName,
+			});
+
+			const renderPayload = await withTimeout(
+				makeLambdaRenderMediaPayload(fullInput),
+				20_000,
+				`makeLambdaRenderMediaPayload attempt ${attempt}/${maxAttempts}`,
+			);
+
+			// Use Bun's default fetch-based handler. NodeHttp2Handler was tried
+			// but Bun's node:http2 implementation raises ERR_STREAM_PREMATURE_CLOSE
+			// when the AWS SDK tries to stream, so we can't use it on Bun. The
+			// default handler worked locally (produced 170MB output) but failed
+			// on Railway — difference is Linux/Alpine + Railway networking.
+			const lambda = new LambdaClient({ region: opts.region as string, credentials });
+
+			const invokeStart = Date.now();
+			const payloadBytes = Buffer.from(JSON.stringify(renderPayload));
+			logger?.info('[remotion-lambda] Streaming invoke: correlationId=%s, payload=%d bytes, function=%s, region=%s',
+				correlationId, payloadBytes.length, opts.functionName, opts.region);
+
+			// InvokeWithResponseStream — NATIVE invocation pattern for Remotion's
+			// streamified Lambda handler. We only need the first message (which the
+			// START handler writes after calling callFunctionAsync for LAUNCH — so
+			// by the time we read it, LAUNCH has already been kicked off). We then
+			// break; Lambda continues async.
+			//
+			// Wrap in a 60s timeout: if lambda.send() hangs on Railway's Bun
+			// without yielding ANY response, fall through to retry rather than
+			// silently succeed with nothing.
+			const streamResult = await withTimeout(
+				lambda.send(
+					new InvokeWithResponseStreamCommand({
+						FunctionName: opts.functionName,
+						Payload: payloadBytes,
+						InvocationType: 'RequestResponse',
+					}),
+				),
+				60_000,
+				`InvokeWithResponseStream attempt ${attempt}/${maxAttempts}`,
+			);
+
+			logger?.info('[remotion-lambda] Stream opened in %dms: StatusCode=%s, hasEventStream=%s, responseStreamContentType=%s',
+				Date.now() - invokeStart,
+				streamResult.StatusCode,
+				Boolean(streamResult.EventStream),
+				streamResult.ResponseStreamContentType || 'unknown');
+
+			if (streamResult.StatusCode !== 200) {
+				throw new Error(`Streaming invoke returned unexpected status ${streamResult.StatusCode}`);
+			}
+			if (!streamResult.EventStream) {
+				throw new Error('Streaming invoke returned no EventStream');
+			}
+
+			// Read just the first PayloadChunk then break. Abort reading the rest
+			// of the stream — Lambda will continue running regardless.
+			let firstMessage: string | null = null;
+			let lambdaRenderId: string | undefined;
+			let eventCount = 0;
+			let sawPayloadChunk = false;
+			let sawInvokeComplete = false;
+			const iterStart = Date.now();
+			try {
+				// Timeout the iterator itself — on Railway's Bun, if the stream
+				// is broken (HTTP/1.1 fallback, empty stream, etc.), the for-await
+				// might hang forever. 30s is generous for the first chunk (~300ms
+				// typical, Lambda cold-start may add seconds).
+				await withTimeout(
+					(async () => {
+						for await (const event of streamResult.EventStream!) {
+							eventCount++;
+							const keys = Object.keys(event || {});
+							logger?.info('[remotion-lambda]   event #%d (%dms): keys=%s',
+								eventCount, Date.now() - iterStart, keys.join(','));
+							if (event.PayloadChunk?.Payload) {
+								sawPayloadChunk = true;
+								firstMessage = new TextDecoder().decode(event.PayloadChunk.Payload);
+								logger?.info('[remotion-lambda]   PayloadChunk (%d bytes): %s',
+									event.PayloadChunk.Payload.length,
+									firstMessage.slice(0, 300));
+								try {
+									const parsed = JSON.parse(firstMessage);
+									if (parsed.type === 'error') {
+										throw new Error(`Render Lambda start error: ${parsed.message || firstMessage}`);
+									}
+									if (parsed.renderId) {
+										lambdaRenderId = parsed.renderId;
+									}
+								} catch (parseErr) {
+									logger?.warn?.('[remotion-lambda] First stream message not JSON: %s',
+										firstMessage.slice(0, 200));
+								}
+								break;
+							}
+							if (event.InvokeComplete) {
+								sawInvokeComplete = true;
+								const ic: any = event.InvokeComplete;
+								logger?.warn?.('[remotion-lambda] InvokeComplete WITHOUT PayloadChunk: errorCode=%s errorDetails=%s logResult=%s',
+									ic?.ErrorCode || 'none',
+									(ic?.ErrorDetails || '').slice(0, 500),
+									(ic?.LogResult || '').slice(0, 500));
+								break;
+							}
+						}
+					})(),
+					30_000,
+					`Stream iteration attempt ${attempt}/${maxAttempts}`,
+				);
+			} catch (streamErr) {
+				const msg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+				logger?.warn?.('[remotion-lambda] Stream iterator ended: eventCount=%d, sawPayloadChunk=%s, sawInvokeComplete=%s, err=%s',
+					eventCount, sawPayloadChunk, sawInvokeComplete, msg);
+				// If we got a PayloadChunk before the error, Lambda is running — continue.
+				// If not, treat as a submit failure and retry.
+				if (!sawPayloadChunk) {
+					throw new Error(`Stream yielded no PayloadChunk (events=${eventCount}, invokeComplete=${sawInvokeComplete}): ${msg}`);
+				}
+			}
+
+			// If the stream ended cleanly but yielded no PayloadChunk, Lambda
+			// probably didn't actually execute — fail the attempt so we retry.
+			if (!sawPayloadChunk) {
+				throw new Error(`Stream yielded no PayloadChunk (events=${eventCount}, invokeComplete=${sawInvokeComplete})`);
+			}
+
+			logger?.info('[remotion-lambda] Render submitted in %dms (lambdaRenderId=%s, events=%d)%s',
+				Date.now() - invokeStart, lambdaRenderId || 'unknown', eventCount,
+				attempt > 1 ? ` [attempt ${attempt}]` : '');
+
+			return { correlationId, outputS3Key, bucketName, lambdaRenderId };
+		} catch (err) {
+			lastErr = err;
+			const msg = err instanceof Error ? err.message : String(err);
+			logger?.warn?.('[remotion-lambda] Submit attempt %d/%d failed after %dms: %s',
+				attempt, maxAttempts, Date.now() - start, msg);
+			if (attempt < maxAttempts) {
+				await new Promise(r => setTimeout(r, 1000 * attempt));
+			}
+		}
+	}
+	throw lastErr instanceof Error
+		? lastErr
+		: new Error('Lambda streaming invoke failed after retries');
 }
 
 /**
@@ -227,6 +464,7 @@ export function buildRemotionProps(
 			start: number;
 			duration: number;
 			position?: string;
+			animation?: string;  // 'fade' | 'slideUp' | 'slideDown' | 'scaleUp' | 'bounce' | 'typewriter'
 		}>;
 		musicUrl?: string | null;
 		mode: string;
@@ -267,6 +505,7 @@ export function buildRemotionProps(
 			position: (overlay.position as 'top' | 'center' | 'bottom') || 'bottom',
 			isFirst: index === 0,
 			isLast: index === arr.length - 1,
+			animation: (overlay as { animation?: string }).animation as CLCVideoProps['textOverlays'][number]['animation'],
 		};
 	});
 
@@ -311,6 +550,7 @@ export async function submitRemotionRender(
 			start: number;
 			duration: number;
 			position?: string;
+			animation?: string;  // 'fade' | 'slideUp' | 'slideDown' | 'scaleUp' | 'bounce' | 'typewriter'
 		}>;
 		musicUrl?: string | null;
 		mode: string;
@@ -333,8 +573,7 @@ export async function submitRemotionRender(
 	logger?.info('[remotion-lambda] Submitting render: %d clips, %dx%d, mode=%s, platform=%s',
 		props.clips.length, props.width, props.height, config.mode, config.platform);
 
-	// Step 3: Submit to Lambda
-	const { renderMediaOnLambda } = await import('@remotion/lambda/client');
+	// Step 3: Submit to Lambda (via wrapper that handles hung calls on Railway).
 
 	// Limit concurrent Lambda invocations for low-concurrency AWS accounts.
 	// Default limit is 10 for new accounts. Target max 4 renderers + 1 orchestrator = 5.
@@ -343,7 +582,7 @@ export async function submitRemotionRender(
 	const maxRendererLambdas = 4;
 	const framesPerLambda = Math.max(200, Math.ceil(totalFrames / maxRendererLambdas));
 
-	const result = await renderMediaOnLambda({
+	const result = await submitRenderWithRetry({
 		region: infra.region as any,
 		functionName: infra.functionName,
 		serveUrl: infra.serveUrl,
@@ -355,21 +594,24 @@ export async function submitRemotionRender(
 		// Generous timeout: Lambda workers must download full videos from Drive via our proxy
 		// before extracting frames. Default 30s is too short for large clips.
 		timeoutInMilliseconds: 240_000,
-	});
+		forceBucketName: infra.bucketName,
+	}, appUrl, logger);
 
 	// Step 4: Store mapping in registry
 	renderRegistry.set(renderId, {
 		localId: renderId,
-		lambdaRenderId: result.renderId,
+		lambdaRenderId: result.lambdaRenderId || '',
+		correlationId: result.correlationId,
+		outputS3Key: result.outputS3Key,
 		bucketName: result.bucketName,
 		functionName: infra.functionName,
 		region: infra.region,
-		status: 'queued',
+		status: 'rendering',
 		createdAt: Date.now(),
 	});
 
-	logger?.info('[remotion-lambda] Submitted. Lambda renderId: %s → our renderId: %s',
-		result.renderId, renderId);
+	logger?.info('[remotion-lambda] Submitted. correlationId=%s → our renderId=%s',
+		result.correlationId, renderId);
 
 	return renderId;
 }
@@ -404,6 +646,7 @@ export async function submitRemotionRenderDirect(
 			start: number;
 			duration: number;
 			position?: string;
+			animation?: string;  // 'fade' | 'slideUp' | 'slideDown' | 'scaleUp' | 'bounce' | 'typewriter'
 		}>;
 		musicUrl?: string | null;
 		mode: string;
@@ -514,6 +757,7 @@ export async function submitRemotionRenderDirect(
 			position: (overlay.position as 'top' | 'center' | 'bottom') || 'bottom',
 			isFirst: index === 0,
 			isLast: index === arr.length - 1,
+			animation: (overlay as { animation?: string }).animation as CLCVideoProps['textOverlays'][number]['animation'],
 		};
 	});
 
@@ -533,8 +777,7 @@ export async function submitRemotionRenderDirect(
 	logger?.info('[remotion-lambda] Submitting render (S3-backed): %d clips, %dx%d, mode=%s, platform=%s',
 		props.clips.length, props.width, props.height, config.mode, config.platform);
 
-	// Step 4: Submit to Lambda
-	const { renderMediaOnLambda } = await import('@remotion/lambda/client');
+	// Step 4: Submit to Lambda (via wrapper that handles hung calls on Railway).
 
 	// Calculate total frames to set framesPerLambda appropriately.
 	// AWS account has a low concurrency limit (default 10 for new accounts).
@@ -548,7 +791,7 @@ export async function submitRemotionRenderDirect(
 	logger?.info('[remotion-lambda] totalFrames=%d, framesPerLambda=%d (max %d renderer Lambdas)',
 		totalFrames, framesPerLambda, maxRendererLambdas);
 
-	const result = await renderMediaOnLambda({
+	const result = await submitRenderWithRetry({
 		region: infra.region as any,
 		functionName: infra.functionName,
 		serveUrl: infra.serveUrl,
@@ -559,33 +802,38 @@ export async function submitRemotionRenderDirect(
 		framesPerLambda,
 		// Generous timeout: still needed for OffthreadVideo to process large clips
 		timeoutInMilliseconds: 240_000,
-	});
+		forceBucketName: infra.bucketName,
+	}, appUrl, logger);
 
 	// Step 5: Store mapping in registry (update if pre-registered, otherwise create)
 	if (preRegisteredRenderId && renderRegistry.has(renderId)) {
 		updateRenderEntry(renderId, {
-			lambdaRenderId: result.renderId,
+			correlationId: result.correlationId,
+			outputS3Key: result.outputS3Key,
 			bucketName: result.bucketName,
+			lambdaRenderId: result.lambdaRenderId || '',
 			functionName: infra.functionName,
 			region: infra.region,
-			status: 'queued',
+			status: 'rendering',
 		});
 	} else {
 		const entry: LambdaRenderEntry = {
 			localId: renderId,
-			lambdaRenderId: result.renderId,
+			lambdaRenderId: result.lambdaRenderId || '',
+			correlationId: result.correlationId,
+			outputS3Key: result.outputS3Key,
 			bucketName: result.bucketName,
 			functionName: infra.functionName,
 			region: infra.region,
-			status: 'queued',
+			status: 'rendering',
 			createdAt: Date.now(),
 		};
 		renderRegistry.set(renderId, entry);
 	}
 
-	// Persist the exact props we handed Lambda + its render ID. This is the
+	// Persist the exact props we handed Lambda + our correlation ID. This is the
 	// last checkpoint under our control — anything after this is Lambda-side.
-	void logRenderSubmitted(renderId, result.renderId, props);
+	void logRenderSubmitted(renderId, result.correlationId, props);
 
 	// Schedule S3 cleanup after 30 minutes (generous: renders take 2-5 min)
 	const s3ClipsList = [...s3Clips.values()];
@@ -595,8 +843,8 @@ export async function submitRemotionRenderDirect(
 		await cleanupS3Clips(s3ClipsList, infra.bucketName, infra.region, logger);
 	}, 30 * 60 * 1000);
 
-	logger?.info('[remotion-lambda] Submitted (S3-backed). Lambda renderId: %s → our renderId: %s',
-		result.renderId, renderId);
+	logger?.info('[remotion-lambda] Submitted (S3-backed). correlationId=%s → our renderId=%s',
+		result.correlationId, renderId);
 
 	return renderId;
 }
@@ -631,12 +879,14 @@ export async function submitRemotionRenderPreprocessed(
 			start: number;
 			duration: number;
 			position?: string;
+			animation?: string;  // 'fade' | 'slideUp' | 'slideDown' | 'scaleUp' | 'bounce' | 'typewriter'
 		}>;
 		musicUrl?: string | null;
 		mode: string;
 		platform: string;
 	},
 	processedClips: PreprocessedClip[],
+	appUrl: string,
 	logger?: Logger,
 	existingRenderId?: string,
 ): Promise<string> {
@@ -703,6 +953,7 @@ export async function submitRemotionRenderPreprocessed(
 			position: (overlay.position as 'top' | 'center' | 'bottom') || 'bottom',
 			isFirst: index === 0,
 			isLast: index === arr.length - 1,
+			animation: (overlay as { animation?: string }).animation as CLCVideoProps['textOverlays'][number]['animation'],
 		};
 	});
 
@@ -722,8 +973,7 @@ export async function submitRemotionRenderPreprocessed(
 	logger?.info('[remotion-lambda] Submitting render (preprocessed): %d clips, %dx%d, mode=%s, platform=%s',
 		props.clips.length, props.width, props.height, config.mode, config.platform);
 
-	// Step 4: Submit to Lambda
-	const { renderMediaOnLambda } = await import('@remotion/lambda/client');
+	// Step 4: Submit to Lambda (via wrapper that handles hung calls on Railway).
 
 	const totalDuration = clipProps.reduce((sum, c) => sum + c.length, 0);
 	const totalFrames = Math.ceil(totalDuration * fps);
@@ -733,7 +983,7 @@ export async function submitRemotionRenderPreprocessed(
 	logger?.info('[remotion-lambda] totalFrames=%d, framesPerLambda=%d (max %d renderer Lambdas)',
 		totalFrames, framesPerLambda, maxRendererLambdas);
 
-	const result = await renderMediaOnLambda({
+	const result = await submitRenderWithRetry({
 		region: infra.region as any,
 		functionName: infra.functionName,
 		serveUrl: infra.serveUrl,
@@ -743,16 +993,19 @@ export async function submitRemotionRenderPreprocessed(
 		privacy: 'public',
 		framesPerLambda,
 		timeoutInMilliseconds: 240_000,
-	});
+		forceBucketName: infra.bucketName,
+	}, appUrl, logger);
 
 	// Step 5: Store mapping in registry
 	const entry: LambdaRenderEntry = {
 		localId: renderId,
-		lambdaRenderId: result.renderId,
+		lambdaRenderId: result.lambdaRenderId || '',
+		correlationId: result.correlationId,
+		outputS3Key: result.outputS3Key,
 		bucketName: result.bucketName,
 		functionName: infra.functionName,
 		region: infra.region,
-		status: 'queued',
+		status: 'rendering',
 		createdAt: Date.now(),
 	};
 	renderRegistry.set(renderId, entry);
@@ -765,8 +1018,8 @@ export async function submitRemotionRenderPreprocessed(
 		await cleanupS3Clips(s3ClipsList, infra.bucketName, infra.region, logger);
 	}, 30 * 60 * 1000);
 
-	logger?.info('[remotion-lambda] Submitted (preprocessed). Lambda renderId: %s → our renderId: %s',
-		result.renderId, renderId);
+	logger?.info('[remotion-lambda] Submitted (preprocessed). correlationId=%s → our renderId=%s',
+		result.correlationId, renderId);
 
 	return renderId;
 }
@@ -800,18 +1053,21 @@ export async function submitRemotionRenderWithPreprocessing(
 			duration?: number;
 			purpose?: string;
 			speed?: number;
+			subjectPosition?: string;  // From catalog — drives Lambda smart crop
 		}>;
 		textOverlays?: Array<{
 			text: string;
 			start: number;
 			duration: number;
 			position?: string;
+			animation?: string;  // 'fade' | 'slideUp' | 'slideDown' | 'scaleUp' | 'bounce' | 'typewriter'
 		}>;
 		musicUrl?: string | null;
 		mode: string;
 		platform: string;
 	},
 	renderId: string,
+	appUrl: string,
 	logger?: Logger,
 ): Promise<void> {
 	try {
@@ -858,8 +1114,11 @@ export async function submitRemotionRenderWithPreprocessing(
 		let processedClipResults: Awaited<ReturnType<typeof invokePreprocessorForClips>> | null = null;
 
 		try {
-			const preprocessorConfigs = buildPreprocessorConfigs(config.clips, s3Clips);
-			logger?.info('[remotion-lambda] Attempting preprocessor Lambda for %d clips... [mem: %s]', preprocessorConfigs.length, memLog());
+			const platformSettingsForAspect = PLATFORM_SETTINGS[config.platform] || PLATFORM_SETTINGS['youtube']!;
+			const targetAspect = platformSettingsForAspect.aspectRatio as '9:16' | '1:1' | '4:5' | '16:9';
+			const preprocessorConfigs = buildPreprocessorConfigs(config.clips, s3Clips, 5, targetAspect);
+			logger?.info('[remotion-lambda] Attempting preprocessor Lambda for %d clips (aspect=%s)... [mem: %s]',
+				preprocessorConfigs.length, targetAspect, memLog());
 
 			processedClipResults = await invokePreprocessorForClips(
 				preprocessorConfigs,
@@ -893,22 +1152,34 @@ export async function submitRemotionRenderWithPreprocessing(
 		let clipProps: CLCVideoProps['clips'];
 
 		if (useProcessedClips && processedClipResults) {
-			// Preprocessed: trimStart=0 because FFmpeg already trimmed
+			// Preprocessed: trimStart=0 because FFmpeg already trimmed.
+			// Per-clip Remotion metadata (effect/filter/transitions) flows through
+			// the preprocessor result as passthrough fields — no re-correlation needed.
 			clipProps = processedClipResults.map((pc) => ({
 				src: pc.outputS3Url,
 				length: pc.effectiveDuration,
 				trimStart: 0,
+				effect: pc.effect,
+				filter: pc.filter,
+				transitionType: pc.transitionType,
+				transitionDirection: pc.transitionDirection,
+				speedKeyframes: pc.speedKeyframes,
 			}));
 			logger?.info('[remotion-lambda] Using %d preprocessed clips (stabilized + sharpened)', clipProps.length);
 		} else {
-			// Fallback: use raw S3 clips with original trim/duration from edit plan
-			clipProps = config.clips.map((clip) => {
+			// Fallback: use raw S3 clips with original trim/duration from edit plan.
+			clipProps = config.clips.map((clip: any) => {
 				const s3Info = s3Clips.get(clip.fileId);
 				if (!s3Info) throw new Error(`S3 upload missing for clip ${clip.fileId}`);
 				return {
 					src: s3Info.s3Url,
 					length: clip.duration || 5,
 					trimStart: clip.trimStart || 0,
+					effect: clip.effect,
+					filter: clip.filter,
+					transitionType: clip.transitionType,
+					transitionDirection: clip.transitionDirection,
+					speedKeyframes: clip.speedKeyframes,
 				};
 			});
 			logger?.info('[remotion-lambda] Using %d raw clips (no preprocessing — fallback mode)', clipProps.length);
@@ -944,8 +1215,7 @@ export async function submitRemotionRenderWithPreprocessing(
 		logger?.info('[remotion-lambda] Submitting render (preprocessed via Lambda): %d clips, %dx%d, mode=%s',
 			props.clips.length, props.width, props.height, config.mode);
 
-		// Step 5: Submit to Remotion Lambda
-		const { renderMediaOnLambda } = await import('@remotion/lambda/client');
+		// Step 5: Submit to Remotion Lambda (via wrapper that handles hung calls on Railway).
 
 		const totalDuration = clipProps.reduce((sum, c) => sum + c.length, 0);
 		const totalFrames = Math.ceil(totalDuration * fps);
@@ -955,7 +1225,7 @@ export async function submitRemotionRenderWithPreprocessing(
 		logger?.info('[remotion-lambda] totalFrames=%d, framesPerLambda=%d',
 			totalFrames, framesPerLambda);
 
-		const result = await renderMediaOnLambda({
+		const result = await submitRenderWithRetry({
 			region: infra.region as any,
 			functionName: infra.functionName,
 			serveUrl: infra.serveUrl,
@@ -965,12 +1235,17 @@ export async function submitRemotionRenderWithPreprocessing(
 			privacy: 'public',
 			framesPerLambda,
 			timeoutInMilliseconds: 240_000,
-		});
+			forceBucketName: infra.bucketName,
+		}, appUrl, logger);
 
-		// Step 6: Update render registry with Lambda render ID
+		// Step 6: Update render registry with correlation ID + output location.
+		// lambdaRenderId may come from the streaming-invoke's first message; if
+		// not present, webhook will fill it in when it fires.
 		updateRenderEntry(renderId, {
-			lambdaRenderId: result.renderId,
+			correlationId: result.correlationId,
+			outputS3Key: result.outputS3Key,
 			bucketName: result.bucketName,
+			lambdaRenderId: result.lambdaRenderId || '',
 			functionName: infra.functionName,
 			region: infra.region,
 			status: 'rendering',
@@ -994,8 +1269,8 @@ export async function submitRemotionRenderWithPreprocessing(
 			await cleanupS3Clips(allClips, infra.bucketName, infra.region, logger);
 		}, 30 * 60 * 1000);
 
-		logger?.info('[remotion-lambda] Submitted (preprocessed via Lambda). Lambda renderId: %s → our renderId: %s',
-			result.renderId, renderId);
+		logger?.info('[remotion-lambda] Submitted (preprocessed via Lambda). correlationId=%s → our renderId=%s',
+			result.correlationId, renderId);
 
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
@@ -1009,7 +1284,16 @@ export async function submitRemotionRenderWithPreprocessing(
 /**
  * Check the status of a Remotion Lambda render.
  *
- * Polls AWS Lambda for progress, caches done/failed results.
+ * Event+webhook architecture: Lambda was fire-and-forget invoked, so we can't
+ * call getRenderProgress (we don't have Remotion's server-generated renderId).
+ * Instead we check two completion signals in this order:
+ *
+ *   1. Webhook store lookup by correlationId — fast path, fires within seconds
+ *      of success or error. Delivers outputUrl (success) or errors[] (failure).
+ *   2. S3 HeadObject on our known outputS3Key — fallback in case webhook fails
+ *      (network drop, Railway restart losing in-memory map, etc.). Object
+ *      existence = success.
+ *
  * Returns the same RenderResult shape as Shotstack's checkStatus()
  * so the frontend polling code works transparently.
  */
@@ -1032,57 +1316,107 @@ export async function checkRemotionStatus(renderId: string, logger?: Logger): Pr
 		return { id: renderId, status: 'failed', error: entry.error };
 	}
 
-	// If Lambda hasn't been submitted yet (still preprocessing), return queued status
-	if (!entry.lambdaRenderId || !entry.bucketName || !entry.region) {
+	// If Lambda hasn't been submitted yet (still preprocessing), return queued.
+	// Submit sets correlationId + outputS3Key, so their absence means we're pre-submit.
+	if (!entry.correlationId || !entry.outputS3Key || !entry.bucketName || !entry.region) {
 		logger?.info('[remotion-lambda] Render %s still preprocessing (awaiting Lambda submission)', renderId);
 		return { id: renderId, status: 'rendering' };
 	}
 
-	// Poll Lambda for progress
+	// Step 1: Check webhook store first — this is the fast-and-rich path that
+	// gives us error details immediately if the render fails.
 	try {
-		const { getRenderProgress } = await import('@remotion/lambda/client');
-
-		const progress = await getRenderProgress({
-			renderId: entry.lambdaRenderId,
-			bucketName: entry.bucketName,
-			functionName: entry.functionName,
-			region: entry.region as any,
-		});
-
-		if (progress.fatalErrorEncountered) {
-			const errorMsg = progress.errors?.[0]?.message || 'Lambda render failed';
-			entry.status = 'failed';
-			entry.error = errorMsg;
-			logger?.error?.('[remotion-lambda] Render %s failed: %s', renderId, errorMsg);
-			// Persist terminal failure (fire-and-forget).
-			void logRenderFailed(renderId, errorMsg);
-			return { id: renderId, status: 'failed', error: errorMsg };
+		const { getWebhookResult } = await import('./webhook-store');
+		const webhookResult = getWebhookResult(entry.correlationId);
+		if (webhookResult) {
+			if (webhookResult.type === 'success') {
+				entry.status = 'done';
+				entry.outputUrl = webhookResult.outputUrl;
+				entry.lambdaRenderId = webhookResult.renderId;
+				logger?.info('[remotion-lambda] Render %s complete via webhook: %s', renderId, webhookResult.outputUrl);
+				void logRenderDone(renderId, webhookResult.outputUrl);
+				return { id: renderId, status: 'done', url: webhookResult.outputUrl };
+			}
+			if (webhookResult.type === 'error') {
+				const errorMsg = webhookResult.errors?.[0]?.message || 'Lambda render failed';
+				entry.status = 'failed';
+				entry.error = errorMsg;
+				entry.lambdaRenderId = webhookResult.renderId;
+				logger?.error?.('[remotion-lambda] Render %s failed via webhook: %s', renderId, errorMsg);
+				void logRenderFailed(renderId, errorMsg);
+				return { id: renderId, status: 'failed', error: errorMsg };
+			}
+			if (webhookResult.type === 'timeout') {
+				const errorMsg = 'Lambda render timed out';
+				entry.status = 'failed';
+				entry.error = errorMsg;
+				entry.lambdaRenderId = webhookResult.renderId;
+				void logRenderFailed(renderId, errorMsg);
+				return { id: renderId, status: 'failed', error: errorMsg };
+			}
 		}
-
-		if (progress.done && progress.outputFile) {
-			// With privacy: 'public', outputFile is a directly accessible S3 URL
-			entry.status = 'done';
-			entry.outputUrl = progress.outputFile;
-			logger?.info('[remotion-lambda] Render %s complete: %s', renderId, progress.outputFile);
-			// Persist terminal success (fire-and-forget).
-			void logRenderDone(renderId, progress.outputFile);
-			return { id: renderId, status: 'done', url: progress.outputFile };
-		}
-
-		// Still in progress
-		const pct = (progress.overallProgress * 100).toFixed(0);
-		logger?.info('[remotion-lambda] Render %s progress: %s%%', renderId, pct);
-
-		entry.status = 'rendering';
-		const mappedStatus: RenderResult['status'] = progress.overallProgress > 0 ? 'rendering' : 'fetching';
-		return { id: renderId, status: mappedStatus };
-
 	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		logger?.error?.('[remotion-lambda] Progress check failed for %s: %s', renderId, msg);
-		// Don't mark as failed on transient errors — let polling retry
-		return { id: renderId, status: 'rendering' };
+		logger?.warn?.('[remotion-lambda] Webhook store check failed: %s',
+			err instanceof Error ? err.message : String(err));
 	}
+
+	// Step 2: S3 HeadObject fallback — for the case where the webhook never
+	// reached us (Railway restart, network issue, etc.). Existence of the object
+	// at our known outName path means the render succeeded.
+	try {
+		const { S3Client, HeadObjectCommand } = await import('@aws-sdk/client-s3');
+		const s3 = new S3Client({
+			region: entry.region,
+			credentials: {
+				accessKeyId: process.env.REMOTION_AWS_ACCESS_KEY_ID!,
+				secretAccessKey: process.env.REMOTION_AWS_SECRET_ACCESS_KEY!,
+			},
+		});
+		try {
+			const head = await s3.send(new HeadObjectCommand({
+				Bucket: entry.bucketName,
+				Key: entry.outputS3Key,
+			}));
+			// Reject 0-byte or tiny files — Lambda occasionally creates the key
+			// before writing bytes, and a 0-byte "mp4" would break the frontend
+			// player. Real renders are >100KB even for short clips.
+			const sizeBytes = head.ContentLength || 0;
+			if (sizeBytes < 1024) {
+				logger?.warn?.('[remotion-lambda] S3 object exists but too small (%d bytes), treating as in-progress', sizeBytes);
+			} else {
+				const outputUrl = `https://${entry.bucketName}.s3.${entry.region}.amazonaws.com/${entry.outputS3Key}`;
+				entry.status = 'done';
+				entry.outputUrl = outputUrl;
+				logger?.info('[remotion-lambda] Render %s complete via S3 fallback: %s (%d bytes)', renderId, outputUrl, sizeBytes);
+				void logRenderDone(renderId, outputUrl);
+				return { id: renderId, status: 'done', url: outputUrl };
+			}
+		} catch (err: any) {
+			if (err.name !== 'NotFound' && err.$metadata?.httpStatusCode !== 404) {
+				logger?.warn?.('[remotion-lambda] S3 HeadObject failed: %s', err.message);
+			}
+			// 404 = still rendering
+		}
+	} catch (err) {
+		logger?.warn?.('[remotion-lambda] S3 fallback check failed: %s',
+			err instanceof Error ? err.message : String(err));
+	}
+
+	// Neither signal has fired yet — still rendering.
+	// Safety net: if we've been waiting > 15 min, declare timeout. Local tests
+	// show 12-clip renders take ~5-8 min (preprocessing + 4 chunks + stitching),
+	// so 15 min gives 2x headroom for network/cold-start variance.
+	const ageMs = Date.now() - entry.createdAt;
+	if (ageMs > 15 * 60 * 1000) {
+		const errorMsg = `Lambda render timed out after ${Math.round(ageMs / 1000)}s with no webhook or output file`;
+		entry.status = 'failed';
+		entry.error = errorMsg;
+		logger?.error?.('[remotion-lambda] Render %s safety-net timeout: %s', renderId, errorMsg);
+		void logRenderFailed(renderId, errorMsg);
+		return { id: renderId, status: 'failed', error: errorMsg };
+	}
+
+	return { id: renderId, status: 'rendering' };
 }
 
 // --- Availability Check ---

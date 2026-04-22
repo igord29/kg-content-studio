@@ -137,6 +137,247 @@ api.post('/video-editor', videoEditor.validator(), async (c) => {
 	return c.json(await videoEditor.run({ ...data, appUrl: origin, usageSummary }));
 });
 
+// Remotion Lambda webhook — Remotion Lambda POSTs here on success/error/timeout.
+// We correlate via customData.correlationId, verify HMAC sha512 signature, and
+// write the result to the in-memory webhook store that the submit loop is polling.
+// See: src/agent/video-editor/remotion/webhook-store.ts
+api.post('/remotion-webhook', async (c) => {
+	const rawBody = await c.req.text();
+
+	// Verify HMAC signature if a secret is configured (matches Remotion's
+	// invoke-webhook.js: `sha512=` + HMAC-SHA512(secret, body))
+	const secret = process.env.REMOTION_WEBHOOK_SECRET;
+	const receivedSig = c.req.header('x-remotion-signature') || '';
+	if (secret && secret !== 'NO_SECRET_PROVIDED') {
+		const crypto = await import('node:crypto');
+		const expectedSig = 'sha512=' + crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
+		try {
+			const a = Buffer.from(expectedSig);
+			const b = Buffer.from(receivedSig);
+			if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+				return c.text('Invalid signature', 401);
+			}
+		} catch {
+			return c.text('Invalid signature', 401);
+		}
+	}
+
+	type WebhookPayload = {
+		type: 'success' | 'error' | 'timeout';
+		renderId: string;
+		customData?: { correlationId?: string } | null;
+		outputUrl?: string;
+		timeToFinish?: number;
+		errors?: Array<{ message: string; name: string; stack?: string }>;
+	};
+	let payload: WebhookPayload;
+	try {
+		payload = JSON.parse(rawBody) as WebhookPayload;
+	} catch {
+		return c.text('Invalid JSON', 400);
+	}
+
+	const correlationId = payload.customData?.correlationId;
+	if (!correlationId) {
+		return c.text('Missing customData.correlationId', 400);
+	}
+
+	const { setWebhookResult } = await import('../agent/video-editor/remotion/webhook-store');
+	const receivedAt = Date.now();
+	if (payload.type === 'success') {
+		setWebhookResult(correlationId, {
+			type: 'success',
+			renderId: payload.renderId,
+			outputUrl: payload.outputUrl || '',
+			timeToFinish: payload.timeToFinish || 0,
+			receivedAt,
+		});
+	} else if (payload.type === 'error') {
+		setWebhookResult(correlationId, {
+			type: 'error',
+			renderId: payload.renderId,
+			errors: payload.errors || [{ message: 'Unknown error', name: 'Unknown' }],
+			receivedAt,
+		});
+	} else if (payload.type === 'timeout') {
+		setWebhookResult(correlationId, {
+			type: 'timeout',
+			renderId: payload.renderId,
+			receivedAt,
+		});
+	} else {
+		return c.text('Unknown webhook type: ' + String((payload as { type: string }).type), 400);
+	}
+
+	return c.text('OK', 200);
+});
+
+// Debug endpoint: invoke the render Lambda with a tiny dummy payload and
+// return the exact sequence of stream events observed, so we can diagnose
+// why submit appears to succeed but Lambda never actually runs on Railway.
+//
+// Gated by DEBUG_TOKEN env var so random traffic can't trigger a Lambda.
+// Usage:  curl -X POST https://<app>/api/debug-lambda-submit -H "x-debug-token: <token>"
+api.post('/debug-lambda-submit', async (c) => {
+	const token = c.req.header('x-debug-token') || c.req.query('token');
+	const expected = process.env.DEBUG_TOKEN;
+	if (!expected || token !== expected) {
+		return c.json({ error: 'Forbidden' }, 403);
+	}
+
+	const events: Array<Record<string, unknown>> = [];
+	const log = (msg: string, extra?: Record<string, unknown>) => {
+		events.push({ t: Date.now(), msg, ...(extra || {}) });
+		console.log('[debug-lambda-submit]', msg, extra || '');
+	};
+
+	try {
+		const { LambdaClient, InvokeWithResponseStreamCommand } = await import('@aws-sdk/client-lambda');
+		const region = process.env.REMOTION_AWS_REGION || 'us-east-1';
+		const functionName = process.env.REMOTION_FUNCTION_NAME;
+		const bucketName = process.env.REMOTION_BUCKET_NAME;
+		const serveUrl = process.env.REMOTION_SERVE_URL;
+
+		if (!functionName || !bucketName || !serveUrl) {
+			return c.json({ error: 'Missing REMOTION_* env vars' }, 500);
+		}
+
+		const lambdaClientMod: any = await import('@remotion/lambda-client');
+		const { makeLambdaRenderMediaPayload, renderMediaOnLambdaOptionalToRequired } =
+			lambdaClientMod.LambdaClientInternals;
+
+		// Tiny 2-clip dummy payload pointing at an already-preprocessed mp4 in S3
+		// (from previous test renders — these files still exist).
+		const realVideoUrl = `https://${bucketName}.s3.${region}.amazonaws.com/temp-clips/render_1776757038634_24wl/1795MeSx_DsodS2TfH8X-HsQTGrhklLR5.mp4`;
+		const correlationId = `debug-${Date.now()}`;
+		const outputS3Key = `custom-renders/${correlationId}/out.mp4`;
+		const inputProps = {
+			clips: [
+				{ src: realVideoUrl, length: 3 },
+				{ src: realVideoUrl, length: 3 },
+			],
+			mode: 'game_day',
+			width: 1080,
+			height: 1920,
+			fps: 30,
+			transitionDurationFrames: 15,
+			bgColor: '#000000',
+			textOverlays: [],
+			musicUrl: null,
+		};
+
+		const fullInput = renderMediaOnLambdaOptionalToRequired({
+			region,
+			functionName,
+			serveUrl,
+			composition: 'CLCVideo',
+			codec: 'h264',
+			inputProps,
+			privacy: 'public',
+			framesPerLambda: 180,
+			timeoutInMilliseconds: 240_000,
+			forceBucketName: bucketName,
+			outName: { key: outputS3Key, bucketName },
+			webhook: null,
+		});
+
+		log('built fullInput');
+		const renderPayload = await makeLambdaRenderMediaPayload(fullInput);
+		const payloadBytes = Buffer.from(JSON.stringify(renderPayload));
+		log('built renderPayload', { payloadSize: payloadBytes.length });
+
+		const lambda = new LambdaClient({
+			region,
+			credentials: {
+				accessKeyId: process.env.REMOTION_AWS_ACCESS_KEY_ID!,
+				secretAccessKey: process.env.REMOTION_AWS_SECRET_ACCESS_KEY!,
+			},
+		});
+
+		log('calling InvokeWithResponseStream', { functionName, region });
+		const t0 = Date.now();
+		const streamResult = await lambda.send(
+			new InvokeWithResponseStreamCommand({
+				FunctionName: functionName,
+				Payload: payloadBytes,
+				InvocationType: 'RequestResponse',
+			}),
+		);
+
+		log('lambda.send resolved', {
+			ms: Date.now() - t0,
+			StatusCode: streamResult.StatusCode,
+			ResponseStreamContentType: streamResult.ResponseStreamContentType || null,
+			hasEventStream: Boolean(streamResult.EventStream),
+		});
+
+		if (!streamResult.EventStream) {
+			return c.json({ ok: false, reason: 'no-event-stream', events, correlationId, outputS3Key });
+		}
+
+		let eventIdx = 0;
+		const eventDetails: Array<Record<string, unknown>> = [];
+		const iterStart = Date.now();
+		try {
+			await (async () => {
+				const timeout = new Promise<never>((_, reject) => {
+					setTimeout(() => reject(new Error('iteration timeout 30s')), 30_000);
+				});
+				const iterate = (async () => {
+					for await (const event of streamResult.EventStream!) {
+						eventIdx++;
+						const entry: Record<string, unknown> = {
+							idx: eventIdx,
+							ms: Date.now() - iterStart,
+							keys: Object.keys(event || {}),
+						};
+						if (event.PayloadChunk?.Payload) {
+							const text = new TextDecoder().decode(event.PayloadChunk.Payload);
+							entry.payloadBytes = event.PayloadChunk.Payload.length;
+							entry.payloadText = text.slice(0, 500);
+						}
+						if (event.InvokeComplete) {
+							const ic: any = event.InvokeComplete;
+							entry.invokeComplete = {
+								ErrorCode: ic?.ErrorCode || null,
+								ErrorDetails: (ic?.ErrorDetails || '').slice(0, 2000),
+								LogResult: (ic?.LogResult || '').slice(0, 2000),
+							};
+						}
+						eventDetails.push(entry);
+						log(`event #${eventIdx}`, entry);
+						if (eventIdx >= 5) break;  // enough diagnostics
+					}
+				})();
+				await Promise.race([iterate, timeout]);
+			})();
+		} catch (iterErr) {
+			const msg = iterErr instanceof Error ? iterErr.message : String(iterErr);
+			log('iteration error', { err: msg });
+		}
+
+		return c.json({
+			ok: true,
+			correlationId,
+			outputS3Key,
+			lambdaResponse: {
+				StatusCode: streamResult.StatusCode,
+				ResponseStreamContentType: streamResult.ResponseStreamContentType || null,
+				hasEventStream: Boolean(streamResult.EventStream),
+			},
+			eventCount: eventIdx,
+			eventDetails,
+			events,
+		});
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		const name = err instanceof Error ? err.name : 'Unknown';
+		const stack = err instanceof Error ? err.stack : undefined;
+		log('top-level error', { name, msg, stack: stack?.slice(0, 500) });
+		return c.json({ ok: false, error: msg, name, events }, 500);
+	}
+});
+
 // CORS headers for Drive proxy — required for Remotion Lambda (Chrome at localhost:3000)
 const DRIVE_PROXY_CORS: Record<string, string> = {
 	'Access-Control-Allow-Origin': '*',

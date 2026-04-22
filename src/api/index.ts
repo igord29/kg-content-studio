@@ -212,6 +212,36 @@ api.post('/remotion-webhook', async (c) => {
 	return c.text('OK', 200);
 });
 
+// Debug endpoint: report what Remotion package versions are actually loaded
+// at RUNTIME on Railway. Helps when version-pin-at-build-time passes but
+// runtime still hits a version-mismatch error from Lambda.
+api.get('/debug-remotion-version', async (c) => {
+	const token = c.req.header('x-debug-token') || c.req.query('token');
+	const expected = process.env.DEBUG_TOKEN;
+	if (!expected || token !== expected) {
+		return c.json({ error: 'Forbidden' }, 403);
+	}
+	const probes: Record<string, unknown> = {};
+	for (const pkg of [
+		'@remotion/lambda',
+		'@remotion/lambda-client',
+		'@remotion/serverless',
+		'@remotion/serverless-client',
+		'@remotion/streaming',
+		'remotion',
+	]) {
+		try {
+			const req = (await import('node:module')).createRequire(import.meta.url);
+			const pkgJsonPath = req.resolve(`${pkg}/package.json`);
+			const pkgJson = req(pkgJsonPath);
+			probes[pkg] = { version: pkgJson.version, path: pkgJsonPath };
+		} catch (err) {
+			probes[pkg] = { error: err instanceof Error ? err.message : String(err) };
+		}
+	}
+	return c.json({ probes, functionName: process.env.REMOTION_FUNCTION_NAME });
+});
+
 // Debug endpoint: invoke the render Lambda with a tiny dummy payload and
 // return the exact sequence of stream events observed, so we can diagnose
 // why submit appears to succeed but Lambda never actually runs on Railway.

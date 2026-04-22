@@ -89,6 +89,21 @@ COPY --from=builder /app/package.json ./
 # needs the server on 0.0.0.0. Replace the hardcoded hostname with an env-var lookup.
 RUN sed -i 's/hostname:"127.0.0.1"/hostname:process.env.HOST||"127.0.0.1"/g' .agentuity/app.js
 
+# Patch: Agentuity's bundled SIGTERM/SIGINT shutdown handler calls process.exit(0),
+# but their own _process-protection.js overrides process.exit to throw
+# ProcessExitAttemptError. Every Railway container-stop therefore crashes instead
+# of exiting cleanly — which we confirmed in the shutdown logs. The protection
+# code stashes the original exit at globalThis.AGENTUITY_PROCESS_EXIT, so route
+# the shutdown through that (with a fallback for forward compatibility).
+# Diagnosis history: 2026-04-22 — observed ProcessExitAttemptError on every
+# old-container SIGTERM during Railway redeploys.
+RUN sed -i 's#process\.exit(0)};process\.once("SIGTERM"#(globalThis.AGENTUITY_PROCESS_EXIT||process.exit)(0)};process.once("SIGTERM"#' .agentuity/app.js && \
+    if ! grep -q "AGENTUITY_PROCESS_EXIT||process.exit" .agentuity/app.js; then \
+      echo "[sigterm-patch] FATAL: pattern did not match bundled shutdown handler — agentuity CLI output may have changed" && exit 1; \
+    else \
+      echo "[sigterm-patch] OK: shutdown handler now routes through AGENTUITY_PROCESS_EXIT"; \
+    fi
+
 # Railway sets PORT env var; app.js reads process.env.PORT
 ENV HOST=0.0.0.0
 ENV NODE_ENV=production

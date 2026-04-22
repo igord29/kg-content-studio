@@ -278,6 +278,7 @@ async function submitRenderWithRetry(
 			// of the stream — Lambda will continue running regardless.
 			let firstMessage: string | null = null;
 			let lambdaRenderId: string | undefined;
+			let startError: { message: string; fatal: boolean } | null = null;
 			let eventCount = 0;
 			let sawPayloadChunk = false;
 			let sawInvokeComplete = false;
@@ -300,17 +301,30 @@ async function submitRenderWithRetry(
 								logger?.info('[remotion-lambda]   PayloadChunk (%d bytes): %s',
 									event.PayloadChunk.Payload.length,
 									firstMessage.slice(0, 300));
+								// Parse the payload OUTSIDE the error-detection logic — a
+								// JSON.parse failure is recoverable, but a {type:"error"}
+								// payload is NOT and must propagate. The old code had the
+								// throw inside the try/catch, so error payloads got
+								// silently swallowed and the render would hang for 900s.
+								let parsed: any = null;
 								try {
-									const parsed = JSON.parse(firstMessage);
-									if (parsed.type === 'error') {
-										throw new Error(`Render Lambda start error: ${parsed.message || firstMessage}`);
-									}
-									if (parsed.renderId) {
-										lambdaRenderId = parsed.renderId;
-									}
-								} catch (parseErr) {
+									parsed = JSON.parse(firstMessage);
+								} catch {
 									logger?.warn?.('[remotion-lambda] First stream message not JSON: %s',
 										firstMessage.slice(0, 200));
+								}
+								if (parsed?.type === 'error') {
+									// Version-mismatch & similar fatal errors — no point
+									// retrying; the Lambda will reject every time.
+									const msg = parsed.message || firstMessage;
+									const isVersionMismatch = typeof msg === 'string' &&
+										msg.includes('Version mismatch');
+									startError = {
+										message: `Render Lambda start error: ${msg}`,
+										fatal: isVersionMismatch,
+									};
+								} else if (parsed?.renderId) {
+									lambdaRenderId = parsed.renderId;
 								}
 								break;
 							}
@@ -339,6 +353,18 @@ async function submitRenderWithRetry(
 				}
 			}
 
+			// Lambda responded with a {type:"error"} payload — e.g. version mismatch.
+			// This is NOT recoverable by retry; surface it so the caller fails fast
+			// instead of waiting for the 900s safety-net.
+			if (startError) {
+				const err = new Error(startError.message);
+				if (startError.fatal) {
+					// Tag as fatal so the outer retry loop doesn't waste attempts.
+					(err as Error & { fatal?: boolean }).fatal = true;
+				}
+				throw err;
+			}
+
 			// If the stream ended cleanly but yielded no PayloadChunk, Lambda
 			// probably didn't actually execute — fail the attempt so we retry.
 			if (!sawPayloadChunk) {
@@ -353,8 +379,15 @@ async function submitRenderWithRetry(
 		} catch (err) {
 			lastErr = err;
 			const msg = err instanceof Error ? err.message : String(err);
-			logger?.warn?.('[remotion-lambda] Submit attempt %d/%d failed after %dms: %s',
-				attempt, maxAttempts, Date.now() - start, msg);
+			const isFatal = err instanceof Error &&
+				(err as Error & { fatal?: boolean }).fatal === true;
+			logger?.warn?.('[remotion-lambda] Submit attempt %d/%d failed after %dms: %s%s',
+				attempt, maxAttempts, Date.now() - start, msg,
+				isFatal ? ' (fatal — skipping retries)' : '');
+			if (isFatal) {
+				// e.g. version mismatch — no point retrying, the Lambda will reject every time.
+				break;
+			}
 			if (attempt < maxAttempts) {
 				await new Promise(r => setTimeout(r, 1000 * attempt));
 			}

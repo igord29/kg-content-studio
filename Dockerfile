@@ -16,14 +16,22 @@ COPY . .
 RUN bash create-stubs.sh && bun fix-registry-paths.js --skip-type-check
 
 # Pin Remotion to exactly match the deployed Lambda function.
-# The Agentuity build step can re-resolve packages. If the version drifted,
-# overwrite with the exact version using npm (which doesn't re-resolve transitive deps).
-# FAIL the build if we can't match — deploying a mismatched version wastes time.
+# Two node_modules trees exist after agentuity build:
+#   /app/node_modules                    (from bun install, pinned by bun.lock)
+#   /app/.agentuity/node_modules         (from agentuity build's Vite bundler,
+#                                         which runs `npm install` internally
+#                                         and resolves caret ranges to latest)
+# The RUNTIME resolves from .agentuity/node_modules, so BOTH must be pinned.
+# Diagnosis history: 2026-04-22 — runtime shipped 4.0.451 while Lambda was
+# 4.0.448, causing every render to fail with a Version-mismatch error payload
+# that our submit code swallowed into a 901s safety-net timeout.
 ARG REMOTION_TARGET_VERSION=4.0.448
+
+# Pin the outer (bun-installed) tree.
 RUN INSTALLED=$(node -e "console.log(require('@remotion/lambda/package.json').version)") && \
-    echo "Remotion version after build: $INSTALLED (target: $REMOTION_TARGET_VERSION)" && \
+    echo "[outer] Remotion installed: $INSTALLED (target: $REMOTION_TARGET_VERSION)" && \
     if [ "$INSTALLED" != "$REMOTION_TARGET_VERSION" ]; then \
-      echo "Version mismatch — fixing with npm..." && \
+      echo "[outer] Version drift — patching with npm install..." && \
       npm install --no-save \
         @remotion/lambda@$REMOTION_TARGET_VERSION \
         @remotion/lambda-client@$REMOTION_TARGET_VERSION \
@@ -32,10 +40,34 @@ RUN INSTALLED=$(node -e "console.log(require('@remotion/lambda/package.json').ve
         @remotion/serverless-client@$REMOTION_TARGET_VERSION \
         @remotion/streaming@$REMOTION_TARGET_VERSION 2>&1 | tail -3 && \
       AFTER=$(node -e "console.log(require('@remotion/lambda/package.json').version)") && \
-      echo "Remotion version after fix: $AFTER" && \
-      [ "$AFTER" = "$REMOTION_TARGET_VERSION" ] || (echo "FATAL: still $AFTER" && exit 1); \
+      echo "[outer] Remotion after fix: $AFTER" && \
+      [ "$AFTER" = "$REMOTION_TARGET_VERSION" ] || (echo "[outer] FATAL: still $AFTER" && exit 1); \
     else \
-      echo "OK: Remotion $INSTALLED matches Lambda"; \
+      echo "[outer] OK: matches target"; \
+    fi
+
+# Pin the inner (.agentuity) tree — this is what runs at runtime.
+# Guard with a -d check because the Agentuity build may not always create this tree.
+RUN if [ -d "/app/.agentuity/node_modules/@remotion/lambda" ]; then \
+      INNER_INSTALLED=$(node -e "console.log(require('/app/.agentuity/node_modules/@remotion/lambda/package.json').version)") && \
+      echo "[inner] Remotion installed: $INNER_INSTALLED (target: $REMOTION_TARGET_VERSION)" && \
+      if [ "$INNER_INSTALLED" != "$REMOTION_TARGET_VERSION" ]; then \
+        echo "[inner] Version drift — patching with npm install at .agentuity/..." && \
+        cd /app/.agentuity && npm install --no-save \
+          @remotion/lambda@$REMOTION_TARGET_VERSION \
+          @remotion/lambda-client@$REMOTION_TARGET_VERSION \
+          remotion@$REMOTION_TARGET_VERSION \
+          @remotion/serverless@$REMOTION_TARGET_VERSION \
+          @remotion/serverless-client@$REMOTION_TARGET_VERSION \
+          @remotion/streaming@$REMOTION_TARGET_VERSION 2>&1 | tail -3 && \
+        INNER_AFTER=$(node -e "console.log(require('/app/.agentuity/node_modules/@remotion/lambda/package.json').version)") && \
+        echo "[inner] Remotion after fix: $INNER_AFTER" && \
+        [ "$INNER_AFTER" = "$REMOTION_TARGET_VERSION" ] || (echo "[inner] FATAL: still $INNER_AFTER" && exit 1); \
+      else \
+        echo "[inner] OK: matches target"; \
+      fi \
+    else \
+      echo "[inner] .agentuity/node_modules/@remotion/lambda not found — skipping (will runtime-fail if agentuity bundles remotion)"; \
     fi
 
 # --- Runtime stage (smaller image) ---

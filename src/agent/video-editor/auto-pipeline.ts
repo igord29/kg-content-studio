@@ -79,6 +79,36 @@ async function generateEditPlan(
 		}
 	}
 
+	// V2 PIPELINE FEATURE FLAG.
+	// When VIDEO_EDITOR_USE_V2_PIPELINE=true, route through the multi-step
+	// pipeline (4 focused Claude calls instead of one 14K-token monolith).
+	// Any v2 failure falls through to v1 below — so enabling v2 is safe.
+	if (process.env.VIDEO_EDITOR_USE_V2_PIPELINE === 'true') {
+		try {
+			const { generateEditPlanV2 } = await import('./pipeline-v2');
+			logger.info('[auto-pipeline] VIDEO_EDITOR_USE_V2_PIPELINE=true → using v2 multi-step pipeline');
+			const plan = await generateEditPlanV2(
+				{
+					videoIds,
+					catalog: catalogMap,
+					videoMetadata: videoDetails.filter((v): v is typeof v & { id: string; name: string } => !('error' in v)),
+					topic,
+					purpose,
+					platform,
+					editMode: editMode as 'auto' | 'game_day' | 'our_story' | 'quick_hit' | 'showcase',
+				},
+				logger,
+			);
+			return plan as unknown as Record<string, unknown>;
+		} catch (err) {
+			logger.warn(
+				'[auto-pipeline] ⚠️ V2 pipeline failed (%s) — falling back to V1 monolith. Set VIDEO_EDITOR_USE_V2_PIPELINE=false to silence.',
+				String(err),
+			);
+			// fall through to v1
+		}
+	}
+
 	// Build footage context. We also track how many clips lack scene analysis so
 	// we can surface a loud operator-visible warning below — without scene data
 	// the Director falls back to even-spread estimates, which is exactly how we

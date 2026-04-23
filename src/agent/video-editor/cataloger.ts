@@ -660,9 +660,27 @@ const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/che
   IMPORTANT: An empty court or people standing around = 1-2. Actual ball-hitting, serving, rallying = 4-5.
 - energy: How visually compelling is this for a social media clip? (1=boring/static/empty, 2=mildly interesting, 3=decent content, 4=engaging action, 5=viral-worthy moment)
 
+CRITICAL — BE SKEPTICAL BY DEFAULT:
+Most frames in these source videos are b-roll: signage, shadows, empty courts, ground/sky, transitions between plays, videographer setup. Those ARE the dominant content, not the exception. Your default score should be LOW.
+
+Do NOT inflate scores based on CONTEXT. Tennis branding, stadium logos, court paint, coach's back, or a distant figure walking near a court all fail the test of "is tennis ACTUALLY being played in this exact frame". If you are not literally looking at a player striking a ball, chess piece being moved, or a kid in mid-celebration, then:
+  - movement MUST be <=2
+  - tennis MUST be <=2
+  - people MUST be <=2 (even if you see silhouettes/shadows implying people)
+  - energy MUST be <=3 (signage can be visually striking but it's not GAMEPLAY energy)
+
+Examples of common failure patterns — score these HONESTLY LOW:
+  - "US Open signage" / any stadium banner = movement 1, tennis 1, people 1, energy 2 (even if branding looks cool)
+  - "Videographer's shadow on court" = movement 1, people 1, tennis 1, energy 1
+  - "Empty court with paint/lines visible" = movement 1, people 1, tennis 2, energy 1
+  - "People sitting watching" = movement 2, people 3, tennis 2, energy 2
+  - "Kid walking on court holding racket" = movement 2, people 3, tennis 3, energy 2 — NOT 4-5
+
+Only score 4-5 on tennis/movement when you can IDENTIFY the specific action happening (e.g. "forehand swing", "serve toss", "chess piece being moved"). If you cannot name the specific action, score <=3.
+
 Also provide:
-- brief: 10-word-max description. Be specific — "kids rallying on blue hard court" not just "tennis activity".
-- subjectPosition: Where are the main subjects (people/action) in the frame? Use one of: "center", "bottom-center", "bottom-left", "bottom-right", "top-center", "left", "right". This helps us crop the 16:9 video to 9:16 vertical format by focusing on where the players actually are.
+- brief: 10-word-max description. Be specific and LITERAL — "signage, no players visible" is correct for signage. Do NOT write "tennis action" unless you can see the action. Describe only what is visible in THIS frame.
+- subjectPosition: Where are the main subjects (people/action) in the frame? Use one of: "center", "bottom-center", "bottom-left", "bottom-right", "top-center", "left", "right". If no subject is visible (empty/signage/shadows), use "center" as a safe default.
 
 Return ONLY a JSON array, one object per frame in the order provided:
 [{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "brief": "Two kids rallying on hard court", "subjectPosition": "bottom-center"}]
@@ -679,7 +697,7 @@ async function scoreVideoTimestamps(
 	fileId: string,
 	duration: number,
 	intervalSeconds: number = 10,
-	batchSize: number = 12,
+	batchSize: number = 6,
 ): Promise<CatalogEntry['timestampScores']> {
 	if (duration < 15) {
 		console.log('[cataloger] Video too short for timestamp scoring (<15s)');
@@ -743,10 +761,17 @@ async function scoreVideoTimestamps(
 
 		// Call GPT-4o
 		try {
-			// Use gpt-4o-mini for scoring — 10-20x cheaper than gpt-4o,
-			// plenty accurate for "is this kids playing tennis or empty space?"
+			// Model rationale: reverted from gpt-4o-mini to gpt-4o after confirming the
+			// cheaper model produces false-positive high scores on signage/shadows/empty-
+			// court frames — it conflates "tennis context" (branding, court paint) with
+			// "tennis gameplay" (actual play). gpt-4o discriminates these far more
+			// reliably. Score cost is bounded (one-time per video) and dominated by
+			// downstream rendering cost, so the per-token premium is worth it.
+			// Diagnosis history: 2026-04-22 — usopen2.mp4 render allocated 8s of output
+			// to "confirmed rally action, energy 5/5" at a frame that was actually
+			// stadium signage, tracked back to gpt-4o-mini hallucinating that score.
 			const result = await generateText({
-				model: openai('gpt-4o-mini'),
+				model: openai('gpt-4o'),
 				messages: [{ role: 'user', content: contentParts }],
 			});
 
@@ -771,15 +796,22 @@ async function scoreVideoTimestamps(
 				const originalTs = framePaths[k]!.timestamp;
 				// Weight tennis and movement higher — we want gameplay, not spectators
 				const actionQuality = Math.round((score.movement * 1.5 + score.people + score.tennis * 1.5 + score.energy) / 5 * 2);
+				const finalScore = Math.min(10, Math.max(1, actionQuality));
+				// Per-frame diagnostic log — makes it visible during rescore whether the
+				// model is producing believable scores. Format chosen to be greppable
+				// in Railway logs: look for "[cataloger] score ts=" prefix.
+				console.log(
+					`[cataloger] score ts=${originalTs}s q=${finalScore}/10 m=${score.movement} p=${score.people} t=${score.tennis} e=${score.energy} pos=${score.subjectPosition || 'bottom-center'} brief="${(score.brief || '').slice(0, 60)}"`,
+				);
 				allScores.push({
 					timestamp: originalTs,
-					actionQuality: Math.min(10, Math.max(1, actionQuality)),
+					actionQuality: finalScore,
 					movement: score.movement,
 					people: score.people,
 					tennis: score.tennis,
 					energy: score.energy,
 					brief: score.brief,
-					subjectPosition: score.subjectPosition || 'bottom-center',
+					subjectPosition: score.subjectPosition || 'center',
 				});
 			}
 		} catch (err) {

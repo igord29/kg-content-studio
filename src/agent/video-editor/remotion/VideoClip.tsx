@@ -24,6 +24,17 @@ interface VideoClipProps {
 	cropX?: number;
 	/** Zoom level override. Default 1.0 = no zoom (fit to frame). Higher = more cropped in. */
 	zoom?: number;
+	/**
+	 * Frame count of the clip's own sequence (TransitionSeries.Sequence durationInFrames).
+	 *
+	 * Must be passed explicitly because `useVideoConfig().durationInFrames` inside a
+	 * Remotion Sequence always returns the COMPOSITION's total duration, not the
+	 * Sequence's local duration. Without this, `progress = frame / durationInFrames`
+	 * divides local frame index by whole-composition frames, so every Ken Burns
+	 * effect only traverses ~1/N of its intended scale range — the whole video feels
+	 * flat even though the per-clip effect code is correct.
+	 */
+	clipLengthFrames?: number;
 }
 
 // Effect pool (mirrors CLIP_EFFECT_POOLS from shotstack.ts)
@@ -142,10 +153,15 @@ function getPlaybackRate(progress: number, keyframes?: SpeedKeyframe[]): number 
 	}));
 }
 
-export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speedKeyframes, trimStart = 0, cropY = 50, cropX = 50, zoom = 1.0 }) => {
+export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speedKeyframes, trimStart = 0, cropY = 50, cropX = 50, zoom = 1.0, clipLengthFrames }) => {
 	const frame = useCurrentFrame();
-	const { durationInFrames } = useVideoConfig();
-	const progress = frame / Math.max(1, durationInFrames);
+	const { durationInFrames: compositionDurationInFrames } = useVideoConfig();
+	// Use the local sequence length if provided (correct), else fall back to
+	// composition duration (legacy — produces flat/subtle Ken Burns on multi-clip timelines).
+	const progressDenominator = clipLengthFrames && clipLengthFrames > 0
+		? clipLengthFrames
+		: compositionDurationInFrames;
+	const progress = frame / Math.max(1, progressDenominator);
 
 	// Ken Burns effects — zoom level is per-clip based on content type.
 	// Tennis wide shots: zoom=2.0, cropY=75 (focus on court level)

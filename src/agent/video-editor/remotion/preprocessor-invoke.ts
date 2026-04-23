@@ -36,7 +36,20 @@ export interface PreprocessorClipConfig {
 	duration: number;            // Seconds of source to use
 	speed?: number;              // Playback speed multiplier (default 1.0)
 	sharpen?: boolean;           // Apply unsharp filter (default true)
-	stabilize?: boolean;         // Apply deshake filter (default true)
+	stabilize?: boolean;         // Apply deshake filter (default false — CPU-heavy, causes Lambda timeouts)
+	// Smart-crop inputs (optional — when set, Lambda reframes to targetAspect using subjectPosition):
+	targetAspect?: '9:16' | '1:1' | '4:5' | '16:9';
+	subjectPosition?: string;    // e.g., 'bottom-center' — from GPT-4o cataloger
+	sourceWidth?: number;        // Display width (after rotation)
+	sourceHeight?: number;       // Display height (after rotation)
+	extraZoom?: number;          // >1.0 tightens framing on subject (content-type driven)
+	// Remotion-only metadata — not used by the Lambda; forwarded on the result
+	// so render.ts can feed VideoClip without re-correlating clips from the edit plan.
+	effect?: string;
+	filter?: string;
+	transitionType?: string;
+	transitionDirection?: string;
+	speedKeyframes?: Array<{ at: number; speed: number }>;
 }
 
 export interface PreprocessedS3Clip {
@@ -47,6 +60,14 @@ export interface PreprocessedS3Clip {
 	effectiveDuration: number;   // Duration after speed change
 	outputSizeBytes: number;
 	processingTimeMs: number;
+	// Passthrough metadata — forwarded from edit plan so render.ts can feed
+	// Remotion's VideoClip (effect, filter, transitions) without re-correlating clips.
+	effect?: string;
+	filter?: string;
+	transitionType?: string;
+	transitionDirection?: string;
+	speedKeyframes?: Array<{ at: number; speed: number }>;
+	originalTrimStart?: number;  // For audit / debugging — what source timestamp this came from
 }
 
 // --- Shared Lambda Client ---
@@ -175,11 +196,17 @@ async function invokePreprocessorForClip(
 		speed: clip.speed,
 		sharpen: clip.sharpen,
 		stabilize: clip.stabilize,
+		targetAspect: clip.targetAspect,
+		subjectPosition: clip.subjectPosition,
+		sourceWidth: clip.sourceWidth,
+		sourceHeight: clip.sourceHeight,
+		extraZoom: clip.extraZoom,
 	};
 
-	logger?.info('[preprocessor] Firing async Lambda for %s (trim=%ds, dur=%ds, speed=%sx, stabilize=%s)...',
+	logger?.info('[preprocessor] Firing async Lambda for %s (trim=%ds, dur=%ds, speed=%sx, stabilize=%s, aspect=%s, subject=%s)...',
 		clip.filename || clip.fileId, clip.trimStart, clip.duration,
-		clip.speed ?? 1.0, clip.stabilize !== false ? 'yes' : 'no');
+		clip.speed ?? 1.0, clip.stabilize === true ? 'yes' : 'no',
+		clip.targetAspect || 'source', clip.subjectPosition || 'center');
 
 	const lambda = await getLambdaClient(region);
 	const startTime = Date.now();
@@ -219,6 +246,13 @@ async function invokePreprocessorForClip(
 		effectiveDuration,
 		outputSizeBytes: sizeBytes,
 		processingTimeMs: elapsed,
+		// Forward edit-plan metadata so render.ts can wire Remotion effects without re-correlating.
+		effect: clip.effect,
+		filter: clip.filter,
+		transitionType: clip.transitionType,
+		transitionDirection: clip.transitionDirection,
+		speedKeyframes: clip.speedKeyframes,
+		originalTrimStart: clip.trimStart,
 	};
 }
 
@@ -296,10 +330,36 @@ export function isPreprocessorAvailable(): boolean {
 }
 
 /**
+ * Per-mode default extraZoom applied during smart crop.
+ *
+ * Tightens the framing on whatever the catalog's subjectPosition points at.
+ * Why mode-based and not catalog-contentType-based: the director picks clips
+ * across all content types (wide action, reaction shots, establishing, b-roll)
+ * so a single mode-wide default gives consistent visual tone without needing
+ * the director to remember to set per-clip zoom. Values tuned for vertical
+ * (9:16) output where empty court / sidelines make the subject feel distant.
+ *
+ * game_day:  1.25 — tennis action, subjects tend to be ~50% of source height,
+ *                    needs extra zoom to feel punchy on phone screens
+ * quick_hit: 1.30 — punchiest; social-native, fast-read
+ * our_story: 1.15 — subtle; preserves environment for emotional context
+ * showcase:  1.15 — subtle; preserves the "showing off the program" wide view
+ */
+const MODE_DEFAULT_EXTRA_ZOOM: Record<string, number> = {
+	game_day:  1.25,
+	quick_hit: 1.30,
+	our_story: 1.15,
+	showcase:  1.15,
+};
+
+/**
  * Build preprocessor clip configs from edit plan clips and raw S3 upload results.
  *
  * Maps each edit plan clip to its S3 key from the raw upload,
- * and adds preprocessing params (stabilize, sharpen, trim, speed).
+ * and adds preprocessing params (stabilize, sharpen, trim, speed, smart crop).
+ *
+ * Stabilize defaults to FALSE: FFmpeg deshake on 2K source at 2048MB Lambda
+ * routinely blows past the 300s timeout. Opt in per-clip if you need it.
  */
 export function buildPreprocessorConfigs(
 	clips: Array<{
@@ -308,10 +368,20 @@ export function buildPreprocessorConfigs(
 		trimStart?: number;
 		duration?: number;
 		speed?: number;
+		subjectPosition?: string;
+		effect?: string;
+		filter?: string;
+		transitionType?: string;
+		transitionDirection?: string;
+		speedKeyframes?: Array<{ at: number; speed: number }>;
+		extraZoom?: number;  // Per-clip override from director; falls back to mode default.
 	}>,
 	s3Clips: Map<string, S3UploadedClip>,
 	defaultDuration: number = 5,
+	targetAspect?: '9:16' | '1:1' | '4:5' | '16:9',
+	mode: string = 'game_day',
 ): PreprocessorClipConfig[] {
+	const modeExtraZoom = MODE_DEFAULT_EXTRA_ZOOM[mode] ?? MODE_DEFAULT_EXTRA_ZOOM['game_day']!;
 	return clips.map((clip) => {
 		const s3Info = s3Clips.get(clip.fileId);
 		if (!s3Info) {
@@ -325,8 +395,20 @@ export function buildPreprocessorConfigs(
 			trimStart: clip.trimStart || 0,
 			duration: clip.duration || defaultDuration,
 			speed: clip.speed,
-			sharpen: true,      // Always sharpen phone footage
-			stabilize: true,    // Always stabilize for Enhanced render
+			sharpen: true,       // Phone footage benefits from light sharpening.
+			stabilize: false,    // Disabled: deshake on 2K source @ 2048MB Lambda times out.
+			targetAspect,
+			subjectPosition: clip.subjectPosition,
+			sourceWidth: s3Info.width,
+			sourceHeight: s3Info.height,
+			// Tighten framing — per-clip override wins, else mode default.
+			extraZoom: typeof clip.extraZoom === 'number' ? clip.extraZoom : modeExtraZoom,
+			// Remotion-only metadata forwarded on the preprocess result:
+			effect: clip.effect,
+			filter: clip.filter,
+			transitionType: clip.transitionType,
+			transitionDirection: clip.transitionDirection,
+			speedKeyframes: clip.speedKeyframes,
 		};
 	});
 }

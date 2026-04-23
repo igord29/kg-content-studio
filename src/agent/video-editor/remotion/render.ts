@@ -1175,7 +1175,7 @@ export async function submitRemotionRenderWithPreprocessing(
 		try {
 			const platformSettingsForAspect = PLATFORM_SETTINGS[config.platform] || PLATFORM_SETTINGS['youtube']!;
 			const targetAspect = platformSettingsForAspect.aspectRatio as '9:16' | '1:1' | '4:5' | '16:9';
-			const preprocessorConfigs = buildPreprocessorConfigs(config.clips, s3Clips, 5, targetAspect);
+			const preprocessorConfigs = buildPreprocessorConfigs(config.clips, s3Clips, 5, targetAspect, config.mode);
 			logger?.info('[remotion-lambda] Attempting preprocessor Lambda for %d clips (aspect=%s)... [mem: %s]',
 				preprocessorConfigs.length, targetAspect, memLog());
 
@@ -1244,7 +1244,10 @@ export async function submitRemotionRenderWithPreprocessing(
 			logger?.info('[remotion-lambda] Using %d raw clips (no preprocessing — fallback mode)', clipProps.length);
 		}
 
-		// Build text overlay props
+		// Build text overlay props.
+		// IMPORTANT: forward `animation` so TextOverlay.tsx can run entry/exit
+		// styles (slideUp, bounce, typewriter, etc.) — without this, every title
+		// card is a static box regardless of what the director picked.
 		const textOverlays: CLCVideoProps['textOverlays'] = (config.textOverlays || []).map((overlay, index, arr) => {
 			const startFrame = Math.round(overlay.start * fps);
 			const durationFrames = Math.round(overlay.duration * fps);
@@ -1255,6 +1258,7 @@ export async function submitRemotionRenderWithPreprocessing(
 				position: (overlay.position as 'top' | 'center' | 'bottom') || 'bottom',
 				isFirst: index === 0,
 				isLast: index === arr.length - 1,
+				animation: (overlay as { animation?: string }).animation as CLCVideoProps['textOverlays'][number]['animation'],
 			};
 		});
 

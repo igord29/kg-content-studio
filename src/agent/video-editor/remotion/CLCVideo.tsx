@@ -88,7 +88,10 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 						);
 					}
 
-					// Add the clip sequence
+					// Add the clip sequence.
+					// clipLengthFrames is threaded so VideoClip can compute Ken Burns progress
+					// against its own sequence length rather than the whole composition — see
+					// VideoClipProps.clipLengthFrames for the background on why this matters.
 					elements.push(
 						<TransitionSeries.Sequence
 							key={`clip-${index}`}
@@ -103,6 +106,7 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 								cropX={clip.cropX}
 								cropY={clip.cropY}
 								zoom={clip.zoom}
+								clipLengthFrames={clipFrames}
 							/>
 						</TransitionSeries.Sequence>,
 					);

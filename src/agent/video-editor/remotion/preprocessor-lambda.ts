@@ -34,7 +34,17 @@ export interface PreprocessRequest {
 	duration: number;          // Seconds of source to use
 	speed?: number;            // Playback speed multiplier (default 1.0)
 	sharpen?: boolean;         // Apply unsharp filter (default true)
-	stabilize?: boolean;       // Apply deshake filter (default true)
+	stabilize?: boolean;       // Apply deshake filter (default false — opt in; CPU-heavy)
+	// Smart crop inputs (optional — applied before deshake/sharpen when all 4 are present):
+	targetAspect?: '9:16' | '1:1' | '4:5' | '16:9';
+	subjectPosition?: string;
+	sourceWidth?: number;      // Display width (after rotation)
+	sourceHeight?: number;     // Display height (after rotation)
+	// Extra zoom multiplier on top of the fill-minimum scale. >1.0 tightens the
+	// frame on the subject (fewer empty bleachers / less blue court). Typical
+	// values: 1.25-1.4 for wide tennis action, 1.0 for interview / chess /
+	// establishing shots where context matters. Driven per-clip by content type.
+	extraZoom?: number;
 }
 
 export interface PreprocessResult {
@@ -50,40 +60,132 @@ export interface PreprocessResult {
 // --- FFmpeg Filter Builders ---
 // (Adapted from preprocess.ts — self-contained, no external imports)
 
+// Subject positions mapped to normalized (x, y) coordinates in the source frame.
+// Rule-of-thirds offsets for off-center subjects keep them off the edges.
+const SUBJECT_POSITION_MAP: Record<string, { x: number; y: number }> = {
+	'center':        { x: 0.50, y: 0.50 },
+	'left':          { x: 0.33, y: 0.50 },
+	'right':         { x: 0.67, y: 0.50 },
+	'top-center':    { x: 0.50, y: 0.33 },
+	'bottom-center': { x: 0.50, y: 0.67 },
+	'top-left':      { x: 0.33, y: 0.33 },
+	'top-right':     { x: 0.67, y: 0.33 },
+	'bottom-left':   { x: 0.33, y: 0.67 },
+	'bottom-right':  { x: 0.67, y: 0.67 },
+};
+
+const ASPECT_DIMS: Record<string, { w: number; h: number }> = {
+	'9:16': { w: 1080, h: 1920 },
+	'1:1':  { w: 1080, h: 1080 },
+	'4:5':  { w: 1080, h: 1350 },
+	'16:9': { w: 1920, h: 1080 },
+};
+
+function roundEven(n: number): number {
+	const r = Math.round(n);
+	return r % 2 === 0 ? r : r + 1;
+}
+
+/**
+ * Build a smart-crop filter that reframes source to targetAspect using
+ * subjectPosition to offset the crop window. Returns empty string if
+ * any required input is missing (caller should fall back to plain scale).
+ *
+ * TWIN NOTE: this MUST stay in sync with computeCrop() in src/agent/video-editor/smart-crop.ts.
+ * Lambda bundling prevents importing the shared TS file into this Lambda entry,
+ * so both copies of the algorithm need to be updated together.
+ *
+ * The `extraZoom` multiplier pulls the subject larger in the output frame on top
+ * of the fill-minimum scale. The subject-centering constraints (kCenterX/kCenterY)
+ * solve the old Y-axis-has-no-effect bug: for 16:9 → 9:16 with scaleH = targetH
+ * exactly, there's zero vertical slack and cropY always clamps to 0, so the
+ * subjectPosition Y ordinate is ignored. Solving for "subject lands at output
+ * center" requires K >= targetH / (2 * min(pos.y, 1-pos.y) * sourceH).
+ */
+function buildSmartCropFilter(
+	sourceW: number,
+	sourceH: number,
+	targetAspect: string,
+	subjectPosition: string | undefined,
+	extraZoom: number = 1.0,
+): string {
+	const target = ASPECT_DIMS[targetAspect];
+	if (!target) return '';
+	const { w: targetW, h: targetH } = target;
+
+	const sourceAR = sourceW / sourceH;
+	const targetAR = targetW / targetH;
+
+	// Aspect already matches AND no extra zoom requested — just scale.
+	if (Math.abs(sourceAR - targetAR) < 0.01 && extraZoom <= 1.001) {
+		return `scale=${targetW}:${targetH}`;
+	}
+
+	const pos = SUBJECT_POSITION_MAP[subjectPosition?.toLowerCase()?.trim() || 'center']
+		|| SUBJECT_POSITION_MAP['center']!;
+
+	// Fill minimum — K so that scaledW >= targetW AND scaledH >= targetH.
+	const kFillX = targetW / sourceW;
+	const kFillY = targetH / sourceH;
+	const kFill = Math.max(kFillX, kFillY);
+	// Subject-centering constraints — K so the crop window can slide enough
+	// on each axis to put the subject at the output center.
+	const marginX = Math.max(0.1, Math.min(pos.x, 1 - pos.x));
+	const marginY = Math.max(0.1, Math.min(pos.y, 1 - pos.y));
+	const kCenterX = targetW / (2 * marginX * sourceW);
+	const kCenterY = targetH / (2 * marginY * sourceH);
+	// Apply extraZoom to the fill baseline, then take the max of all constraints.
+	const kZoomed = kFill * Math.max(1.0, extraZoom);
+	const K = Math.max(kZoomed, kCenterX, kCenterY);
+
+	const scaleW = roundEven(sourceW * K);
+	const scaleH = roundEven(sourceH * K);
+
+	let cropX = roundEven(pos.x * scaleW - targetW / 2);
+	let cropY = roundEven(pos.y * scaleH - targetH / 2);
+	cropX = Math.max(0, Math.min(cropX, scaleW - targetW));
+	cropY = Math.max(0, Math.min(cropY, scaleH - targetH));
+
+	return `scale=${scaleW}:${scaleH},crop=${targetW}:${targetH}:${cropX}:${cropY}`;
+}
+
 /**
  * Build the video filter chain.
- * Order: scale (downscale 4K→1080p) → stabilize (deshake) → sharpen (unsharp) → speed (setpts)
- *
- * Scale is applied FIRST so that expensive filters (deshake, unsharp) operate
- * on 1080p frames instead of 4K — reducing processing time ~4x and memory ~4x.
- * Output is always mobile content, so 1080p is the maximum useful resolution.
+ * Order: smart crop (if requested) OR plain scale → stabilize → sharpen → speed.
+ * Crop-first means deshake/sharpen operate on the final framed region.
  */
 function buildVideoFilter(config: {
 	stabilize?: boolean;
 	sharpen?: boolean;
 	speed?: number;
+	targetAspect?: string;
+	subjectPosition?: string;
+	sourceWidth?: number;
+	sourceHeight?: number;
+	extraZoom?: number;
 }): string {
 	const filters: string[] = [];
 
-	// Downscale to 1080p max — preserves aspect ratio, only scales if larger.
-	// -2 ensures height is divisible by 2 (required for H.264 encoding).
-	// If source is ≤1080p wide, this is a no-op thanks to min().
-	filters.push('scale=min(iw\\,1080):-2');
+	// Framing: smart crop to target aspect, or fallback scale cap.
+	const cropFilter = (config.targetAspect && config.sourceWidth && config.sourceHeight)
+		? buildSmartCropFilter(config.sourceWidth, config.sourceHeight, config.targetAspect, config.subjectPosition, config.extraZoom)
+		: '';
+	if (cropFilter) {
+		filters.push(cropFilter);
+	} else {
+		filters.push('scale=min(iw\\,1080):-2');
+	}
 
-	// Stabilization — deshake (single-pass, built into FFmpeg)
-	// Must come BEFORE sharpening so we sharpen the stabilized image
-	// rx=32:ry=32 = 32px search radius (generous for phone sports footage)
-	if (config.stabilize !== false) {
+	// Stabilization — OPT IN. Default off because deshake on 2K source at 2048MB Lambda
+	// routinely blows past the 300s timeout.
+	if (config.stabilize === true) {
 		filters.push('deshake=x=-1:y=-1:w=-1:h=-1:rx=32:ry=32');
 	}
 
-	// Sharpening — moderate settings for phone footage
-	// 5x5 kernel, 0.8 luma strength, 0.4 chroma strength
 	if (config.sharpen !== false) {
 		filters.push('unsharp=5:5:0.8:5:5:0.4');
 	}
 
-	// Speed ramping — setpts changes presentation timestamps
 	const speed = config.speed ?? 1.0;
 	if (speed !== 1.0) {
 		const ptsFactor = 1.0 / speed;
@@ -178,6 +280,11 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 			stabilize: event.stabilize,
 			sharpen: event.sharpen,
 			speed,
+			targetAspect: event.targetAspect,
+			subjectPosition: event.subjectPosition,
+			sourceWidth: event.sourceWidth,
+			sourceHeight: event.sourceHeight,
+			extraZoom: event.extraZoom,
 		});
 		const audioFilter = buildAudioFilter(speed);
 
@@ -219,16 +326,20 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 		console.log('[preprocessor] FFmpeg complete: %dMB output in %ss',
 			(outputSize / (1024 * 1024)).toFixed(1), ffTime);
 
-		// Step 4: Stream processed clip from disk to S3 (avoids loading into memory)
+		// Step 4: Upload processed clip to S3.
+		// Buffer upload (not streaming) — stream uploads hit "socket hang up" on
+		// Node 20 + AWS SDK v3, killing most renders. Processed clips are small
+		// (~20MB) and Lambda has plenty of memory.
 		console.log('[preprocessor] Uploading to s3://%s/%s...', event.bucketName, event.outputS3Key);
 		const upStart = Date.now();
 
-		const outputSize2 = statSync(outputPath).size;
+		const { readFileSync } = await import('fs');
+		const outputBuffer = readFileSync(outputPath);
 		await s3.send(new PutObjectCommand({
 			Bucket: event.bucketName,
 			Key: event.outputS3Key,
-			Body: createReadStream(outputPath),
-			ContentLength: outputSize2,
+			Body: outputBuffer,
+			ContentLength: outputBuffer.length,
 			ContentType: 'video/mp4',
 		}));
 

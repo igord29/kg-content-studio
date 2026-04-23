@@ -1711,25 +1711,35 @@ const agent = createAgent('video-editor', {
 		}
 
 		if (task === 'rescore-timestamps') {
-			ctx.logger.info('[video-editor] Starting timestamp re-scoring...');
 			const fileIds = input.videoIds as string[] | undefined;
 			const force = !!(input as any).force;
 
-			// Fire-and-forget — this takes minutes
+			// Fire-and-forget — this takes minutes and outlives the HTTP request.
+			// Using ctx.logger here would crash with "cannot serialize cyclic structures"
+			// the moment the request context is torn down — same bug we fixed on the
+			// render paths (commit 70a3862). The progress callback is especially exposed
+			// because rescoreExistingCatalog calls it hundreds of times from deep inside
+			// a loop, so one is guaranteed to fire post-teardown.
+			const jobId = `rescore_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+			const asyncLogger = makeAsyncLogger(`rescore:${jobId}`);
+			ctx.logger.info('[video-editor] Starting timestamp re-scoring (jobId=%s)...', jobId);
+
 			rescoreExistingCatalog(
 				{ force, fileIds: fileIds?.length ? fileIds : undefined },
 				(completed, total, currentFile) => {
-					ctx.logger.info('[video-editor] Re-score progress: %d/%d (%s)', completed, total, currentFile);
+					asyncLogger.info('Re-score progress: %d/%d (%s)', completed, total, currentFile);
 				},
 			).then(result => {
-				ctx.logger.info('[video-editor] Re-score done: %d scored, %d skipped, %d failed',
+				asyncLogger.info('Re-score done: %d scored, %d skipped, %d failed',
 					result.scored, result.skipped, result.failed);
 			}).catch(err => {
-				ctx.logger.error('[video-editor] Re-score error: %s', err);
+				const msg = err instanceof Error ? err.message : String(err);
+				asyncLogger.error('Re-score error: %s', msg);
 			});
 
 			return {
 				success: true,
+				jobId,
 				message: `Timestamp re-scoring started${fileIds?.length ? ` for ${fileIds.length} videos` : ' for all unscored videos'}`,
 			};
 		}

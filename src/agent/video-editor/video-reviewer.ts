@@ -536,10 +536,27 @@ ADDITIONAL RULES:
 ${humanFeedback ? `\nHUMAN EDITOR FEEDBACK (HIGHEST PRIORITY — address these notes first):\n${humanFeedback}\n` : ''}
 Return ONLY the revised JSON edit plan (same format as the original) wrapped in \`\`\`json fences. Include a "revisionNotes" field explaining what you changed and why for each clip.`;
 
+	// NOTE: generateRevisedEditPlan's prompt is very large — videoDirectorPrompt is
+	// ~14K tokens by itself, plus footageContext with scene analysis, the full
+	// original edit plan JSON, the review output, and optional human feedback.
+	// Total input can easily hit 20K+ tokens.
+	//
+	// Without maxOutputTokens or abortSignal, the model can stream for 2+ minutes on
+	// complex revisions. Railway/Agentuity HTTP timeouts (typically 30-60s) drop
+	// the connection mid-stream, so the frontend's `requestingRevision` spinner
+	// gets stuck on "Generating revision..." forever because no response is ever
+	// returned. The auto-pipeline generateEditPlan call hits this less often only
+	// because its prompt is about 30% shorter.
+	//
+	// Bounding output + a 90s hard timeout guarantees we either return a valid
+	// plan or a clear error — no more silent hangs.
+	// (Note: AI SDK v6 renamed maxTokens → maxOutputTokens.)
 	const result = await generateText({
 		model: anthropic('claude-sonnet-4-6'),
 		system: videoDirectorPrompt,
 		prompt,
+		maxOutputTokens: 6000,
+		abortSignal: AbortSignal.timeout(90_000),
 	});
 
 	const jsonMatch = result.text.match(/```json\s*([\s\S]*?)```/);

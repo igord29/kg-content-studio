@@ -25,6 +25,7 @@ export interface PipelineConfig {
 	purpose?: string;
 	minScore?: number;
 	maxAttempts?: number;
+	appUrl: string;  // Public URL for Lambda webhook callbacks (e.g. https://app.railway.app)
 }
 
 export interface PipelineResult {
@@ -78,7 +79,12 @@ async function generateEditPlan(
 		}
 	}
 
-	// Build footage context
+	// Build footage context. We also track how many clips lack scene analysis so
+	// we can surface a loud operator-visible warning below — without scene data
+	// the Director falls back to even-spread estimates, which is exactly how we
+	// got the usopen4.mp4 failure mode (slow-mo on warmup footage because the
+	// "peak" was guessed instead of detected).
+	let clipsMissingSceneAnalysis = 0;
 	const footageContext = videoDetails.map((v, index) => {
 		const ce = catalogMap.get(v.id || '');
 		const durationStr = v.duration
@@ -91,9 +97,17 @@ async function generateEditPlan(
 				? (ce.readableText as unknown as string[]).join(', ')
 				: (ce.readableText || 'None');
 			const totalDurSec = v.duration ? Math.round(parseInt(v.duration) / 1000) : (ce.duration ? parseInt(ce.duration) : 0);
-			const sceneSection = ce.sceneAnalysis
-				? '\n  SCENE ANALYSIS:\n' + formatSegmentTimelineForPrompt(ce.sceneAnalysis as any)
-				: `\n  ⚠️ SCENE ANALYSIS: NOT AVAILABLE — spread trim points across ${totalDurSec}s duration.`;
+			let sceneSection: string;
+			if (ce.sceneAnalysis) {
+				sceneSection = '\n  SCENE ANALYSIS:\n' + formatSegmentTimelineForPrompt(ce.sceneAnalysis as any);
+			} else {
+				clipsMissingSceneAnalysis++;
+				// Stronger guidance than the old one-line spread message. The Director
+				// now knows: (1) estimates only, (2) mark every purpose as estimated,
+				// (3) NEVER use this source for slow-mo peaks (slow-mo requires a
+				// confirmed peak timestamp per the SLOW-MO WINDOWING RULE).
+				sceneSection = `\n  ⚠️ SCENE ANALYSIS: NOT AVAILABLE for this clip.\n    → Use an EVEN SPREAD of timestamps across ${totalDurSec}s source duration.\n    → Mark every clip purpose as "estimated" — no confident peak claims.\n    → DO NOT use this source for a slow-mo peak clip — slow-mo requires a confirmed peakTimestamp (see SLOW-MO WINDOWING RULE).`;
+			}
 			return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr})
   - Google Drive fileId: ${v.id}
   - Description: ${ce.activity}
@@ -108,6 +122,18 @@ async function generateEditPlan(
 		}
 		return `Clip ${index + 1}: ${v.name} (${durationStr}, ${resStr}) - fileId: ${v.id} - no catalog data`;
 	}).join('\n\n');
+
+	// Operator warning: if any clips are missing scene analysis, tell Ian what
+	// to run to fix it. Without this warning the pipeline silently produces
+	// weaker edits and the failure mode is invisible until someone audits the
+	// render.
+	if (clipsMissingSceneAnalysis > 0) {
+		logger.warn(
+			'[auto-pipeline] ⚠️ %d of %d clips have NO scene analysis — Director will use even-spread estimates and skip slow-mo on these sources. For richer cuts, run: POST /video-editor { task: "rescore-timestamps", videoIds: [...], force: true }',
+			clipsMissingSceneAnalysis,
+			videoDetails.length,
+		);
+	}
 
 	const totalFootageDuration = videoDetails.reduce((sum, v) => {
 		const dur = v.duration ? parseInt(v.duration) / 1000 : 0;
@@ -130,10 +156,19 @@ Wrap the JSON in \`\`\`json fences.`;
 
 	logger.info('[auto-pipeline] Generating edit plan with Claude: %d videos, platform=%s, mode=%s', videoIds.length, platform, editMode);
 
+	// Same timeout/maxOutputTokens bounds as generateRevisedEditPlan — see the long
+	// comment in video-reviewer.ts. This prompt is ~30% shorter than the revision
+	// prompt (no original-edit-plan JSON), so hangs are less common, but the
+	// failure mode is identical when they happen: Railway/Agentuity drop the
+	// stream mid-flight and the pipeline retry loop spins without a clear error.
+	// 90s hard abort + bounded output = fail-fast with a readable message.
+	// (Note: AI SDK v6 renamed maxTokens → maxOutputTokens.)
 	const result = await generateText({
 		model: anthropic('claude-sonnet-4-6'),
 		system: videoDirectorPrompt,
 		prompt,
+		maxOutputTokens: 6000,
+		abortSignal: AbortSignal.timeout(90_000),
 	});
 
 	const jsonMatch = result.text.match(/```json\s*([\s\S]*?)```/);
@@ -150,6 +185,7 @@ async function submitAndPollRender(
 	editPlan: Record<string, unknown>,
 	platform: string,
 	editMode: string,
+	appUrl: string,
 	logger: PipelineLogger,
 ): Promise<{ renderId: string; downloadUrl: string }> {
 	const { preRegisterRender, submitRemotionRenderWithPreprocessing, checkRemotionStatus } = await import('./remotion/render');
@@ -191,6 +227,7 @@ async function submitAndPollRender(
 	await submitRemotionRenderWithPreprocessing(
 		{ clips, textOverlays: overlays, musicUrl, mode: editMode, platform },
 		renderId,
+		appUrl,
 		logger as any,
 	);
 
@@ -338,6 +375,7 @@ export async function runAutoPipeline(
 		purpose = 'social media',
 		minScore = 8,
 		maxAttempts = 3,
+		appUrl,
 	} = config;
 
 	let currentPlan: Record<string, unknown> = {};
@@ -367,7 +405,7 @@ export async function runAutoPipeline(
 				Array.isArray(currentPlan!.clips) ? (currentPlan!.clips as any[]).length : 0);
 
 			// Step 2: Render
-			const { renderId, downloadUrl } = await submitAndPollRender(currentPlan!, platform, editMode, logger);
+			const { renderId, downloadUrl } = await submitAndPollRender(currentPlan!, platform, editMode, appUrl, logger);
 			lastRenderId = renderId;
 			lastDownloadUrl = downloadUrl;
 

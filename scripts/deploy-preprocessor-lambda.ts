@@ -321,30 +321,93 @@ function getFFmpegPath() {
   return 'ffmpeg';
 }
 
+// --- Smart Crop Helpers ---
+
+// Subject positions mapped to normalized (x, y) coords in the source frame.
+// Rule-of-thirds offsets keep off-center subjects away from edges.
+const SUBJECT_POSITION_MAP = {
+  'center':        { x: 0.50, y: 0.50 },
+  'left':          { x: 0.33, y: 0.50 },
+  'right':         { x: 0.67, y: 0.50 },
+  'top-center':    { x: 0.50, y: 0.33 },
+  'bottom-center': { x: 0.50, y: 0.67 },
+  'top-left':      { x: 0.33, y: 0.33 },
+  'top-right':     { x: 0.67, y: 0.33 },
+  'bottom-left':   { x: 0.33, y: 0.67 },
+  'bottom-right':  { x: 0.67, y: 0.67 },
+};
+
+const ASPECT_DIMS = {
+  '9:16': { w: 1080, h: 1920 },
+  '1:1':  { w: 1080, h: 1080 },
+  '4:5':  { w: 1080, h: 1350 },
+  '16:9': { w: 1920, h: 1080 },
+};
+
+function roundEven(n) {
+  const r = Math.round(n);
+  return r % 2 === 0 ? r : r + 1;
+}
+
+function buildSmartCropFilter(sourceW, sourceH, targetAspect, subjectPosition) {
+  const target = ASPECT_DIMS[targetAspect];
+  if (!target) return '';
+  const targetW = target.w, targetH = target.h;
+
+  const sourceAR = sourceW / sourceH;
+  const targetAR = targetW / targetH;
+
+  if (Math.abs(sourceAR - targetAR) < 0.01) {
+    return 'scale=' + targetW + ':' + targetH;
+  }
+
+  const key = (subjectPosition ? String(subjectPosition).toLowerCase().trim() : 'center');
+  const pos = SUBJECT_POSITION_MAP[key] || SUBJECT_POSITION_MAP['center'];
+
+  let scaleW, scaleH;
+  if (sourceAR > targetAR) {
+    scaleH = targetH;
+    scaleW = roundEven(sourceW * (targetH / sourceH));
+  } else {
+    scaleW = targetW;
+    scaleH = roundEven(sourceH * (targetW / sourceW));
+  }
+
+  let cropX = roundEven(pos.x * scaleW - targetW / 2);
+  let cropY = roundEven(pos.y * scaleH - targetH / 2);
+  cropX = Math.max(0, Math.min(cropX, scaleW - targetW));
+  cropY = Math.max(0, Math.min(cropY, scaleH - targetH));
+
+  return 'scale=' + scaleW + ':' + scaleH + ',crop=' + targetW + ':' + targetH + ':' + cropX + ':' + cropY;
+}
+
 // --- FFmpeg Filter Builders ---
 
 function buildVideoFilter(config) {
   const filters = [];
 
-  // Downscale to 1080p max — preserves aspect ratio, only scales if larger.
-  // Applied FIRST so expensive filters operate on 1080p instead of 4K (~4x speedup).
-  // -2 ensures height is divisible by 2 (required for H.264 encoding).
-  filters.push('scale=min(iw\\\\,1080):-2');
+  // Framing: smart crop to target aspect when inputs are present, else plain scale cap.
+  const cropFilter = (config.targetAspect && config.sourceWidth && config.sourceHeight)
+    ? buildSmartCropFilter(config.sourceWidth, config.sourceHeight, config.targetAspect, config.subjectPosition)
+    : '';
+  if (cropFilter) {
+    filters.push(cropFilter);
+  } else {
+    // Fallback: cap width at 1080 without aspect change.
+    filters.push('scale=min(iw\\\\,1080):-2');
+  }
 
-  // Stabilization — FFmpeg deshake (single-pass, built-in)
-  // Must come BEFORE sharpening so we sharpen the stabilized image
-  // rx=32:ry=32 = 32px search radius (generous for phone sports footage)
-  if (config.stabilize !== false) {
+  // Stabilization — OPT IN. Default OFF: deshake on 2K @ 2048MB Lambda blows past 300s timeout.
+  if (config.stabilize === true) {
     filters.push('deshake=x=-1:y=-1:w=-1:h=-1:rx=32:ry=32');
   }
 
-  // Sharpening — moderate settings for phone footage
-  // 5x5 kernel, 0.8 luma strength, 0.4 chroma strength
+  // Sharpening — moderate settings for phone footage.
   if (config.sharpen !== false) {
     filters.push('unsharp=5:5:0.8:5:5:0.4');
   }
 
-  // Speed ramping — setpts changes presentation timestamps
+  // Speed ramping — setpts changes presentation timestamps.
   const speed = config.speed ?? 1.0;
   if (speed !== 1.0) {
     const ptsFactor = 1.0 / speed;
@@ -374,7 +437,10 @@ exports.handler = async function(event) {
   console.log('[preprocessor] FFmpeg path: ' + ffmpegPath);
   console.log('[preprocessor] Processing: input=%s, trim=%ds, dur=%ds, speed=%sx, stabilize=%s, sharpen=%s',
     event.inputS3Key, event.trimStart, event.duration,
-    event.speed ?? 1.0, event.stabilize !== false ? 'yes' : 'no', event.sharpen !== false ? 'yes' : 'no');
+    event.speed ?? 1.0, event.stabilize === true ? 'yes' : 'no', event.sharpen !== false ? 'yes' : 'no');
+  console.log('[preprocessor] Smart crop: aspect=%s, subject=%s, source=%sx%s',
+    event.targetAspect || 'none', event.subjectPosition || 'none',
+    event.sourceWidth || '?', event.sourceHeight || '?');
 
   // Verify FFmpeg is available
   try {
@@ -420,6 +486,10 @@ exports.handler = async function(event) {
       stabilize: event.stabilize,
       sharpen: event.sharpen,
       speed: speed,
+      targetAspect: event.targetAspect,
+      subjectPosition: event.subjectPosition,
+      sourceWidth: event.sourceWidth,
+      sourceHeight: event.sourceHeight,
     });
     const audioFilter = buildAudioFilter(speed);
 
@@ -459,16 +529,20 @@ exports.handler = async function(event) {
     const outputSize = statSync(outputPath).size;
     console.log('[preprocessor] FFmpeg done: ' + (outputSize / (1024 * 1024)).toFixed(1) + 'MB output in ' + ffTime + 's');
 
-    // Step 4: Stream processed clip from disk to S3 (avoids loading into memory)
+    // Step 4: Upload processed clip to S3.
+    // Reading into a Buffer (not streaming) because stream uploads intermittently
+    // fail with "socket hang up" on Node 20 + AWS SDK v3 — non-retryable streaming
+    // request errors were killing 11/12 clips. Processed files are small (~20MB)
+    // and Lambda has 3008MB memory, so full-buffer upload is trivially safe.
     console.log('[preprocessor] Uploading to s3://%s/%s...', event.bucketName, event.outputS3Key);
     const upStart = Date.now();
 
-    const outputSize2 = statSync(outputPath).size;
+    const outputBuffer = require('fs').readFileSync(outputPath);
     await s3.send(new PutObjectCommand({
       Bucket: event.bucketName,
       Key: event.outputS3Key,
-      Body: createReadStream(outputPath),
-      ContentLength: outputSize2,
+      Body: outputBuffer,
+      ContentLength: outputBuffer.length,
       ContentType: 'video/mp4',
     }));
 

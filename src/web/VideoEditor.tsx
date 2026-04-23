@@ -1050,7 +1050,7 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		method: RenderJob['method'] = 'shotstack',
 	) => {
 		const pollInterval = 5000;
-		const maxAttempts = 120; // 10 minutes max
+		const maxAttempts = 180; // 15 minutes max — 12-clip Remotion renders take ~5-8 min
 		let attempts = 0;
 
 		const poll = async () => {

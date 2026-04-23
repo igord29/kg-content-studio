@@ -492,9 +492,30 @@ const agent = createAgent('video-editor', {
 					ctx.logger.warn('[render] Could not validate fileId: %s (filename: %s)', clip.fileId, clip.filename);
 					return clip;
 				}).map(clip => {
-					// Enrich with content type from catalog for smart framing
+					// Enrich with catalog-derived hints:
+					//   - contentType: for smart framing heuristics
+					//   - subjectPosition: closest-timestamp lookup, drives Lambda smart crop
 					const catEntry = catalogForValidation.find(e => e.fileId === clip.fileId);
-					return { ...clip, contentType: catEntry?.contentType || 'unknown' };
+					const scores = catEntry?.timestampScores;
+					let subjectPosition: string | undefined;
+					if (scores && scores.length > 0) {
+						const trimStart = clip.trimStart || 0;
+						let best = scores[0]!;
+						let bestDelta = Math.abs(best.timestamp - trimStart);
+						for (let i = 1; i < scores.length; i++) {
+							const delta = Math.abs(scores[i]!.timestamp - trimStart);
+							if (delta < bestDelta) {
+								best = scores[i]!;
+								bestDelta = delta;
+							}
+						}
+						subjectPosition = best.subjectPosition || undefined;
+					}
+					return {
+						...clip,
+						contentType: catEntry?.contentType || 'unknown',
+						subjectPosition,
+					};
 				});
 
 				const overlays = (editPlanObj.textOverlays || []) as Array<{
@@ -563,6 +584,9 @@ const agent = createAgent('video-editor', {
 					// Until 2026-04-22 this call was missing `appUrl`, causing ctx.logger
 					// to be bound to the appUrl parameter — which crashed inside the
 					// guard when the guard tried to JSON.stringify it to report the bad value.
+					// (A redundant `if (!appUrl)` guard was considered here but removed —
+					// the outer `typeof appUrl !== 'string'` check at ~line 436 is stricter
+					// and already guarantees appUrl is a valid non-empty string at this point.)
 					submitRemotionRenderWithPreprocessing(
 						{
 							clips,
@@ -971,6 +995,7 @@ const agent = createAgent('video-editor', {
 			const purpose = input.purpose || 'social media';
 			const minScore = (input as any).minScore || 8;
 			const maxAttempts = (input as any).maxAttempts || 3;
+			const appUrl = input.appUrl;
 
 			if (videoIds.length === 0) {
 				return { success: false, error: 'videoIds is required for auto-process' };
@@ -979,10 +1004,14 @@ const agent = createAgent('video-editor', {
 			ctx.logger.info('[auto-process] Starting autonomous pipeline: %d videos, platform=%s, mode=%s, minScore=%d, maxAttempts=%d',
 				videoIds.length, platform, editMode, minScore, maxAttempts);
 
+			if (!appUrl) {
+				return { success: false, error: 'App URL not available. Cannot set up Remotion Lambda webhook.' };
+			}
+
 			try {
 				const { runAutoPipeline } = await import('./auto-pipeline');
 				const result = await runAutoPipeline(
-					{ videoIds, platform, editMode, topic, purpose, minScore, maxAttempts },
+					{ videoIds, platform, editMode, topic, purpose, minScore, maxAttempts, appUrl },
 					ctx.logger,
 				);
 
@@ -1247,18 +1276,46 @@ const agent = createAgent('video-editor', {
 			const modeConfig = MODE_RENDER_SETTINGS[editMode] || MODE_RENDER_SETTINGS['game_day']!;
 			const editPlanClips = editPlanObj?.clips as Array<{ fileId?: string; trimStart?: number; duration?: number; speed?: number }> | undefined;
 
-			// --- Pre-process clips: download from Drive, apply sharpen + speed ---
+			// Load catalog so we can look up subjectPosition per clip for smart cropping.
+			const catalogForCrop = loadExistingCatalog();
+			const catalogMapForCrop = new Map(catalogForCrop.map(entry => [entry.fileId, entry]));
+
+			// Pick the subjectPosition closest to the clip's trimStart from timestampScores.
+			// Falls back to 'center' when no scored timestamps exist for that source.
+			const pickSubjectPosition = (fileId: string, trimStart: number): string => {
+				const ce = catalogMapForCrop.get(fileId);
+				const scores = ce?.timestampScores;
+				if (!scores || scores.length === 0) return 'center';
+				let best = scores[0]!;
+				let bestDelta = Math.abs(best.timestamp - trimStart);
+				for (let i = 1; i < scores.length; i++) {
+					const delta = Math.abs(scores[i]!.timestamp - trimStart);
+					if (delta < bestDelta) {
+						best = scores[i]!;
+						bestDelta = delta;
+					}
+				}
+				return best.subjectPosition || 'center';
+			};
+
+			const targetAspect = platformConfig.aspectRatio as '9:16' | '1:1' | '4:5' | '16:9';
+
+			// --- Pre-process clips: download, smart crop, sharpen, stabilize, speed ---
 			const preprocessConfigs: PreprocessClipConfig[] = [];
 
 			if (editPlanClips && editPlanClips.length > 0) {
 				// Use edit plan clip configs (includes trimStart, duration, speed)
 				for (const clip of editPlanClips) {
+					const fileId = clip.fileId || videoIds[0]!;
+					const trimStart = clip.trimStart || 0;
 					preprocessConfigs.push({
-						fileId: clip.fileId || videoIds[0]!,
-						trimStart: clip.trimStart || 0,
+						fileId,
+						trimStart,
 						duration: clip.duration || modeConfig.defaultClipLength,
 						speed: clip.speed,
 						sharpen: true,
+						targetAspect,
+						subjectPosition: pickSubjectPosition(fileId, trimStart),
 					});
 				}
 			} else {
@@ -1269,6 +1326,8 @@ const agent = createAgent('video-editor', {
 						trimStart: 0,
 						duration: modeConfig.defaultClipLength,
 						sharpen: true,
+						targetAspect,
+						subjectPosition: pickSubjectPosition(fileId, 0),
 					});
 				}
 			}

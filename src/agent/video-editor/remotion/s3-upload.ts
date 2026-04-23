@@ -24,17 +24,57 @@ export interface S3UploadedClip {
 	s3Key: string;
 	s3Url: string;
 	sizeBytes: number;
+	width?: number;   // Source video width (from ffprobe) — used for smart crop in Lambda preprocessor
+	height?: number;  // Source video height (from ffprobe)
+}
+
+/**
+ * Probe a video file for its display dimensions (honors rotation metadata).
+ * Returns null if ffprobe is unavailable or the file isn't a valid video.
+ */
+async function probeVideoDimensions(
+	localPath: string,
+): Promise<{ width: number; height: number } | null> {
+	const { execSync } = await import('child_process');
+	try {
+		// side_data_list catches rotation metadata on phone footage so we get the
+		// DISPLAY dimensions, not the raw stored dimensions.
+		const output = execSync(
+			`ffprobe -v error -select_streams v:0 ` +
+			`-show_entries stream=width,height:stream_side_data=rotation ` +
+			`-of default=noprint_wrappers=1 "${localPath}"`,
+			{ stdio: 'pipe', timeout: 10000 },
+		).toString();
+
+		const widthMatch = output.match(/^width=(\d+)/m);
+		const heightMatch = output.match(/^height=(\d+)/m);
+		const rotationMatch = output.match(/rotation=(-?\d+)/);
+
+		if (!widthMatch || !heightMatch) return null;
+		let width = parseInt(widthMatch[1]!, 10);
+		let height = parseInt(heightMatch[1]!, 10);
+
+		// 90 / 270 degree rotation swaps display dimensions.
+		if (rotationMatch) {
+			const rot = Math.abs(parseInt(rotationMatch[1]!, 10)) % 180;
+			if (rot === 90) [width, height] = [height, width];
+		}
+
+		return { width, height };
+	} catch {
+		return null;
+	}
 }
 
 /**
  * Download a single video from Google Drive to a temp directory.
- * Returns the local file path and size.
+ * Returns the local file path, size, and display dimensions.
  */
 async function downloadDriveFile(
 	fileId: string,
 	tempDir: string,
 	logger?: Logger,
-): Promise<{ fileId: string; localPath: string; sizeBytes: number }> {
+): Promise<{ fileId: string; localPath: string; sizeBytes: number; width?: number; height?: number }> {
 	const { getAuth } = await import('../google-drive');
 	const { drive_v3 } = await import('@googleapis/drive');
 	const fs = await import('fs');
@@ -61,11 +101,16 @@ async function downloadDriveFile(
 	});
 
 	const sizeBytes = fs.statSync(localPath).size;
+	const dims = await probeVideoDimensions(localPath);
 	const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-	logger?.info('[s3-upload] Downloaded %s: %dMB in %ss',
-		fileId, (sizeBytes / (1024 * 1024)).toFixed(1), elapsed);
+	logger?.info('[s3-upload] Downloaded %s: %dMB, %dx%d, %ss',
+		fileId,
+		(sizeBytes / (1024 * 1024)).toFixed(1),
+		dims?.width ?? 0,
+		dims?.height ?? 0,
+		elapsed);
 
-	return { fileId, localPath, sizeBytes };
+	return { fileId, localPath, sizeBytes, width: dims?.width, height: dims?.height };
 }
 
 /**
@@ -215,7 +260,7 @@ export async function uploadClipsToS3(
 	const startTime = Date.now();
 
 	// Phase 1: Download all clips from Drive to temp dir (sequential to avoid OOM)
-	const downloaded: Array<{ fileId: string; localPath: string; sizeBytes: number }> = [];
+	const downloaded: Array<{ fileId: string; localPath: string; sizeBytes: number; width?: number; height?: number }> = [];
 	const errors: string[] = [];
 
 	for (const fileId of uniqueFileIds) {
@@ -261,6 +306,8 @@ export async function uploadClipsToS3(
 			s3Key,
 			s3Url: `https://${bucketName}.s3.${region}.amazonaws.com/${s3Key}`,
 			sizeBytes: file.sizeBytes,
+			width: file.width,
+			height: file.height,
 		});
 	}
 

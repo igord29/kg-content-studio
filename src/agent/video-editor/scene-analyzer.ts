@@ -565,10 +565,17 @@ export function generateNamedSegments(
 
 	if (duration <= 0) return [];
 
-	// 1. Build boundaries: [0, ...sorted scene change timestamps, duration]
-	const sortedTimestamps = [...new Set(
-		sceneChanges.map(sc => sc.timestamp)
-	)].sort((a, b) => a - b);
+	// 1. Build boundaries from BOTH sources:
+	//    - FFmpeg scene-detection timestamps (pixel-diff based; sparse for static-camera sports)
+	//    - GPT-4o visual timeline description timestamps (semantic; reliable for action content)
+	// For tennis / sports footage, FFmpeg alone produces 0-2 boundaries across 3 minutes,
+	// collapsing the whole video to one giant segment. Merging in the GPT-4o timestamps
+	// gives 10-20 real segments with meaningful cut-safety metadata.
+	const ffmpegTimestamps = sceneChanges.map(sc => sc.timestamp);
+	const visionTimestamps = (sceneDescriptions || []).map(d => d.timestamp);
+	const sortedTimestamps = [...new Set([...ffmpegTimestamps, ...visionTimestamps])]
+		.filter(t => t > 0 && t < duration)
+		.sort((a, b) => a - b);
 
 	const boundaries = [0, ...sortedTimestamps, duration];
 	// Remove duplicates and ensure sorted

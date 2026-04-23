@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS render_logs (
   completed_at timestamptz
 );
 
+-- Enable RLS (required by Supabase security policy).
+-- The backend uses supabaseAdmin (service role key) which bypasses RLS,
+-- so this just prevents the "RLS not enabled" warning without breaking anything.
+ALTER TABLE render_logs ENABLE ROW LEVEL SECURITY;
+
 -- Indexes: we query by render_id (status polling) and recent failures (debugging).
 CREATE INDEX IF NOT EXISTS idx_render_logs_render_id ON render_logs(render_id);
 CREATE INDEX IF NOT EXISTS idx_render_logs_status ON render_logs(status);

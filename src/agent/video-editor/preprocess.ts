@@ -10,6 +10,7 @@
  */
 
 import { downloadVideo } from './google-drive';
+import { buildCropFilter, type TargetAspect } from './smart-crop';
 
 // --- Types ---
 
@@ -21,6 +22,10 @@ export interface PreprocessClipConfig {
 	speed?: number;       // Playback speed multiplier. Default 1.0. 0.5 = slow-mo, 2.0 = fast.
 	sharpen?: boolean;    // Apply sharpening filter. Default true.
 	stabilize?: boolean;  // Apply deshake stabilization. Default false.
+	targetAspect?: TargetAspect;        // Target aspect ratio for smart crop (e.g., '9:16' for TikTok).
+	subjectPosition?: string;           // Where subject sits in frame — from GPT-4o catalog (e.g., 'bottom-center').
+	sourceWidth?: number;               // Source dimensions if already known (skips ffprobe).
+	sourceHeight?: number;
 }
 
 export interface PreprocessedClip {
@@ -40,34 +45,41 @@ interface Logger {
 
 /**
  * Build the video filter chain for a clip.
- * Combines sharpening and speed adjustment.
+ * Order: smart crop (aspect + subject-aware) → downscale cap → stabilize → sharpen → speed.
+ * Crop runs FIRST so deshake and sharpen operate on the final framing region.
  */
 function buildVideoFilter(config: PreprocessClipConfig): string {
 	const filters: string[] = [];
 
-	// Downscale to 1080p max — preserves aspect ratio, only scales if larger.
-	// -2 ensures height is divisible by 2 (required for H.264 encoding).
-	// Applied FIRST so expensive filters operate on 1080p instead of 4K (~4x speedup).
-	filters.push('scale=min(iw\\,1080):-2');
+	// Smart crop — uses GPT-4o subjectPosition to keep players in frame when
+	// reframing from 16:9 source to vertical/square targets.
+	if (config.targetAspect && config.sourceWidth && config.sourceHeight) {
+		filters.push(
+			buildCropFilter(
+				config.sourceWidth,
+				config.sourceHeight,
+				config.targetAspect,
+				config.subjectPosition,
+			),
+		);
+	} else {
+		// Fallback: cap at 1080p without aspect change.
+		filters.push('scale=min(iw\\,1080):-2');
+	}
 
-	// Stabilization — deshake (single-pass, built into FFmpeg, no extra library)
-	// Must come BEFORE sharpening so we sharpen the stabilized image, not amplify shake
-	// x/y/w/h=-1 = auto-detect motion region (full frame)
-	// rx=32:ry=32 = 32px search radius (generous for phone sports footage)
+	// Stabilization — deshake (built into FFmpeg, single-pass).
+	// Applied AFTER crop so we stabilize the framed region, not the full source.
 	if (config.stabilize) {
 		filters.push('deshake=x=-1:y=-1:w=-1:h=-1:rx=32:ry=32');
 	}
 
-	// Sharpening — moderate settings for phone footage
-	// unsharp=luma_size_x:luma_size_y:luma_amount:chroma_size_x:chroma_size_y:chroma_amount
-	// 5x5 kernel, 0.8 luma strength, 0.4 chroma strength — crisp but not noisy
+	// Sharpening — moderate settings for phone footage.
+	// 5x5 kernel, 0.8 luma, 0.4 chroma — crisp but not noisy.
 	if (config.sharpen !== false) {
 		filters.push('unsharp=5:5:0.8:5:5:0.4');
 	}
 
-	// Speed ramping — setpts changes presentation timestamps
-	// For speed=2.0 (2x fast): PTS * 0.5 (timestamps compressed)
-	// For speed=0.5 (slow-mo): PTS * 2.0 (timestamps stretched)
+	// Speed ramping — setpts changes presentation timestamps.
 	const speed = config.speed ?? 1.0;
 	if (speed !== 1.0) {
 		const ptsFactor = 1.0 / speed;
@@ -75,6 +87,27 @@ function buildVideoFilter(config: PreprocessClipConfig): string {
 	}
 
 	return filters.join(',');
+}
+
+/**
+ * Probe a local video file for its width and height using ffprobe.
+ * Returns null if probing fails — caller should fall back to default scaling.
+ */
+async function probeSourceDimensions(
+	localPath: string,
+): Promise<{ width: number; height: number } | null> {
+	const { execSync } = await import('child_process');
+	try {
+		const output = execSync(
+			`ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "${localPath}"`,
+			{ stdio: 'pipe', timeout: 10000 },
+		).toString().trim();
+		const match = output.match(/^(\d+)x(\d+)$/);
+		if (!match) return null;
+		return { width: parseInt(match[1]!, 10), height: parseInt(match[2]!, 10) };
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -132,7 +165,7 @@ export async function preprocessClip(
 	const processedPath = path.join(tempDir, `processed_${processedId}.mp4`);
 
 	logger?.info(
-		'[preprocess] Clip %s: downloading %s (trim=%ds, dur=%ds, speed=%sx, sharpen=%s, stabilize=%s)',
+		'[preprocess] Clip %s: downloading %s (trim=%ds, dur=%ds, speed=%sx, sharpen=%s, stabilize=%s, aspect=%s, subject=%s)',
 		config.filename || config.fileId,
 		config.fileId,
 		config.trimStart,
@@ -140,6 +173,8 @@ export async function preprocessClip(
 		speed,
 		config.sharpen !== false ? 'yes' : 'no',
 		config.stabilize ? 'yes' : 'no',
+		config.targetAspect || 'source',
+		config.subjectPosition || 'center',
 	);
 
 	// 1. Download raw source from Google Drive
@@ -151,8 +186,23 @@ export async function preprocessClip(
 		);
 	}
 
+	// 1b. Probe source dimensions for smart crop (only if needed and not provided).
+	let effectiveConfig = config;
+	if (config.targetAspect && (!config.sourceWidth || !config.sourceHeight)) {
+		const probed = await probeSourceDimensions(rawPath);
+		if (probed) {
+			effectiveConfig = { ...config, sourceWidth: probed.width, sourceHeight: probed.height };
+		} else {
+			logger?.error?.(
+				'[preprocess] ffprobe failed for %s — smart crop disabled, falling back to scale-only',
+				config.filename || config.fileId,
+			);
+			effectiveConfig = { ...config, targetAspect: undefined };
+		}
+	}
+
 	// 2. Build FFmpeg command
-	const videoFilter = buildVideoFilter(config);
+	const videoFilter = buildVideoFilter(effectiveConfig);
 	const audioFilter = buildAudioFilter(speed);
 
 	const ffmpegArgs: string[] = [

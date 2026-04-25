@@ -2356,6 +2356,51 @@ IMPORTANT JSON RULES:
 			// Add the main text prompt after images
 			messageContent.push({ type: 'text', text: userMessage });
 
+			// ┌─────────────────────────────────────────────────────────────────┐
+			// │ PLAN-X-FORK: Temporary v2 wiring — DELETE during Option B       │
+			// │ PLAN-X-FORK: Mirrors auto-pipeline.ts:86-110 so the UI's        │
+			// │ PLAN-X-FORK:   `task: 'edit'` path can actually exercise v2.    │
+			// │ PLAN-X-FORK: Grep "PLAN-X-FORK" to find every disposable line.  │
+			// │ PLAN-X-FORK: Known waste: frame extraction above always runs,   │
+			// │ PLAN-X-FORK:   even when v2 doesn't use frame images. Accepted  │
+			// │ PLAN-X-FORK:   for smoke test; Option B (B2) will extract a     │
+			// │ PLAN-X-FORK:   shared edit-planner.ts and dispatch v2 BEFORE    │
+			// │ PLAN-X-FORK:   frame extraction.                                │
+			// └─────────────────────────────────────────────────────────────────┘
+			if (process.env.VIDEO_EDITOR_USE_V2_PIPELINE === 'true') {
+				try {
+					const platform = (input.platform || 'tiktok') as string;
+					const { generateEditPlanV2 } = await import('./pipeline-v2');
+					ctx.logger.info('[video-editor:edit] PLAN-X-FORK: VIDEO_EDITOR_USE_V2_PIPELINE=true → using v2 multi-step pipeline');
+					const v2Plan = await generateEditPlanV2(
+						{
+							videoIds,
+							catalog: catalogMap,
+							videoMetadata: videoDetails.filter((v): v is typeof v & { id: string; name: string } => !('error' in v)),
+							topic,
+							purpose,
+							platform,
+							editMode: editMode as 'auto' | 'game_day' | 'our_story' | 'quick_hit' | 'showcase',
+						},
+						ctx.logger,
+					);
+					ctx.logger.info('[video-editor:edit] PLAN-X-FORK: ✓ v2 plan ready — %d clips, %ds total, mode=%s',
+						v2Plan.clips.length, v2Plan.totalDuration, v2Plan.mode);
+					return {
+						success: true,
+						editPlan: '```json\n' + JSON.stringify(v2Plan, null, 2) + '\n```',
+						editPlanData: v2Plan,
+						videoCount: videoDetails.length,
+						videos: videoDetails,
+						_pipelineVersion: 'v2',
+					};
+				} catch (err) {
+					ctx.logger.warn('[video-editor:edit] PLAN-X-FORK: ⚠️ V2 pipeline failed (%s) — falling back to V1 monolith.', String(err));
+					// PLAN-X-FORK: fall through to v1 generateText() below
+				}
+			}
+			// PLAN-X-FORK: End temporary v2 wiring
+
 			const result = await generateText({
 				model: anthropic('claude-sonnet-4-6'),
 				system: videoDirectorPrompt,

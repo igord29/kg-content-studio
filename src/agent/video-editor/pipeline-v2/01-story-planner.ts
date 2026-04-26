@@ -20,8 +20,13 @@
 import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import type { PipelineInput, StoryArc, StepLogger } from './types';
+import { EDITOR_PERSONA } from './editor-persona';
 
 const STORY_PLANNER_SYSTEM_PROMPT = `
+${EDITOR_PERSONA}
+
+# YOUR JOB IN THIS STEP
+
 You are the Story Planner for Community Literacy Club video edits.
 
 Your ONLY job is to identify the narrative structure of a video BEFORE any specific clips are chosen. You do NOT pick trim points. You do NOT pick specific timestamps. You pick WHICH STORY to tell and WHICH VIDEOS hold which beats.

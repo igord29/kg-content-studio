@@ -20,8 +20,13 @@ import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { formatSegmentTimelineForPrompt } from '../scene-analyzer';
 import type { PipelineInput, StoryArc, HookClip, BodyClips, ClipPick, StepLogger } from './types';
+import { EDITOR_PERSONA } from './editor-persona';
 
 const BODY_COMPOSER_SYSTEM_PROMPT = `
+${EDITOR_PERSONA}
+
+# YOUR JOB IN THIS STEP
+
 You are the Body Composer for Community Literacy Club video edits.
 
 Your job is to compose the body clips — the 4-6 clips that fill the space between the hook (already chosen) and the close (step 4). You get the story arc and the hook clip. You fill in the middle.

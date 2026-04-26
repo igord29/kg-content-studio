@@ -17,8 +17,13 @@ import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { formatSegmentTimelineForPrompt } from '../scene-analyzer';
 import type { PipelineInput, StoryArc, HookClip, StepLogger } from './types';
+import { EDITOR_PERSONA } from './editor-persona';
 
 const HOOK_SELECTOR_SYSTEM_PROMPT = `
+${EDITOR_PERSONA}
+
+# YOUR JOB IN THIS STEP
+
 You are the Hook Selector for Community Literacy Club video edits.
 
 Your ONLY job is to pick the SINGLE hook clip — the opening 7-10 seconds of the video. This is the most important clip in the edit. Get it right.
@@ -37,7 +42,14 @@ If scene analysis shows an interaction or action event at timestamp T:
   duration  = max(7, time_until_response_completes)
 NEVER set trimStart = T. That starts the clip ON the peak and loses the buildup.
 
-WHEN SCENE ANALYSIS IS MISSING:
+PEAK DATA SOURCES (in priority order):
+1. TIMESTAMP ACTION SCORES — if provided, these are GPT-4o-vision-confirmed peak moments with action quality 1-10. Pick the top-scored timestamp as your T (peak), then apply trimStart = max(0, T - 3).
+2. SCENE TIMELINE — if provided, use segment boundaries to find the strongest action region.
+3. NOTABLE MOMENTS — descriptive list; less precise but usable.
+
+If timestamp scores OR scene timeline OR notable moments exist for the setup source, you DO have peak data — do NOT mark the purpose as "estimated."
+
+WHEN ALL THREE SOURCES ARE MISSING (genuinely no peak data):
 - Honestly admit uncertainty in the purpose ("estimated")
 - Use an even spread: trimStart in the first third of the source video
 - Default duration to 8s
@@ -95,21 +107,47 @@ export async function selectHook(
 	}
 
 	const hasSceneAnalysis = Boolean(setupCatalog.sceneAnalysis);
+	const hasTimestampScores = Boolean(
+		setupCatalog.timestampScores && setupCatalog.timestampScores.length > 0,
+	);
+	const hasPeakData = hasSceneAnalysis || hasTimestampScores;
+
 	const sceneSection = hasSceneAnalysis
 		? '\n  SCENE TIMELINE:\n' + formatSegmentTimelineForPrompt(setupCatalog.sceneAnalysis as never)
-		: '\n  ⚠️ No scene analysis for this source — use even-spread trim with honest estimate.';
+		: '';
 
-	if (!hasSceneAnalysis) {
+	// Timestamp scores from GPT-4o vision are explicit peak candidates with action
+	// quality on a 1-10 scale. Including these prevents the bug where the hook went
+	// "estimated" despite anyHasScenes=true — sceneAnalysis can be technically
+	// present but unhelpful (e.g., one big segment covering the whole video) while
+	// timestampScores still pinpoints the high-action moments.
+	let timestampSection = '';
+	if (hasTimestampScores) {
+		const top10 = setupCatalog.timestampScores!.slice(0, 10);
+		const lines = top10
+			.map(s =>
+				`    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people})`,
+			)
+			.join('\n');
+		const bestT = top10[0]?.timestamp ?? 0;
+		timestampSection =
+			`\n  ✅ TIMESTAMP ACTION SCORES (use top-scored timestamp as T for trim formula — best is ${bestT}s):\n${lines}`;
+	} else if (!hasSceneAnalysis) {
+		timestampSection =
+			'\n  ⚠️ No scene timeline AND no timestamp scores — use even-spread trim with honest estimate.';
+	}
+
+	if (!hasPeakData) {
 		logger.warn(
-			'[hook-selector] ⚠️ Setup source %s has no scene analysis — hook will be estimated. ' +
-			'For a stricter pipeline, flip to Option B in 02-hook-selector.ts.',
+			'[hook-selector] ⚠️ Setup source %s has NEITHER scene analysis NOR timestamp scores — hook will be estimated.',
 			arc.setupSourceId,
 		);
-		// Uncomment for Option B (stricter):
-		// throw new Error(
-		// 	`Hook source ${arc.setupSourceId} has no scene analysis. ` +
-		// 	`Run POST /video-editor { task: "rescore-timestamps", videoIds: ["${arc.setupSourceId}"] } first.`,
-		// );
+	} else if (!hasSceneAnalysis && hasTimestampScores) {
+		logger.info(
+			'[hook-selector] Setup source %s has timestamp scores (%d) — using those for peak.',
+			arc.setupSourceId,
+			setupCatalog.timestampScores!.length,
+		);
 	}
 
 	const totalDurSec = setupVideo.duration
@@ -126,9 +164,9 @@ Catalog data for the setup source:
 - Location: ${setupCatalog.suspectedLocation || 'unknown'}
 - People: ${setupCatalog.peopleCount || '?'}
 - Notable moments: ${setupCatalog.notableMoments || 'None'}
-${sceneSection}
+${sceneSection}${timestampSection}
 
-Pick the hook clip. Apply the STORY HOOK ARC RULE. Return JSON only.`;
+Pick the hook clip. Apply the STORY HOOK ARC RULE. If timestamp scores are provided, use the highest-scoring timestamp as T (peak) — do NOT mark the hook as "estimated" when peak data exists. Return JSON only.`;
 
 	const result = await generateText({
 		model: anthropic('claude-sonnet-4-6'),

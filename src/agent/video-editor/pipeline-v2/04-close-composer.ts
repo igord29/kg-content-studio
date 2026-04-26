@@ -14,8 +14,13 @@
 import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import type { PipelineInput, StoryArc, HookClip, BodyClips, ClosePlan, StepLogger } from './types';
+import { EDITOR_PERSONA } from './editor-persona';
 
 const CLOSE_COMPOSER_SYSTEM_PROMPT = `
+${EDITOR_PERSONA}
+
+# YOUR JOB IN THIS STEP
+
 You are the Close Composer for Community Literacy Club video edits.
 
 Your job is to write:
@@ -138,6 +143,41 @@ Return JSON only.`;
 		logger.error('[close-composer] Raw output: %s', raw.slice(0, 500));
 		throw new Error(`Close composer returned invalid JSON: ${String(err)}`);
 	}
+
+	// Code-level slow-mo discipline for close clips. The Body Composer enforces
+	// this for body clips; the Close Composer was missing the equivalent rule,
+	// which let stray slow-mo land on speculative "celebration" moments without
+	// a confirmed action peak. Rule: close-clip speed < 1.0 requires a
+	// timestampScore with actionQuality >= 7 INSIDE the clip's trim range.
+	// Otherwise force speed=1.0.
+	close.closeClips = close.closeClips.map((c, i) => {
+		if (!c.speed || c.speed >= 1.0) return c;
+		const ce = input.catalog.get(c.fileId);
+		const clipStart = c.trimStart;
+		const clipEnd = c.trimStart + c.duration;
+		const peakInRange = ce?.timestampScores?.find(
+			s =>
+				s.timestamp >= clipStart && s.timestamp <= clipEnd && s.actionQuality >= 7,
+		);
+		if (!peakInRange) {
+			logger.warn(
+				'[close-composer] Close clip %d at speed=%s has no confirmed action peak (actionQuality>=7) within %ds-%ds on source %s. Forcing speed=1.0.',
+				i,
+				c.speed,
+				clipStart,
+				clipEnd,
+				c.fileId,
+			);
+			return { ...c, speed: 1.0 };
+		}
+		logger.info(
+			'[close-composer] Close clip %d slow-mo allowed: peak at %ds (actionQuality=%d) within range.',
+			i,
+			peakInRange.timestamp,
+			peakInRange.actionQuality,
+		);
+		return c;
+	});
 
 	// Sanity-check overlay start times — clamp any that land past the
 	// final timeline so we don't render a stale overlay.

@@ -57,26 +57,28 @@ export function getEffectForClip(mode: string, index: number): string {
  * create a professional color grade without needing LUT files.
  */
 const COLOR_GRADES: Record<string, string> = {
-	// Original: punchy, slightly saturated — good for action
-	boost: 'saturate(1.15) contrast(1.1)',
+	// Punchy action grade — bright, vivid, immediate
+	boost: 'saturate(1.3) contrast(1.2) brightness(1.02)',
 
-	// Teal/orange cinema look — desaturated with lifted contrast + cool shadows
-	cinematic: 'saturate(0.85) contrast(1.2) brightness(0.95)',
+	// Teal/orange cinema look — desaturated highlights, pushed shadows,
+	// slight cool hue shift for the split-tone feel without LUT files
+	cinematic: 'saturate(0.78) contrast(1.4) brightness(0.92) hue-rotate(8deg)',
 
-	// Golden hour warmth — slightly warm, soft, inviting
-	warm: 'saturate(1.1) sepia(0.12) brightness(1.05) contrast(1.05)',
+	// Golden hour warmth — warm-shifted, soft highlights, ESPN's "hopeful" beat look
+	warm: 'saturate(1.18) sepia(0.18) brightness(1.06) contrast(1.12) hue-rotate(-4deg)',
 
-	// High-impact sports — punchy blacks, vivid color
-	dramatic: 'contrast(1.3) brightness(0.9) saturate(1.25)',
+	// High-impact sports broadcast — pumped blacks, vivid color, ESPN E:60 climax look
+	dramatic: 'contrast(1.5) brightness(0.88) saturate(1.4) hue-rotate(-3deg)',
 
-	// Natural, grounded — slightly pulled back, honest
-	documentary: 'saturate(0.9) contrast(1.1) brightness(1.02)',
+	// Bleach-bypass documentary — desaturated highlights, deep contrast,
+	// the ESPN documentary signature treatment (used to be subtle, now reads on screen)
+	documentary: 'saturate(0.78) contrast(1.32) brightness(0.97)',
 
 	// Nostalgic, aged look — warm sepia tones with reduced vibrance
-	vintage: 'sepia(0.2) saturate(0.8) contrast(1.1) brightness(1.05)',
+	vintage: 'sepia(0.28) saturate(0.75) contrast(1.18) brightness(1.04)',
 
 	// Cool-toned editorial — blue-shifted, clean, modern
-	cool: 'saturate(0.9) brightness(1.02) contrast(1.1) hue-rotate(10deg)',
+	cool: 'saturate(0.85) brightness(1.02) contrast(1.18) hue-rotate(14deg)',
 };
 
 /**

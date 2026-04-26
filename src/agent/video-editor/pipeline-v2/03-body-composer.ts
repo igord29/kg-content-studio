@@ -36,6 +36,12 @@ BODY STRUCTURE:
 - 1-2 SHOWCASE clips: 4-5s each, gameplay or interaction
 - 1 CLIMAX clip: the peak moment — slow-mo if warranted
 
+PEAK ANCHORING RULE (non-negotiable):
+For each clip, your trimStart MUST sit within 2 seconds of a TIMESTAMP ACTION SCORE provided in the footage data — never pick a blind number. The timestamp scores tell you exactly where players are visible and active; picking trimStart values that miss those scores produces wall shots and empty-court frames.
+
+PEOPLE-PRESENCE FILTER (non-negotiable for showcase + climax):
+Showcase and climax clips MUST anchor on a timestamp where people>=4. Establish clips may use lower-people timestamps (wide venue shots are OK if intentional), but showcase/climax need a player visibly in frame doing the action. If no people>=4 timestamps exist for a beat's planned source, EITHER pick a different source OR demote the beat to establish.
+
 SLOW-MO WINDOWING RULE (non-negotiable):
 If you use slow-mo (speed < 1.0) on any clip:
   trimStart = peakTime - (duration × 0.4)
@@ -103,10 +109,28 @@ export async function composeBody(
 			const sceneSection = ce.sceneAnalysis
 				? '\n  SCENE TIMELINE:\n' + formatSegmentTimelineForPrompt(ce.sceneAnalysis as never)
 				: '\n  ⚠️ No scene analysis — avoid slow-mo on this source, use even-spread trims.';
+
+			// Surface timestampScores so the body composer picks moments where
+			// players are visible (people>=4) rather than blind timestamps.
+			// Fixes the wall-shot problem: previously the model picked trimStart
+			// values from the scene timeline alone, which couldn't tell empty
+			// court from active rally.
+			let timestampSection = '';
+			if (ce.timestampScores && ce.timestampScores.length > 0) {
+				const top15 = ce.timestampScores.slice(0, 15);
+				const lines = top15
+					.map(
+						s =>
+							`    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy})`,
+					)
+					.join('\n');
+				timestampSection = `\n  ✅ TIMESTAMP ACTION SCORES (pick trim points NEAR these — never blind-pick a timestamp):\n${lines}`;
+			}
+
 			const durSec = v.duration ? Math.round(parseInt(v.duration) / 1000) : 0;
 			return `${v.id}: ${v.name} (${durSec}s)
   - Activity: ${ce.activity}
-  - Notable: ${ce.notableMoments || 'None'}${sceneSection}`;
+  - Notable: ${ce.notableMoments || 'None'}${sceneSection}${timestampSection}`;
 		}).join('\n\n');
 
 	const bodyBeatsSummary = arc.bodyBeats.map((b, i) =>

@@ -105,6 +105,20 @@ export async function composeClose(
 		? Math.round(parseInt(closeSource.duration) / 1000)
 		: 0;
 
+	// Surface timestampScores so close clips anchor on real people-on-screen
+	// moments, not blind timestamps. Same fix pattern as body composer.
+	let closeTimestampSection = '';
+	if (closeCatalog?.timestampScores && closeCatalog.timestampScores.length > 0) {
+		const top10 = closeCatalog.timestampScores.slice(0, 10);
+		const lines = top10
+			.map(
+				s =>
+					`    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy})`,
+			)
+			.join('\n');
+		closeTimestampSection = `\n\nTIMESTAMP ACTION SCORES for close source (anchor close clips within 2s of one of these — never blind-pick):\n${lines}`;
+	}
+
 	const prompt = `Story arc:
 - Mode: ${arc.mode}
 - Emotional center: ${arc.emotionalCenter}
@@ -116,12 +130,13 @@ Final video target: ~${Math.round(currentDuration + 6)}s (add 6s for close + com
 Close source: ${closeSourceId} (${closeSource?.name ?? 'unknown'}, ${closeDurSec}s duration)
 - Activity: ${closeCatalog?.activity ?? 'unknown'}
 - Location: ${closeCatalog?.suspectedLocation ?? 'unknown'}
-- Notable: ${closeCatalog?.notableMoments ?? 'None'}
+- Notable: ${closeCatalog?.notableMoments ?? 'None'}${closeTimestampSection}
 
 Topic: ${input.topic}
 Platform: ${input.platform}
 
 Write the closing clips (community + close) and all text overlays for the full timeline.
+Anchor every close clip's trimStart within 2 seconds of a timestamp score above. Community beat should pick a timestamp with people>=3.
 Return JSON only.`;
 
 	const result = await generateText({

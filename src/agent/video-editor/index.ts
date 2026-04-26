@@ -510,6 +510,19 @@ const agent = createAgent('video-editor', {
 							}
 						}
 						subjectPosition = best.subjectPosition || undefined;
+						ctx.logger.info(
+							'[render] Clip %s trimStart=%ds → closest catalog ts=%ds (delta=%ds) → subjectPosition=%s',
+							clip.fileId.slice(0, 8),
+							clip.trimStart || 0,
+							best.timestamp,
+							bestDelta,
+							subjectPosition || 'UNSET',
+						);
+					} else {
+						ctx.logger.warn(
+							'[render] Clip %s has NO timestampScores in catalog — smart-crop will fall back to center.',
+							clip.fileId.slice(0, 8),
+						);
 					}
 					return {
 						...clip,

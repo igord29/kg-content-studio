@@ -206,7 +206,10 @@ async function invokePreprocessorForClip(
 	logger?.info('[preprocessor] Firing async Lambda for %s (trim=%ds, dur=%ds, speed=%sx, stabilize=%s, aspect=%s, subject=%s)...',
 		clip.filename || clip.fileId, clip.trimStart, clip.duration,
 		clip.speed ?? 1.0, clip.stabilize === true ? 'yes' : 'no',
-		clip.targetAspect || 'source', clip.subjectPosition || 'center');
+		clip.targetAspect || 'source',
+		// Show explicitly when subjectPosition is unset vs explicitly 'center'
+		// so we can distinguish "lookup failed" from "catalog says center."
+		clip.subjectPosition === undefined ? 'UNSET→center' : clip.subjectPosition);
 
 	const lambda = await getLambdaClient(region);
 	const startTime = Date.now();

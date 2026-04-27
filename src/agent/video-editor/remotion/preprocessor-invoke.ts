@@ -349,10 +349,13 @@ export function isPreprocessorAvailable(): boolean {
  * showcase:  1.15 — subtle; preserves the "showing off the program" wide view
  */
 const MODE_DEFAULT_EXTRA_ZOOM: Record<string, number> = {
-	game_day:  1.25,
-	quick_hit: 1.30,
-	our_story: 1.15,
-	showcase:  1.15,
+	game_day:  1.35,  // Bumped from 1.25 — tighter crop hides shake at frame edges
+	                  // and pulls focus onto the player. Trade-off: less venue context,
+	                  // but smart-crop with bottom-center subjectPosition centers on
+	                  // the player so the zoom doesn't push them out of frame.
+	quick_hit: 1.40,  // Bumped from 1.30 — same reasoning, even punchier for fast social
+	our_story: 1.18,  // Slight bump — preserve environment but tighten slightly
+	showcase:  1.18,  // Slight bump — keep wide context for the program-showcase feel
 };
 
 /**

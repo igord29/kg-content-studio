@@ -123,6 +123,11 @@ export interface CatalogEntry {
     people: number;         // 1-5
     tennis: number;         // 1-5
     energy: number;         // 1-5
+    /** 0.0-1.0: how much of frame the dominant subject fills.
+     *  Acts as a multiplier on actionQuality so wall shots can't score high
+     *  even if other axes are misjudged. Added 2026-04-27 — entries scored
+     *  before this date may not have the field, treated as 0.30 default. */
+    subjectFillRatio?: number;
     brief: string;          // 10-word-max description
     subjectPosition?: string; // where subjects are in frame: center, bottom-center, bottom-left, etc.
   }>;

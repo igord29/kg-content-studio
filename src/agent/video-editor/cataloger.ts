@@ -656,6 +656,15 @@ const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/che
 - movement: How much physical motion/action is visible? (1=static/empty/ground/sky, 2=slight movement, 3=moderate activity, 4=active gameplay, 5=peak action like serve/rally/celebration)
 - people: Are KIDS/PLAYERS actively visible and engaged? (1=empty/no people/backs only, 2=distant figures, 3=people visible but passive/spectating, 4=kids clearly visible and active, 5=close-up of kids playing/celebrating)
   IMPORTANT: Spectators sitting and watching = 2-3, NOT 4-5. We want clips of kids PLAYING, not crowds watching.
+  CRITICAL FRAMING RULE: people score CANNOT exceed 3 if the subject occupies less than ~25% of the frame. A kid as a small figure in the corner of a wide stadium shot = people 2 max, regardless of how clearly visible they are. We only call people 4-5 when the player IS the visual focal point of the frame.
+
+- subjectFillRatio: How much of the frame does the dominant subject (player/kid/coach) occupy? Score 0.0 to 1.0:
+  - 0.0-0.10: subject barely visible / signage-or-court-dominated frame / no clear subject
+  - 0.10-0.20: subject is a small element (corner of wide shot, distant figure)
+  - 0.20-0.35: subject is clearly visible but not dominant (medium-wide shot)
+  - 0.35-0.60: subject is the visual focal point (medium shot, half-body)
+  - 0.60-1.00: subject fills the frame (close-up, action shot)
+  Score this HONESTLY. A frame with a J.P. Morgan banner taking 70% of the image and a kid in the corner = subjectFillRatio 0.10, NOT higher. A tequila wall with no people = 0.0.
 - tennis: How directly does this show tennis/chess GAMEPLAY? (1=irrelevant/empty space, 2=court visible but no play, 3=people near court/equipment, 4=active drills/practice, 5=rally/match/direct gameplay)
   IMPORTANT: An empty court or people standing around = 1-2. Actual ball-hitting, serving, rallying = 4-5.
 - energy: How visually compelling is this for a social media clip? (1=boring/static/empty, 2=mildly interesting, 3=decent content, 4=engaging action, 5=viral-worthy moment)
@@ -670,11 +679,13 @@ Do NOT inflate scores based on CONTEXT. Tennis branding, stadium logos, court pa
   - energy MUST be <=3 (signage can be visually striking but it's not GAMEPLAY energy)
 
 Examples of common failure patterns — score these HONESTLY LOW:
-  - "US Open signage" / any stadium banner = movement 1, tennis 1, people 1, energy 2 (even if branding looks cool)
-  - "Videographer's shadow on court" = movement 1, people 1, tennis 1, energy 1
-  - "Empty court with paint/lines visible" = movement 1, people 1, tennis 2, energy 1
-  - "People sitting watching" = movement 2, people 3, tennis 2, energy 2
-  - "Kid walking on court holding racket" = movement 2, people 3, tennis 3, energy 2 — NOT 4-5
+  - "US Open signage" / any stadium banner = movement 1, tennis 1, people 1, energy 2, subjectFillRatio 0.0 (even if branding looks cool)
+  - "Tequila/sponsor wall with no people" = movement 1, tennis 1, people 1, energy 1, subjectFillRatio 0.0
+  - "Wide stadium shot with kid as small figure on right side" = movement 2, people 2, tennis 2, energy 2, subjectFillRatio 0.10 (kid is visible but NOT the focal point)
+  - "Videographer's shadow on court" = movement 1, people 1, tennis 1, energy 1, subjectFillRatio 0.0
+  - "Empty court with paint/lines visible" = movement 1, people 1, tennis 2, energy 1, subjectFillRatio 0.0
+  - "People sitting watching" = movement 2, people 3, tennis 2, energy 2, subjectFillRatio 0.30
+  - "Kid walking on court holding racket" = movement 2, people 3, tennis 3, energy 2, subjectFillRatio 0.30 — NOT 4-5
 
 Only score 4-5 on tennis/movement when you can IDENTIFY the specific action happening (e.g. "forehand swing", "serve toss", "chess piece being moved"). If you cannot name the specific action, score <=3.
 
@@ -683,7 +694,7 @@ Also provide:
 - subjectPosition: Where are the main subjects (people/action) in the frame? Use one of: "center", "bottom-center", "bottom-left", "bottom-right", "top-center", "left", "right". If no subject is visible (empty/signage/shadows), use "center" as a safe default.
 
 Return ONLY a JSON array, one object per frame in the order provided:
-[{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "brief": "Two kids rallying on hard court", "subjectPosition": "bottom-center"}]
+[{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "subjectFillRatio": 0.45, "brief": "Two kids rallying on hard court", "subjectPosition": "bottom-center"}]
 
 No markdown, no explanation, just the JSON array.`;
 
@@ -788,20 +799,37 @@ async function scoreVideoTimestamps(
 				energy: number;
 				brief: string;
 				subjectPosition?: string;
+				subjectFillRatio?: number;
 			}>;
 
 			// Use original timestamps (not model-returned ones) to avoid hallucinated values
 			for (let k = 0; k < scores.length && k < framePaths.length; k++) {
 				const score = scores[k]!;
 				const originalTs = framePaths[k]!.timestamp;
-				// Weight tennis and movement higher — we want gameplay, not spectators
-				const actionQuality = Math.round((score.movement * 1.5 + score.people + score.tennis * 1.5 + score.energy) / 5 * 2);
-				const finalScore = Math.min(10, Math.max(1, actionQuality));
+
+				// Weight tennis and movement higher — we want gameplay, not spectators.
+				// subjectFillRatio gates the score: a frame where the player occupies
+				// <20% of the image is fundamentally a wall shot regardless of how
+				// "active" the GPT-4o description sounds, so we cap actionQuality
+				// when the subject isn't actually the focal point.
+				const fillRatio = typeof score.subjectFillRatio === 'number'
+					? Math.max(0, Math.min(1, score.subjectFillRatio))
+					: 0.30; // default for old data without the field
+				const rawScore = Math.round(
+					(score.movement * 1.5 + score.people + score.tennis * 1.5 + score.energy) / 5 * 2,
+				);
+				// Apply subjectFillRatio as a multiplier — a wall shot can't score above ~3
+				// even if other axes are inflated. Curve: 0.0→0.3x, 0.20→0.6x, 0.35→0.85x, 0.5+→1.0x
+				const fillMultiplier = fillRatio < 0.10 ? 0.30
+					: fillRatio < 0.20 ? 0.60
+					: fillRatio < 0.35 ? 0.85
+					: 1.0;
+				const finalScore = Math.min(10, Math.max(1, Math.round(rawScore * fillMultiplier)));
 				// Per-frame diagnostic log — makes it visible during rescore whether the
 				// model is producing believable scores. Format chosen to be greppable
 				// in Railway logs: look for "[cataloger] score ts=" prefix.
 				console.log(
-					`[cataloger] score ts=${originalTs}s q=${finalScore}/10 m=${score.movement} p=${score.people} t=${score.tennis} e=${score.energy} pos=${score.subjectPosition || 'bottom-center'} brief="${(score.brief || '').slice(0, 60)}"`,
+					`[cataloger] score ts=${originalTs}s q=${finalScore}/10 m=${score.movement} p=${score.people} t=${score.tennis} e=${score.energy} fill=${fillRatio.toFixed(2)} pos=${score.subjectPosition || 'bottom-center'} brief="${(score.brief || '').slice(0, 60)}"`,
 				);
 				allScores.push({
 					timestamp: originalTs,
@@ -810,6 +838,7 @@ async function scoreVideoTimestamps(
 					people: score.people,
 					tennis: score.tennis,
 					energy: score.energy,
+					subjectFillRatio: fillRatio,
 					brief: score.brief,
 					subjectPosition: score.subjectPosition || 'center',
 				});

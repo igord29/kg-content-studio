@@ -75,8 +75,10 @@ FILTER (color grade): pick one based on emotional intent of the beat
   - "cool"        — blue-shifted, editorial
 
 EFFECT (Ken Burns CSS animation during the clip):
-  - "zoomIn"      — slowly tightens; use to push into a moment
+  - "zoomIn"      — subtle push (+15% over clip); use to push into a moment
   - "zoomOut"     — slowly widens; use to reveal scale at end of beat
+  - "pushIn"      — moderate push (+30%); use when source is mid-distance and you want to arrive closer
+  - "punchIn"     — AGGRESSIVE push (+50%, eased); use specifically when the source frame is wide and the player feels small. Turns a wide shot into a near-close-up by clip end. The cubic-eased ramp accelerates near the end for cinematic impact. Best used on showcase + climax beats where you NEED close energy from a wide source.
   - "slideRight"  — pans right; use to sweep across a group
   - "slideLeft"   — pans left; reverse pan for visual rhythm
   - null          — no Ken Burns; pure static frame, lets the source carry it
@@ -100,9 +102,11 @@ EXTRAZOOM (per-clip static crop level, multiplies the mode default):
 
 WHEN TO REACH FOR WHAT:
   - Establish: documentary filter, zoomOut effect, extraZoom 1.0, fade transition. Quiet entry.
-  - Showcase:  cinematic OR boost filter, zoomIn effect, extraZoom 1.3, slide/wipe transition. Push in.
-  - Climax:    dramatic filter, zoomIn effect, extraZoom 1.4, cube/clockWipe transition. Earn the moment.
+  - Showcase:  cinematic OR boost filter, pushIn (mid-distance source) OR punchIn (wide source) effect, extraZoom 1.3, slide/wipe transition. Push in.
+  - Climax:    dramatic filter, punchIn effect (especially if source is wide and the catalog timestamp is people<=3 — you compensate via aggressive zoom), extraZoom 1.4, cube/clockWipe transition. Earn the moment.
   - Community: warm filter, zoomOut effect, extraZoom 1.0, fade transition. Pull back to the group.
+
+PUNCH-IN DECISION RULE: if the catalog timestamp's subjectFillRatio < 0.30 OR people=3 (wide-camera frame), prefer punchIn over zoomIn — the digital push compensates for the wide source by arriving closer by clip end. If subjectFillRatio >= 0.40, the source is already tight enough; use zoomIn or pushIn for subtlety.
 
 Output VALID JSON matching this exact schema:
 {
@@ -113,7 +117,7 @@ Output VALID JSON matching this exact schema:
       "duration": <seconds>,
       "speed": 1.0,
       "filter": "dramatic" | "cinematic" | "warm" | "documentary" | "boost" | "vintage" | "cool",
-      "effect": "zoomIn" | "zoomOut" | "slideRight" | "slideLeft" | null,
+      "effect": "zoomIn" | "zoomOut" | "pushIn" | "punchIn" | "slideRight" | "slideLeft" | null,
       "transitionType": "fade" | "slide" | "wipe" | "cube" | "circleWipe" | "clockWipe" | "wheelspin" | "flip",
       "transitionDirection": "from-left" | "from-right" | "from-top" | "from-bottom",
       "extraZoom": <number 0.9-1.5 — omit for mode default>,

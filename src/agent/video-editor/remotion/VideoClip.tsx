@@ -174,12 +174,33 @@ export const VideoClip: React.FC<VideoClipProps> = ({ src, effect, filter, speed
 	let transform = '';
 	switch (effect) {
 		case 'zoomIn': {
+			// Subtle Ken Burns push (~+15% over clip duration)
 			const scale = interpolate(progress, [0, 1], [BASE_SCALE, BASE_SCALE + 0.15]);
 			transform = `scale(${scale})`;
 			break;
 		}
 		case 'zoomOut': {
 			const scale = interpolate(progress, [0, 1], [BASE_SCALE + 0.15, BASE_SCALE]);
+			transform = `scale(${scale})`;
+			break;
+		}
+		case 'pushIn': {
+			// Moderate digital push-in (+30% over clip). Between zoomIn (subtle) and
+			// punchIn (aggressive). Use when source is mid-distance and you want to
+			// arrive closer by clip end without dramatic motion.
+			const scale = interpolate(progress, [0, 1], [BASE_SCALE, BASE_SCALE + 0.3]);
+			transform = `scale(${scale})`;
+			break;
+		}
+		case 'punchIn': {
+			// Aggressive digital punch-in (+50% over clip). Turns a wide source into
+			// a near-close-up by clip end. Use specifically when the source camera is
+			// far from the player and you want to compensate by arriving close on the
+			// emotional beat. Eased so the punch accelerates near the end — feels more
+			// cinematic than a linear ramp.
+			// Easing curve: cubic ease-in (slow start, accelerating finish)
+			const easedProgress = progress * progress * progress;
+			const scale = interpolate(easedProgress, [0, 1], [BASE_SCALE, BASE_SCALE + 0.5]);
 			transform = `scale(${scale})`;
 			break;
 		}

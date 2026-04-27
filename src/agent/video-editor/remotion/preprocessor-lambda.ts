@@ -74,11 +74,14 @@ const SUBJECT_POSITION_MAP: Record<string, { x: number; y: number }> = {
 	'bottom-right':  { x: 0.67, y: 0.67 },
 };
 
+// 4K preprocessor output dimensions — matches PLATFORM_SETTINGS in shotstack.ts.
+// Source is 2K (2560x1440), so this is a mild upscale at the FFmpeg crop stage;
+// preserves more detail than downscaling to 1080 and forcing Remotion to upscale.
 const ASPECT_DIMS: Record<string, { w: number; h: number }> = {
-	'9:16': { w: 1080, h: 1920 },
-	'1:1':  { w: 1080, h: 1080 },
-	'4:5':  { w: 1080, h: 1350 },
-	'16:9': { w: 1920, h: 1080 },
+	'9:16': { w: 2160, h: 3840 },
+	'1:1':  { w: 2160, h: 2160 },
+	'4:5':  { w: 2160, h: 2700 },
+	'16:9': { w: 3840, h: 2160 },
 };
 
 function roundEven(n: number): number {
@@ -173,7 +176,7 @@ function buildVideoFilter(config: {
 	if (cropFilter) {
 		filters.push(cropFilter);
 	} else {
-		filters.push('scale=min(iw\\,1080):-2');
+		filters.push('scale=min(iw\\,2160):-2');
 	}
 
 	// Stabilization — OPT IN. Default off because deshake on 2K source at 2048MB Lambda

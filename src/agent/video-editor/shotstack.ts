@@ -130,15 +130,19 @@ const ASPECT_RATIO_SIZES: Record<string, { width: number; height: number }> = {
 
 // --- Platform-specific output settings ---
 
+// 4K render targets across all platforms — matches what professional social-video
+// platforms output. Source footage is 2K (2560x1440) so 4K is a 1.5x upscale at
+// the renderer; composition layer (Remotion) handles the upscale cleanly. Higher
+// bitrate falls out automatically from h264 quality settings.
 export const PLATFORM_SETTINGS: Record<string, { width: number; height: number; maxDuration: number; aspectRatio: string }> = {
-	tiktok:    { width: 1080, height: 1920, maxDuration: 60, aspectRatio: '9:16' },
-	ig_reels:  { width: 1080, height: 1920, maxDuration: 90, aspectRatio: '9:16' },
-	'ig-reels': { width: 1080, height: 1920, maxDuration: 90, aspectRatio: '9:16' },
-	ig_feed:   { width: 1080, height: 1080, maxDuration: 60, aspectRatio: '1:1' },
-	'ig-feed': { width: 1080, height: 1080, maxDuration: 60, aspectRatio: '1:1' },
-	youtube:   { width: 1920, height: 1080, maxDuration: 600, aspectRatio: '16:9' },
-	facebook:  { width: 1920, height: 1080, maxDuration: 240, aspectRatio: '16:9' },
-	linkedin:  { width: 1920, height: 1080, maxDuration: 120, aspectRatio: '16:9' },
+	tiktok:    { width: 2160, height: 3840, maxDuration: 60, aspectRatio: '9:16' },
+	ig_reels:  { width: 2160, height: 3840, maxDuration: 90, aspectRatio: '9:16' },
+	'ig-reels': { width: 2160, height: 3840, maxDuration: 90, aspectRatio: '9:16' },
+	ig_feed:   { width: 2160, height: 2160, maxDuration: 60, aspectRatio: '1:1' },
+	'ig-feed': { width: 2160, height: 2160, maxDuration: 60, aspectRatio: '1:1' },
+	youtube:   { width: 3840, height: 2160, maxDuration: 600, aspectRatio: '16:9' },
+	facebook:  { width: 3840, height: 2160, maxDuration: 240, aspectRatio: '16:9' },
+	linkedin:  { width: 3840, height: 2160, maxDuration: 120, aspectRatio: '16:9' },
 };
 
 // --- Mode-specific render pacing ---

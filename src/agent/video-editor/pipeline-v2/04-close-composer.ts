@@ -36,6 +36,17 @@ TEXT OVERLAY GUIDELINES:
 OVERLAY TIMING:
 The current timeline length (hook + body) is provided in the prompt. Place overlays at absolute timeline seconds (NOT source timestamps). Use the "start" field for when each overlay appears on screen.
 
+YOUR TOOLKIT FOR CLOSE CLIPS:
+  - filter: "warm" (default for community/landing — golden-hour hopeful), "documentary" (ESPN-doc honesty), "cinematic" (polished landing)
+  - effect: "zoomOut" (pull back to reveal scale — default for the close clip), "zoomIn" (only for tight emotional moments), null (static)
+  - extraZoom: 1.0 (default — community wants context), 0.9 (extra wide for the final landing on venue)
+  - transitionType: "fade" (default for quiet landings), "circleWipe" (iris-out close), "clockWipe" (sports-broadcast close)
+
+CROSS-CLIP DEDUP (HARD RULE):
+  - DO NOT pick a trimStart inside the hook's range +/- 3s on the same source. Hook fileId/range is in the prompt — keep ≥3s away.
+  - Body clips' ranges are in the prompt — keep ≥3s away from each on the same source.
+  - Within your own close clips, ≥3s separation between trim ranges from the same source.
+
 Output VALID JSON:
 {
   "closeClips": [
@@ -44,10 +55,12 @@ Output VALID JSON:
       "trimStart": <seconds>,
       "duration": <seconds>,
       "speed": 1.0,
-      "filter": "dramatic" | "cinematic" | "warm" | "documentary" | "boost",
-      "effect": "zoomOut" | "zoomIn",
+      "filter": "dramatic" | "cinematic" | "warm" | "documentary" | "boost" | "vintage" | "cool",
+      "effect": "zoomOut" | "zoomIn" | "slideRight" | "slideLeft" | null,
+      "transitionType": "fade" | "slide" | "wipe" | "cube" | "circleWipe" | "clockWipe" | "wheelspin" | "flip",
+      "extraZoom": <number 0.9-1.5 — omit for mode default>,
       "purpose": "<community | close>",
-      "editNote": "<reasoning>"
+      "editNote": "<reasoning AND your toolkit choices — name the filter/effect/transition/extraZoom you picked and why>"
     }
   ],
   "textOverlays": [
@@ -119,6 +132,25 @@ export async function composeClose(
 		closeTimestampSection = `\n\nTIMESTAMP ACTION SCORES for close source (anchor close clips within 2s of one of these — never blind-pick):\n${lines}`;
 	}
 
+	// Surface the hook + body trim ranges per source so close composer can
+	// avoid overlapping them. Without this, close clips routinely landed on
+	// the same timestamp as the hook (e.g. hook 17-26s + close 19-22s on
+	// the same source = viewer sees the same footage at start and end).
+	const usedRangesByFile = new Map<string, Array<[number, number]>>();
+	const trackUsage = (c: { fileId: string; trimStart: number; duration: number }) => {
+		const arr = usedRangesByFile.get(c.fileId) ?? [];
+		arr.push([c.trimStart, c.trimStart + c.duration]);
+		usedRangesByFile.set(c.fileId, arr);
+	};
+	trackUsage(hook);
+	body.clips.forEach(trackUsage);
+	const usedRangesSection = Array.from(usedRangesByFile.entries())
+		.map(([fileId, ranges]) => {
+			const formatted = ranges.map(([a, b]) => `${a}s-${b}s`).join(', ');
+			return `  ${fileId}: avoid ${formatted}`;
+		})
+		.join('\n');
+
 	const prompt = `Story arc:
 - Mode: ${arc.mode}
 - Emotional center: ${arc.emotionalCenter}
@@ -132,11 +164,14 @@ Close source: ${closeSourceId} (${closeSource?.name ?? 'unknown'}, ${closeDurSec
 - Location: ${closeCatalog?.suspectedLocation ?? 'unknown'}
 - Notable: ${closeCatalog?.notableMoments ?? 'None'}${closeTimestampSection}
 
+ALREADY-USED TIME RANGES (do not overlap, keep ≥3s separation):
+${usedRangesSection}
+
 Topic: ${input.topic}
 Platform: ${input.platform}
 
 Write the closing clips (community + close) and all text overlays for the full timeline.
-Anchor every close clip's trimStart within 2 seconds of a timestamp score above. Community beat should pick a timestamp with people>=3.
+Anchor every close clip's trimStart within 2 seconds of a timestamp score above AND outside the already-used ranges. Community beat should pick a timestamp with people>=3.
 Return JSON only.`;
 
 	const result = await generateText({

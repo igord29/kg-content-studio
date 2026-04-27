@@ -58,6 +58,11 @@ WHEN ALL THREE SOURCES ARE MISSING (genuinely no peak data):
 NEVER USE SLOW-MO FOR HOOKS. Save slow-mo for the climax clip (handled by step 3).
 Hooks want momentum and arrival, not suspension of time.
 
+YOUR TOOLKIT (the hook usually wants restraint — pick deliberately):
+  - filter: "documentary" (default — keeps the moment honest), "cinematic" (polished arrival), "dramatic" (only for high-stakes hooks)
+  - effect: "zoomIn" (push into setup), "slideRight"/"slideLeft" (kinetic entry), null (static — let the source carry it)
+  - extraZoom: 1.0 (wide context for venue-establishing hooks), 1.2 (default for player-focused hooks), 1.4 (close on a face — only when fill ratio supports it)
+
 Output VALID JSON matching this exact schema:
 {
   "fileId": "<must match the setup source provided>",
@@ -65,10 +70,11 @@ Output VALID JSON matching this exact schema:
   "trimStart": <seconds>,
   "duration": <seconds, must be >= 7>,
   "speed": 1.0,
-  "filter": "dramatic" | "cinematic" | "warm" | "documentary" | "boost",
-  "effect": "zoomIn" | "slideRight" | "slideLeft",
+  "filter": "dramatic" | "cinematic" | "warm" | "documentary" | "boost" | "vintage" | "cool",
+  "effect": "zoomIn" | "zoomOut" | "slideRight" | "slideLeft" | null,
+  "extraZoom": <number 0.9-1.5 — omit for mode default>,
   "purpose": "<brief editorial description — can reference what scene data confirms>",
-  "editNote": "<reasoning for these trim points — cite timestamps if scene data available>"
+  "editNote": "<reasoning for these trim points AND your toolkit choices — name the filter/effect/extraZoom you picked and why>"
 }
 
 Return JSON only, no prose, no markdown fences.

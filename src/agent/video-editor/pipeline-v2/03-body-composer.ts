@@ -63,6 +63,47 @@ HOOK ALREADY CHOSEN — DO NOT CONFLICT WITH IT:
 - Hook trimStart + duration will be passed
 - Your body clips from the same fileId must NOT overlap the hook's time range
 
+YOUR TOOLKIT (use deliberately, not by default):
+
+FILTER (color grade): pick one based on emotional intent of the beat
+  - "documentary" — bleach-bypass, real, grounded (default for establish + reset beats)
+  - "dramatic"    — pumped contrast, vivid, ESPN broadcast climax look (use on climax)
+  - "cinematic"   — teal/orange split tone, polished (use on showcase peaks)
+  - "warm"        — golden-hour, hopeful (use on community beats)
+  - "boost"       — punchy saturated, social-native energy
+  - "vintage"     — sepia warmth, nostalgic
+  - "cool"        — blue-shifted, editorial
+
+EFFECT (Ken Burns CSS animation during the clip):
+  - "zoomIn"      — slowly tightens; use to push into a moment
+  - "zoomOut"     — slowly widens; use to reveal scale at end of beat
+  - "slideRight"  — pans right; use to sweep across a group
+  - "slideLeft"   — pans left; reverse pan for visual rhythm
+  - null          — no Ken Burns; pure static frame, lets the source carry it
+
+TRANSITION INTO THIS CLIP (the cut style joining this clip to the previous):
+  - "fade"        — soft cross-dissolve, quiet
+  - "slide"       — directional push, kinetic
+  - "wipe"        — diagonal/edge reveal
+  - "cube"        — 3D cube turn, dramatic
+  - "circleWipe"  — iris reveal from center, dramatic
+  - "clockWipe"   — sweeping clock-hand reveal, sports-broadcast feel
+  - "wheelspin"   — rotational spin, high-energy
+  - "flip"        — page-flip turn
+  - omit          — defaults to mode pool
+
+EXTRAZOOM (per-clip static crop level, multiplies the mode default):
+  - 0.9-1.0  — wide, preserve venue context (use for ESTABLISH only)
+  - 1.0-1.2  — balanced (default for most clips)
+  - 1.3-1.5  — tight, push into player effort (use for SHOWCASE + CLIMAX)
+  - omit     — use mode default
+
+WHEN TO REACH FOR WHAT:
+  - Establish: documentary filter, zoomOut effect, extraZoom 1.0, fade transition. Quiet entry.
+  - Showcase:  cinematic OR boost filter, zoomIn effect, extraZoom 1.3, slide/wipe transition. Push in.
+  - Climax:    dramatic filter, zoomIn effect, extraZoom 1.4, cube/clockWipe transition. Earn the moment.
+  - Community: warm filter, zoomOut effect, extraZoom 1.0, fade transition. Pull back to the group.
+
 Output VALID JSON matching this exact schema:
 {
   "clips": [
@@ -71,10 +112,13 @@ Output VALID JSON matching this exact schema:
       "trimStart": <seconds>,
       "duration": <seconds>,
       "speed": 1.0,
-      "filter": "dramatic" | "cinematic" | "warm" | "documentary" | "boost",
-      "effect": "zoomIn" | "zoomOut" | "slideRight" | "slideLeft",
+      "filter": "dramatic" | "cinematic" | "warm" | "documentary" | "boost" | "vintage" | "cool",
+      "effect": "zoomIn" | "zoomOut" | "slideRight" | "slideLeft" | null,
+      "transitionType": "fade" | "slide" | "wipe" | "cube" | "circleWipe" | "clockWipe" | "wheelspin" | "flip",
+      "transitionDirection": "from-left" | "from-right" | "from-top" | "from-bottom",
+      "extraZoom": <number 0.9-1.5 — omit for mode default>,
       "purpose": "<brief description — include beat role like 'establish' or 'climax'>",
-      "editNote": "<reasoning for these trim points>"
+      "editNote": "<reasoning for trim points AND your toolkit choices — name the filter/effect/transition you picked and why>"
     }
   ],
   "slowMoIndices": [<indices (0-based) of clips using slow-mo>]

@@ -130,8 +130,52 @@ export async function generateEditPlanV2(
 		close.textOverlays.length,
 	);
 
+	// ── Cross-step dedup ──────────────────────────────────────────────
+	// Each step (hook/body/close) enforces its own internal 3s separation rule,
+	// but until now no step checked AGAINST the others. Result: the close
+	// composer would routinely pick a timestamp the hook already used (e.g.
+	// hook trimStart=17 for 9s, close trimStart=19 for 3s on the same source —
+	// viewer sees identical footage at start and end). This pass enforces a
+	// hard 3s-separation rule across ALL clips regardless of which step
+	// produced them. Conflicts on close clips get shifted; conflicts on body
+	// clips get logged (rarer because body composer already dedups internally).
+	const MIN_SEPARATION = 3; // seconds
+	function overlaps(a: { fileId: string; trimStart: number; duration: number }, b: { fileId: string; trimStart: number; duration: number }): boolean {
+		if (a.fileId !== b.fileId) return false;
+		const aEnd = a.trimStart + a.duration;
+		const bEnd = b.trimStart + b.duration;
+		return a.trimStart < bEnd + MIN_SEPARATION && aEnd + MIN_SEPARATION > b.trimStart;
+	}
+	// Resolve close clips against the rest of the timeline.
+	const fixedClose = close.closeClips.map((c, i) => {
+		const earlier = [hook, ...body.clips, ...close.closeClips.slice(0, i)];
+		for (const e of earlier) {
+			if (overlaps(c, e)) {
+				// Shift close clip past the conflicting clip's end + buffer
+				const newStart = e.trimStart + e.duration + MIN_SEPARATION;
+				logger.warn(
+					'[pipeline-v2] Close clip %d (%s @ %ds-%ds) overlaps earlier clip @ %ds-%ds. Shifting to %ds.',
+					i, c.fileId.slice(0, 8), c.trimStart, c.trimStart + c.duration,
+					e.trimStart, e.trimStart + e.duration, newStart,
+				);
+				return { ...c, trimStart: newStart };
+			}
+		}
+		return c;
+	});
+	// Body clip cross-check (mostly a sanity log; body composer already dedups).
+	body.clips.forEach((c, i) => {
+		if (overlaps(c, hook)) {
+			logger.warn(
+				'[pipeline-v2] Body clip %d (%s @ %ds) overlaps hook (%s @ %ds-%ds). This shouldn\'t happen — body composer should\'ve caught it.',
+				i, c.fileId.slice(0, 8), c.trimStart,
+				hook.fileId.slice(0, 8), hook.trimStart, hook.trimStart + hook.duration,
+			);
+		}
+	});
+
 	// ── Assemble the final edit plan ───────────────────────────────────
-	const allClips = [hook, ...body.clips, ...close.closeClips];
+	const allClips = [hook, ...body.clips, ...fixedClose];
 	const totalDuration = allClips.reduce((sum, c) => {
 		const effective = c.duration / (c.speed || 1);
 		return sum + effective;

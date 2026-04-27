@@ -95,6 +95,8 @@ export interface HookClip {
 	speed?: number;
 	filter?: string;
 	effect?: string;
+	/** Per-clip static crop multiplier on top of mode default. 0.9-1.5 typical. */
+	extraZoom?: number;
 	purpose: string;
 	editNote: string;
 }
@@ -117,6 +119,8 @@ export interface ClipPick {
 	effect?: string;
 	transitionType?: string;
 	transitionDirection?: string;
+	/** Per-clip static crop multiplier on top of mode default. 0.9-1.5 typical. */
+	extraZoom?: number;
 	purpose: string;
 	editNote?: string;
 	freshnessNote?: string;

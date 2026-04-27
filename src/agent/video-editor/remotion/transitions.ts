@@ -34,9 +34,9 @@ export function getRemotionTransition(
 				perspective: 1000,
 			});
 		case 'circleWipe':
-			return circleWipe({ width: 2160, height: 3840 });
+			return circleWipe({ width: 1080, height: 1920 });
 		case 'clockWipe':
-			return clockWipeCustom({ width: 2160, height: 3840 });
+			return clockWipeCustom({ width: 1080, height: 1920 });
 		case 'wheelspin':
 			return wheelspin({
 				anchor: (direction as 'left' | 'right' | 'top' | 'bottom') || 'left',

@@ -1672,22 +1672,56 @@ const agent = createAgent('video-editor', {
 			if (!videoIds || !Array.isArray(videoIds) || videoIds.length === 0) {
 				return { success: false, message: 'videoIds array is required' };
 			}
-			ctx.logger.info(`[video-editor] Fetching thumbnails for ${videoIds.length} videos...`);
+			// Cap + parallelize. Previous version did sequential Drive API calls in a
+			// for loop — at 200+ missing thumbnails this blocked the agent for 60-90s
+			// and blew past Agentuity's request timeout, freezing the UI and Railway.
+			// Now: process 25 per request with 8-way parallelism. UI calls again for
+			// the rest. Each call returns in <5s.
+			const BATCH_SIZE = 25;
+			const CONCURRENCY = 8;
+			const PER_CALL_TIMEOUT_MS = 5000;
+			const batch = videoIds.slice(0, BATCH_SIZE);
+			const remaining = videoIds.length - batch.length;
+			ctx.logger.info(
+				`[video-editor] Fetching thumbnails: batch %d of %d (%d remaining after this call)`,
+				batch.length, videoIds.length, remaining,
+			);
+
+			// Parallel fetch with bounded concurrency. Each call has a hard timeout
+			// so a single slow Drive response can't block the whole batch.
 			const results: Array<{ videoId: string; thumbnail?: string; error?: string }> = [];
-			for (const vid of videoIds) {
+			const fetchOne = async (vid: string) => {
 				try {
-					const thumbnail = await getVideoThumbnail(vid);
+					const thumbnail = await Promise.race([
+						getVideoThumbnail(vid),
+						new Promise<null>((_, rej) =>
+							setTimeout(() => rej(new Error('timeout')), PER_CALL_TIMEOUT_MS),
+						),
+					]);
 					if (thumbnail) {
-						results.push({ videoId: vid, thumbnail: getHighResThumbnailUrl(thumbnail, 320) });
-					} else {
-						results.push({ videoId: vid, error: 'No thumbnail available' });
+						return { videoId: vid, thumbnail: getHighResThumbnailUrl(thumbnail as string, 320) };
 					}
+					return { videoId: vid, error: 'No thumbnail available' };
 				} catch (err) {
-					results.push({ videoId: vid, error: err instanceof Error ? err.message : String(err) });
+					return { videoId: vid, error: err instanceof Error ? err.message : String(err) };
 				}
+			};
+			// Run in chunks of CONCURRENCY using Promise.all per chunk.
+			for (let i = 0; i < batch.length; i += CONCURRENCY) {
+				const chunk = batch.slice(i, i + CONCURRENCY);
+				const chunkResults = await Promise.all(chunk.map(fetchOne));
+				results.push(...chunkResults);
 			}
+
 			const found = results.filter(r => r.thumbnail).length;
-			return { success: true, total: videoIds.length, found, results };
+			return {
+				success: true,
+				total: videoIds.length,
+				batchSize: batch.length,
+				found,
+				remaining,
+				results,
+			};
 		}
 
 		if (task === 'list-videos') {

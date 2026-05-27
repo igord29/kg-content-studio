@@ -24,7 +24,7 @@ import { TransitionSeries, springTiming } from '@remotion/transitions';
 import type { CLCVideoProps } from './types';
 import { VideoClip, getEffectForClip } from './VideoClip';
 import { TextOverlay } from './TextOverlay';
-import { getRemotionTransition, getTransitionForClip } from './transitions';
+import { getRemotionTransition } from './transitions';
 
 export const CLCVideo: React.FC<CLCVideoProps> = ({
 	clips,
@@ -60,19 +60,19 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 				// Build transition element (between clips, not before first)
 				const elements: React.ReactNode[] = [];
 
-				// Add transition before this clip (except for the first clip)
-				// Skip if transitionDurationFrames is 0 (causes [0,0] interpolate crash)
-				if (index > 0 && transitionDurationFrames > 0) {
-					const mapping = clip.transitionType
-						? { type: clip.transitionType, direction: clip.transitionDirection }
-						: getTransitionForClip(mode, index);
-
+				// Add a transition ONLY when the edit plan deliberately asks for one
+				// (clip.transitionType is set). Omitting it = a HARD CUT: no transition
+				// element, so this sequence butts directly against the previous one.
+				// This honors the director prompt's "80% hard cuts — reserve transitions
+				// for deliberate moments" rule. (Previously an omitted type fell through
+				// to the mode pool, forcing a transition on EVERY cut, which reads amateur.)
+				if (index > 0 && transitionDurationFrames > 0 && clip.transitionType) {
 					elements.push(
 						<TransitionSeries.Transition
 							key={`transition-${index}`}
-							// Pass real composition dimensions so circle/clock wipes are
+							// Real composition dimensions so circle/clock wipes are
 							// geometrically correct on every aspect ratio, not just 9:16.
-							presentation={getRemotionTransition(mapping.type, mapping.direction, compWidth, compHeight)}
+							presentation={getRemotionTransition(clip.transitionType, clip.transitionDirection, compWidth, compHeight)}
 							timing={springTiming({
 								durationInFrames: transitionDurationFrames,
 								config: { damping: 200 },

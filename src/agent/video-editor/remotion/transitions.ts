@@ -9,7 +9,7 @@ import { slide } from '@remotion/transitions/slide';
 import { fade } from '@remotion/transitions/fade';
 import { wipe } from '@remotion/transitions/wipe';
 import { flip } from '@remotion/transitions/flip';
-import { cube, circleWipe, clockWipe as clockWipeCustom, wheelspin } from './custom-transitions';
+import { cube, circleWipe, clockWipe as clockWipeCustom, wheelspin, zoomPunch, glitchSlam, stripedSlam, diagonalReveal, brandBurst, verticalShutter } from './custom-transitions';
 
 // Map Shotstack transition names → Remotion transition presentations
 // Using `any` for return type because Remotion's transition generic types
@@ -18,6 +18,12 @@ import { cube, circleWipe, clockWipe as clockWipeCustom, wheelspin } from './cus
 export function getRemotionTransition(
 	transitionType?: string,
 	direction?: string,
+	// Real composition dimensions — circle/clock wipes derive their radius and
+	// center from these, so passing the actual canvas size keeps the geometry
+	// correct on every aspect ratio (9:16, 1:1, 4:5, 16:9). Defaults preserve
+	// the historical 9:16 behavior for any caller that doesn't pass them.
+	width = 1080,
+	height = 1920,
 ): any {
 	switch (transitionType) {
 		case 'slide':
@@ -34,13 +40,26 @@ export function getRemotionTransition(
 				perspective: 1000,
 			});
 		case 'circleWipe':
-			return circleWipe({ width: 1080, height: 1920 });
+			return circleWipe({ width, height });
 		case 'clockWipe':
-			return clockWipeCustom({ width: 1080, height: 1920 });
+			return clockWipeCustom({ width, height });
 		case 'wheelspin':
 			return wheelspin({
 				anchor: (direction as 'left' | 'right' | 'top' | 'bottom') || 'left',
 			});
+		case 'zoomPunch':
+			return zoomPunch();
+		case 'glitchSlam':
+			return glitchSlam();
+		case 'stripedSlam':
+			return stripedSlam();
+		case 'diagonalReveal':
+			return diagonalReveal();
+		case 'brandBurst':
+		case 'emeraldBurst':
+			return brandBurst();
+		case 'verticalShutter':
+			return verticalShutter();
 		case 'flip':
 			return flip({ direction: 'from-right' });
 		case 'fade':
@@ -74,12 +93,14 @@ const SHOTSTACK_TO_REMOTION: Record<string, TransitionMapping> = {
 // Per-mode transition pools (mirrors shotstack.ts TRANSITION_POOLS)
 const MODE_TRANSITION_POOLS: Record<string, TransitionMapping[]> = {
 	game_day: [
+		{ type: 'zoomPunch' },
 		{ type: 'cube', direction: 'from-right' },
 		{ type: 'slide', direction: 'from-left' },
 		{ type: 'circleWipe' },
-		{ type: 'fade' },
+		{ type: 'glitchSlam' },
 		{ type: 'wheelspin', direction: 'left' },
 		{ type: 'clockWipe' },
+		{ type: 'zoomPunch' },
 	],
 	our_story: [
 		{ type: 'fade' },

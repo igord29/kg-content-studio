@@ -38,7 +38,76 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 	bgColor,
 	transitionDurationFrames,
 }) => {
-	const { durationInFrames } = useVideoConfig();
+	const { durationInFrames, width: compWidth, height: compHeight } = useVideoConfig();
+
+	// Build the transition + clip element tree ONCE per prop change instead of on
+	// every rendered frame. It depends only on clips / mode / timing / dimensions —
+	// never on the current frame — so without memoization Remotion re-runs this
+	// flatMap and RE-CREATES every transition presentation object on all N frames
+	// of the render. Memoizing keeps transition instances stable (Remotion
+	// transitions skill, Golden Rule #4) and removes per-frame allocations.
+	const clipTimeline = React.useMemo(
+		() =>
+			clips.flatMap((clip, index) => {
+				const clipFrames = Math.max(
+					Math.ceil(clip.length * fps),
+					transitionDurationFrames * 2 + fps, // min: 2 transitions + 1 second
+				);
+
+				// Get effect for this clip position
+				const effect = clip.effect || getEffectForClip(mode, index);
+
+				// Build transition element (between clips, not before first)
+				const elements: React.ReactNode[] = [];
+
+				// Add transition before this clip (except for the first clip)
+				// Skip if transitionDurationFrames is 0 (causes [0,0] interpolate crash)
+				if (index > 0 && transitionDurationFrames > 0) {
+					const mapping = clip.transitionType
+						? { type: clip.transitionType, direction: clip.transitionDirection }
+						: getTransitionForClip(mode, index);
+
+					elements.push(
+						<TransitionSeries.Transition
+							key={`transition-${index}`}
+							// Pass real composition dimensions so circle/clock wipes are
+							// geometrically correct on every aspect ratio, not just 9:16.
+							presentation={getRemotionTransition(mapping.type, mapping.direction, compWidth, compHeight)}
+							timing={springTiming({
+								durationInFrames: transitionDurationFrames,
+								config: { damping: 200 },
+							})}
+						/>,
+					);
+				}
+
+				// Add the clip sequence.
+				// clipLengthFrames is threaded so VideoClip can compute Ken Burns progress
+				// against its own sequence length rather than the whole composition — see
+				// VideoClipProps.clipLengthFrames for the background on why this matters.
+				elements.push(
+					<TransitionSeries.Sequence
+						key={`clip-${index}`}
+						durationInFrames={clipFrames}
+					>
+						<VideoClip
+							src={clip.src}
+							effect={effect}
+							filter={clip.filter}
+							speedKeyframes={clip.speedKeyframes}
+							trimStart={clip.trimStart}
+							cropX={clip.cropX}
+							cropY={clip.cropY}
+							zoom={clip.zoom}
+							clipLengthFrames={clipFrames}
+						/>
+					</TransitionSeries.Sequence>,
+				);
+
+				return elements;
+			}),
+		[clips, mode, fps, transitionDurationFrames, compWidth, compHeight],
+	);
 
 	if (clips.length === 0) {
 		return (
@@ -56,64 +125,7 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 			<AbsoluteFill style={{ background: bgColor }} />
 
 			{/* Layer 2: Video clips with transitions */}
-			<TransitionSeries>
-				{clips.flatMap((clip, index) => {
-					const clipFrames = Math.max(
-						Math.ceil(clip.length * fps),
-						transitionDurationFrames * 2 + fps, // min: 2 transitions + 1 second
-					);
-
-					// Get effect for this clip position
-					const effect = clip.effect || getEffectForClip(mode, index);
-
-					// Build transition element (between clips, not before first)
-					const elements: React.ReactNode[] = [];
-
-					// Add transition before this clip (except for the first clip)
-					// Skip if transitionDurationFrames is 0 (causes [0,0] interpolate crash)
-					if (index > 0 && transitionDurationFrames > 0) {
-						const mapping = clip.transitionType
-							? { type: clip.transitionType, direction: clip.transitionDirection }
-							: getTransitionForClip(mode, index);
-
-						elements.push(
-							<TransitionSeries.Transition
-								key={`transition-${index}`}
-								presentation={getRemotionTransition(mapping.type, mapping.direction)}
-								timing={springTiming({
-									durationInFrames: transitionDurationFrames,
-									config: { damping: 200 },
-								})}
-							/>,
-						);
-					}
-
-					// Add the clip sequence.
-					// clipLengthFrames is threaded so VideoClip can compute Ken Burns progress
-					// against its own sequence length rather than the whole composition — see
-					// VideoClipProps.clipLengthFrames for the background on why this matters.
-					elements.push(
-						<TransitionSeries.Sequence
-							key={`clip-${index}`}
-							durationInFrames={clipFrames}
-						>
-							<VideoClip
-								src={clip.src}
-								effect={effect}
-								filter={clip.filter}
-								speedKeyframes={clip.speedKeyframes}
-								trimStart={clip.trimStart}
-								cropX={clip.cropX}
-								cropY={clip.cropY}
-								zoom={clip.zoom}
-								clipLengthFrames={clipFrames}
-							/>
-						</TransitionSeries.Sequence>,
-					);
-
-					return elements;
-				})}
-			</TransitionSeries>
+			<TransitionSeries>{clipTimeline}</TransitionSeries>
 
 			{/* Layer 3: Text overlays */}
 			{textOverlays.map((overlay, index) => (

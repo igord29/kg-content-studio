@@ -102,8 +102,10 @@ const CaptionPage: React.FC<{
 							style={{
 								display: 'inline',
 								whiteSpace: 'pre',
+								// Frame-driven snap highlight (standard TikTok karaoke look).
+								// Removed `transition: 'color 0.1s'` — CSS transitions don't render
+								// on Remotion/Lambda (frames are captured discretely; no CSS clock).
 								color: active ? highlightColor : 'white',
-								transition: 'color 0.1s',
 							}}
 						>
 							{t.text}

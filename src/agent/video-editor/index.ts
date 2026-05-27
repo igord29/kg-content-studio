@@ -171,6 +171,7 @@ const AgentInput = s.object({
 	originalEditPlan: s.any().optional(), // The edit plan that produced this render
 	autoRevise: s.boolean().optional(), // Whether to auto-generate a revised edit plan
 	review: s.any().optional(), // Previous review data for generate-revision task
+	humanFeedback: s.string().optional(), // Human editor's revision notes (generate-revision). MUST be declared here — otherwise schema validation strips it before the handler reads it, and the revision silently ignores the user's edits.
 
 	// Internal: passed by API route for proxy URL construction
 	appUrl: s.string().optional(),

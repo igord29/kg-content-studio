@@ -40,7 +40,7 @@ YOUR TOOLKIT FOR CLOSE CLIPS:
   - filter: "warm" (default for community/landing — golden-hour hopeful), "documentary" (ESPN-doc honesty), "cinematic" (polished landing)
   - effect: "zoomOut" (pull back to reveal scale — default for the close clip), "zoomIn" (only for tight emotional moments), null (static)
   - extraZoom: 1.0 (default — community wants context), 0.9 (extra wide for the final landing on venue)
-  - transitionType: "fade" (default for quiet landings), "circleWipe" (iris-out close), "clockWipe" (sports-broadcast close)
+  - transitionType: OMIT for a hard cut into the close (default). Else "fade" (quiet landing), "circleWipe"/"clockWipe" (broadcast close), or "brandBurst" (celebratory/emotional close). Reserve for deliberate effect.
 
 CROSS-CLIP DEDUP (HARD RULE):
   - DO NOT pick a trimStart inside the hook's range +/- 3s on the same source. Hook fileId/range is in the prompt — keep ≥3s away.
@@ -57,7 +57,7 @@ Output VALID JSON:
       "speed": 1.0,
       "filter": "dramatic" | "cinematic" | "warm" | "documentary" | "boost" | "vintage" | "cool",
       "effect": "zoomOut" | "zoomIn" | "slideRight" | "slideLeft" | null,
-      "transitionType": "fade" | "slide" | "wipe" | "cube" | "circleWipe" | "clockWipe" | "wheelspin" | "flip",
+      "transitionType": "fade" | "slide" | "wipe" | "cube" | "circleWipe" | "clockWipe" | "wheelspin" | "flip" | "zoomPunch" | "stripedSlam" | "verticalShutter" | "diagonalReveal" | "brandBurst" | "glitchSlam"  (or OMIT the field entirely for a hard cut),
       "extraZoom": <number 0.9-1.5 — omit for mode default>,
       "purpose": "<community | close>",
       "editNote": "<reasoning AND your toolkit choices — name the filter/effect/transition/extraZoom you picked and why>"

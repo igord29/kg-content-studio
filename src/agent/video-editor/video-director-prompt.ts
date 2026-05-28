@@ -847,9 +847,18 @@ The renderer supports per-clip motion, color grading, and transitions. Until you
 - "fade" (+ no direction): classic crossfade, emotional/slow moments
 - "slide" (+ "from-left" | "from-right" | "from-top" | "from-bottom"): directional slide
 - "wipe" (+ direction): harder geometric transition, sports/energy
-- "clockWipe": radial wipe, dramatic/cinematic moments
-- Omit for mode-appropriate auto-assignment (fast_cuts mode uses very short fades, crossfade mode uses longer crossfades).
-- Rule: 80% of cuts should be hard cuts (omit transitionType). Reserve transitions for deliberate moments — an emotional shift, a location change, a before/after contrast.
+- "cube" (+ direction): 3D rotate, dynamic scene change
+- "circleWipe" / "clockWipe": iris / radial wipe, dramatic/cinematic moments
+- "wheelspin": rotational spin, high energy
+- "zoomPunch": camera punch-in on the cut — a hit with intent (key play, beat)
+- "stripedSlam": brand-bar slam — max-energy opener / section break
+- "verticalShutter": venetian-blind snap — graphic montage break
+- "diagonalReveal": cinematic gold-blade sweep — a reveal or location change
+- "brandBurst": radial flash — emotional peak, celebration, score
+- "glitchSlam": chaotic shake + RGB tear — use AT MOST ONCE, as a pre-CTA jolt
+- The zoomPunch / stripedSlam / verticalShutter / diagonalReveal / brandBurst / glitchSlam options take NO direction.
+- Omitting transitionType = a HARD CUT (the literal renderer behavior now — there is no auto-assignment).
+- Rule: 80% of cuts should be hard cuts (omit transitionType). Reserve transitions for deliberate moments — an emotional shift, a location change, a before/after contrast. The high-energy ones (slam / burst / glitch) are punctuation: at most one or two per video.
 
 "speedKeyframes" — smooth speed ramps WITHIN a single clip (advanced). Replaces/supplements "speed".
 Format: array of { "at": 0-1, "speed": 0.25-4.0 }. "at" is progress through the clip (0=start, 1=end).

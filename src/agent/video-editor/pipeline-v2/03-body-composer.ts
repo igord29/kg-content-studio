@@ -92,7 +92,16 @@ TRANSITION INTO THIS CLIP (the cut style joining this clip to the previous):
   - "clockWipe"   — sweeping clock-hand reveal, sports-broadcast feel
   - "wheelspin"   — rotational spin, high-energy
   - "flip"        — page-flip turn
-  - omit          — defaults to mode pool
+  - "zoomPunch"   — camera punch-in on the cut, a hit with intent
+  - "stripedSlam" — brand-bar slam, max-energy section break
+  - "verticalShutter" — venetian-blind snap, graphic montage break
+  - "diagonalReveal"  — cinematic gold-blade sweep, a reveal / location change
+  - "brandBurst"  — radial flash, emotional peak / celebration / score
+  - "glitchSlam"  — chaotic shake + RGB tear; use AT MOST ONCE, before a payoff
+  - omit          — HARD CUT (the DEFAULT — prefer this for ~80% of cuts)
+  DEFAULT TO HARD CUTS: reserve a transition for a deliberate beat (a climax hit, a
+  location/time change, a before/after). The slam/burst/glitch options take NO
+  transitionDirection and are punctuation — at most one or two per video total.
 
 EXTRAZOOM (per-clip static crop level, multiplies the mode default):
   - 0.9-1.0  — wide, preserve venue context (use for ESTABLISH only)
@@ -101,10 +110,10 @@ EXTRAZOOM (per-clip static crop level, multiplies the mode default):
   - omit     — use mode default
 
 WHEN TO REACH FOR WHAT:
-  - Establish: documentary filter, zoomOut effect, extraZoom 1.0, fade transition. Quiet entry.
-  - Showcase:  cinematic OR boost filter, pushIn (mid-distance source) OR punchIn (wide source) effect, extraZoom 1.3, slide/wipe transition. Push in.
-  - Climax:    dramatic filter, punchIn effect (especially if source is wide and the catalog timestamp is people<=3 — you compensate via aggressive zoom), extraZoom 1.4, cube/clockWipe transition. Earn the moment.
-  - Community: warm filter, zoomOut effect, extraZoom 1.0, fade transition. Pull back to the group.
+  - Establish: documentary filter, zoomOut effect, extraZoom 1.0, HARD CUT in (omit transition). Quiet entry.
+  - Showcase:  cinematic OR boost filter, pushIn (mid-distance source) OR punchIn (wide source) effect, extraZoom 1.3, HARD CUT (or ONE slide/wipe only if this is the section's turn). Push in.
+  - Climax:    dramatic filter, punchIn effect (especially if source is wide and the catalog timestamp is people<=3 — you compensate via aggressive zoom), extraZoom 1.4. THIS is the beat to spend a transition on — zoomPunch / cube / brandBurst into it. Earn the moment.
+  - Community: warm filter, zoomOut effect, extraZoom 1.0, HARD CUT (or a soft fade). Pull back to the group.
 
 PUNCH-IN DECISION RULE: if the catalog timestamp's subjectFillRatio < 0.30 OR people=3 (wide-camera frame), prefer punchIn over zoomIn — the digital push compensates for the wide source by arriving closer by clip end. If subjectFillRatio >= 0.40, the source is already tight enough; use zoomIn or pushIn for subtlety.
 
@@ -118,7 +127,7 @@ Output VALID JSON matching this exact schema:
       "speed": 1.0,
       "filter": "dramatic" | "cinematic" | "warm" | "documentary" | "boost" | "vintage" | "cool",
       "effect": "zoomIn" | "zoomOut" | "pushIn" | "punchIn" | "slideRight" | "slideLeft" | null,
-      "transitionType": "fade" | "slide" | "wipe" | "cube" | "circleWipe" | "clockWipe" | "wheelspin" | "flip",
+      "transitionType": "fade" | "slide" | "wipe" | "cube" | "circleWipe" | "clockWipe" | "wheelspin" | "flip" | "zoomPunch" | "stripedSlam" | "verticalShutter" | "diagonalReveal" | "brandBurst" | "glitchSlam"  (or OMIT the field entirely for a hard cut),
       "transitionDirection": "from-left" | "from-right" | "from-top" | "from-bottom",
       "extraZoom": <number 0.9-1.5 — omit for mode default>,
       "purpose": "<brief description — include beat role like 'establish' or 'climax'>",

@@ -56,6 +56,7 @@
  */
 
 import type { PipelineInput, EditPlanV2, StepLogger } from './types';
+import { refineBrief } from './00-brief-refiner';
 import { planStoryArc } from './01-story-planner';
 import { selectHook } from './02-hook-selector';
 import { composeBody } from './03-body-composer';
@@ -77,6 +78,25 @@ export async function generateEditPlanV2(
 ): Promise<EditPlanV2> {
 	const startTime = Date.now();
 	const stepDurationsMs: Record<string, number> = {};
+
+	// ── Step 0: Brief Refiner ──────────────────────────────────────────
+	// Take the user's casual topic/purpose and produce a structured Sasha
+	// brief BEFORE Story Planner sees it. The downstream steps already read
+	// input.topic / input.purpose — we swap the casual strings for the
+	// refined ones IN PLACE here, so no per-step plumbing is needed.
+	// If this step throws, auto-pipeline.ts catches it and falls back to v1.
+	logger.info('[pipeline-v2] Step 0: Refining brief');
+	const step0Start = Date.now();
+	const brief = await refineBrief(input, logger);
+	stepDurationsMs.briefRefiner = Date.now() - step0Start;
+	input.topic = brief.topic;
+	input.purpose = `${brief.purpose}\n\nAudience: ${brief.audience}\nTone: ${brief.tone}\nEmphasize: ${brief.emphasize.join('; ')}\nAvoid: ${brief.avoid.join('; ')}`;
+	logger.info(
+		'[pipeline-v2] Step 0 done (%dms): confidence=%s, refined topic="%s"',
+		stepDurationsMs.briefRefiner,
+		brief.confidence,
+		brief.topic.slice(0, 80),
+	);
 
 	// ── Step 1: Story Planner ──────────────────────────────────────────
 	logger.info('[pipeline-v2] Step 1/4: Planning story arc');

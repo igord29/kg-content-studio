@@ -117,6 +117,8 @@ WHEN TO REACH FOR WHAT:
 
 PUNCH-IN DECISION RULE: if the catalog timestamp's subjectFillRatio < 0.30 OR people=3 (wide-camera frame), prefer punchIn over zoomIn — the digital push compensates for the wide source by arriving closer by clip end. If subjectFillRatio >= 0.40, the source is already tight enough; use zoomIn or pushIn for subtlety.
 
+FILTER CONSISTENCY (HARD RULE): Pick ONE filter for the entire body and use it across ALL body clips. The per-beat suggestions in WHEN TO REACH FOR WHAT above are STARTING POINTS, not a per-clip rotation — DEFAULT to the SHOWCASE filter (cinematic or boost, matched to the mode) for every body clip unless the story has a clear visual shift (past→present, dream→reality, then→now). Mixing 3+ filters in a single 30-60s video reads as inconsistent and amateur. ONE grade, one video.
+
 Output VALID JSON matching this exact schema:
 {
   "clips": [

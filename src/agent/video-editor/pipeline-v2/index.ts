@@ -178,7 +178,18 @@ export async function generateEditPlanV2(
 					i, c.fileId.slice(0, 8), c.trimStart, c.trimStart + c.duration,
 					e.trimStart, e.trimStart + e.duration, newStart,
 				);
-				return { ...c, trimStart: newStart };
+				// Prepend a shift annotation so the editNote stays internally
+				// coherent with the (now-shifted) trimStart. Without this, the
+				// AI's editNote keeps referencing its pre-shift reasoning while
+				// the JSON value silently moved on — confusing to any human
+				// reviewing the plan (and the source of the "editNote says 142,
+				// JSON says 156" puzzle in the 2026-05-30 render).
+				const shiftNote = `[Auto-shifted from ${c.trimStart}s to ${newStart}s by cross-step dedup to clear earlier clip ending at ${e.trimStart + e.duration}s.] `;
+				return {
+					...c,
+					trimStart: newStart,
+					editNote: shiftNote + (c.editNote || ''),
+				};
 			}
 		}
 		return c;

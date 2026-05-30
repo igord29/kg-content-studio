@@ -144,6 +144,27 @@ export interface CatalogEntry {
     bestMoments: number[];   // top timestamps by action quality
     actionWindows: Array<{ start: number; end: number; type: string; peakEnergy: number }>;
   };
+
+  /** Narrative beats — populated at planning time by the Beat Finder (Step 0.5)
+   *  via brief-aware re-interpretation of `visualTimeline.frames`. Composers
+   *  prefer these over raw timestamp scoring when available. Optional because
+   *  older catalog entries may lack visualTimeline (Beat Finder skips them). */
+  narrativeBeats?: {
+    setup: NarrativeBeat[];
+    action: NarrativeBeat[];
+    resolution: NarrativeBeat[];
+    quiet: NarrativeBeat[];
+    community: NarrativeBeat[];
+    generatedAt: string;
+  };
+}
+
+/** A single narrative beat tagged within a video by the Beat Finder step. */
+export interface NarrativeBeat {
+  timestamp: number;
+  duration: number;
+  description: string;
+  confidence: 'high' | 'medium' | 'low';
 }
 
 export interface FolderStructure {

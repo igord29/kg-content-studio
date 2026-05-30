@@ -57,6 +57,7 @@
 
 import type { PipelineInput, EditPlanV2, StepLogger } from './types';
 import { refineBrief } from './00-brief-refiner';
+import { findBeatsForAll } from './00.5-beat-finder';
 import { planStoryArc } from './01-story-planner';
 import { selectHook } from './02-hook-selector';
 import { composeBody } from './03-body-composer';
@@ -96,6 +97,30 @@ export async function generateEditPlanV2(
 		stepDurationsMs.briefRefiner,
 		brief.confidence,
 		brief.topic.slice(0, 80),
+	);
+
+	// ── Step 0.5: Beat Finder ──────────────────────────────────────────
+	// Re-interpret each selected video's `visualTimeline.frames` through the
+	// lens of the refined brief, surfacing narrative beats (setup / action /
+	// resolution / quiet / community) for the composers to pick from. Bypasses
+	// the generic action-density scoring that misses moments of resolution.
+	// Mutates `input.catalog` IN PLACE — Story Planner & co read the augmented
+	// entries directly. If a video has no visualTimeline, it's skipped silently
+	// and downstream falls back to raw timestamp scoring.
+	logger.info('[pipeline-v2] Step 0.5: Finding narrative beats');
+	const step05Start = Date.now();
+	const refinedBriefText = `Topic: ${input.topic}
+Purpose: ${input.purpose}
+Emphasize: ${brief.emphasize.join('; ')}
+Avoid: ${brief.avoid.join('; ')}`;
+	const beatResults = await findBeatsForAll(input, refinedBriefText, logger);
+	stepDurationsMs.beatFinder = Date.now() - step05Start;
+	logger.info(
+		'[pipeline-v2] Step 0.5 done (%dms): %d beats across %d/%d videos',
+		stepDurationsMs.beatFinder,
+		beatResults.totalBeats,
+		beatResults.videosWithBeats,
+		input.videoMetadata.length,
 	);
 
 	// ── Step 1: Story Planner ──────────────────────────────────────────

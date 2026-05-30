@@ -52,6 +52,7 @@ STRICT RULES:
 - Prefer videos with coach-player interactions as the story hook source
 - Body beats MUST be 4-6 items covering establish/showcase/climax/community
 - If no clear narrative exists, pick the best available micro-story and mention it in emotionalCenter
+- When a video has NARRATIVE BEATS (brief-aware tags from Step 0.5), PREFER those as your primary evidence of what the video contains. The beats are tuned to THIS brief; the other catalog data is generic. Specifically: pick the source with the strongest "resolution" beat as responseSourceId (where the payoff lands); reference specific beat timestamps in your bodyBeats intents so the composers can find them; let the brief's "emphasize" items steer which beats matter most.
 - Never pick an ID not in the input list
 
 Output VALID JSON matching this exact schema — no markdown fences, no prose, JSON only:
@@ -83,12 +84,27 @@ export async function planStoryArc(
 		}
 		const hasScenes = Boolean(ce.sceneAnalysis);
 		const durSec = v.duration ? Math.round(parseInt(v.duration) / 1000) : 0;
+
+		// Beat Finder (Step 0.5) attaches brief-aware narrativeBeats — surface
+		// them here so the planner picks sources/beats from these, not from raw
+		// timestamp scores. If absent (older catalog or Beat Finder skipped),
+		// the planner falls back to scene analysis + notable moments.
+		const nb = ce.narrativeBeats;
+		const beatsLine = nb
+			? `\n  - NARRATIVE BEATS (brief-aware — PREFER these over notable moments):
+    setup:      ${nb.setup.slice(0, 3).map(b => `T=${b.timestamp}s "${b.description}" (${b.confidence})`).join(' | ') || 'none'}
+    action:     ${nb.action.slice(0, 3).map(b => `T=${b.timestamp}s "${b.description}" (${b.confidence})`).join(' | ') || 'none'}
+    resolution: ${nb.resolution.slice(0, 3).map(b => `T=${b.timestamp}s "${b.description}" (${b.confidence})`).join(' | ') || 'none'}
+    quiet:      ${nb.quiet.slice(0, 3).map(b => `T=${b.timestamp}s "${b.description}" (${b.confidence})`).join(' | ') || 'none'}
+    community:  ${nb.community.slice(0, 3).map(b => `T=${b.timestamp}s "${b.description}" (${b.confidence})`).join(' | ') || 'none'}`
+			: '';
+
 		return `[${i + 1}] ${v.id}: ${v.name} (${durSec}s, ${ce.contentType || 'unknown'})
   - Activity: ${ce.activity}
   - Location: ${ce.suspectedLocation || 'unknown'}
   - People: ${ce.peopleCount || '?'}
   - Notable moments: ${ce.notableMoments || 'None'}
-  - Scene analysis: ${hasScenes ? 'AVAILABLE' : 'MISSING'}`;
+  - Scene analysis: ${hasScenes ? 'AVAILABLE' : 'MISSING'}${beatsLine}`;
 	}).join('\n\n');
 
 	const anyHasScenes = input.videoMetadata.some(v => {

@@ -21,6 +21,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { formatSegmentTimelineForPrompt } from '../scene-analyzer';
 import type { PipelineInput, StoryArc, HookClip, BodyClips, ClipPick, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
+import { priorUsedRegions, isTimestampUsed, formatPriorUsage } from './usage-context';
 
 const BODY_COMPOSER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -55,6 +56,7 @@ SLOW-MO PRECONDITIONS:
 CLIP FRESHNESS & DEDUPING:
 - Avoid overlapping time ranges within the same source (≥3s separation between cuts from same fileId)
 - Do NOT use any time region from the hook clip (already chosen — will overlap)
+- PREVIOUSLY USED IN PAST RENDERS: some sources list time regions that already appeared in published videos, and timestamp scores may be tagged [ALREADY USED]. Treat those exactly like the hook range — keep ≥3s away. Re-cutting them makes every post look like the same video. Only reuse one if a beat has no viable unused timestamp.
 - Vary trimStart across the FULL duration of each source
 - Never cluster all clips in the first 20 seconds
 
@@ -174,22 +176,23 @@ export async function composeBody(
 			// Fixes the wall-shot problem: previously the model picked trimStart
 			// values from the scene timeline alone, which couldn't tell empty
 			// court from active rally.
+			const usedRegions = priorUsedRegions(input, v.id);
 			let timestampSection = '';
 			if (ce.timestampScores && ce.timestampScores.length > 0) {
 				const top15 = ce.timestampScores.slice(0, 15);
 				const lines = top15
-					.map(
-						s =>
-							`    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy})`,
-					)
+					.map(s => {
+						const usedTag = isTimestampUsed(usedRegions, s.timestamp) ? ' [ALREADY USED in a past render]' : '';
+						return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy})${usedTag}`;
+					})
 					.join('\n');
-				timestampSection = `\n  ✅ TIMESTAMP ACTION SCORES (pick trim points NEAR these — never blind-pick a timestamp):\n${lines}`;
+				timestampSection = `\n  ✅ TIMESTAMP ACTION SCORES (pick trim points NEAR these — never blind-pick a timestamp; prefer ones NOT marked [ALREADY USED]):\n${lines}`;
 			}
 
 			const durSec = v.duration ? Math.round(parseInt(v.duration) / 1000) : 0;
 			return `${v.id}: ${v.name} (${durSec}s)
   - Activity: ${ce.activity}
-  - Notable: ${ce.notableMoments || 'None'}${sceneSection}${timestampSection}`;
+  - Notable: ${ce.notableMoments || 'None'}${formatPriorUsage(input, v.id)}${sceneSection}${timestampSection}`;
 		}).join('\n\n');
 
 	const bodyBeatsSummary = arc.bodyBeats.map((b, i) =>

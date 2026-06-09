@@ -127,14 +127,42 @@ api.post('/video-editor', videoEditor.validator(), async (c) => {
 			origin = new URL(c.req.url).origin;
 		}
 	}
-	// Load usage summary for freshness-aware edit plan generation
+	// Load usage summary for freshness-aware edit plan generation.
+	// auto-process needs it too — its planner runs headless and otherwise
+	// re-picks the exact same cuts on every render of the same footage.
 	let usageSummary: VideoUsageSummary[] = [];
-	if (data.task === 'edit') {
+	if (data.task === 'edit' || data.task === 'auto-process') {
 		try {
 			usageSummary = (await c.var.thread.state.get<VideoUsageSummary[]>('video-usage-summary')) ?? [];
 		} catch { /* best-effort */ }
 	}
-	return c.json(await videoEditor.run({ ...data, appUrl: origin, usageSummary }));
+	const result = await videoEditor.run({ ...data, appUrl: origin, usageSummary });
+
+	// Record clip usage for successful auto-process renders. The web UI does
+	// this via POST /clip-usage after a manual render; headless auto-process
+	// renders skipped it, so the freshness system never learned about them
+	// and every subsequent render re-picked the same cuts.
+	const r = result as { success?: boolean; renderId?: string; editPlanClips?: Array<{ fileId: string; filename?: string; trimStart?: number; duration?: number; purpose?: string }> };
+	if (data.task === 'auto-process' && r?.success && Array.isArray(r.editPlanClips) && r.editPlanClips.length > 0) {
+		try {
+			const records: ClipUsageRecord[] = r.editPlanClips.map((clip) =>
+				createClipUsageRecord(clip as any, {
+					renderId: r.renderId || `render_${Date.now()}`,
+					renderDate: new Date().toISOString(),
+					editMode: (data as { editMode?: string }).editMode || 'auto',
+					platform: (data as { platform?: string }).platform || 'unknown',
+				}),
+			);
+			for (const record of records) {
+				await c.var.thread.state.push('clip-usage', record, 500);
+			}
+			const allUsage = (await c.var.thread.state.get<ClipUsageRecord[]>('clip-usage')) ?? [];
+			const summaryMap = buildUsageSummaryMap(allUsage);
+			await c.var.thread.state.set('video-usage-summary', Array.from(summaryMap.values()));
+		} catch { /* best-effort — never fail the response over usage bookkeeping */ }
+	}
+
+	return c.json(result);
 });
 
 // Remotion Lambda webhook — Remotion Lambda POSTs here on success/error/timeout.

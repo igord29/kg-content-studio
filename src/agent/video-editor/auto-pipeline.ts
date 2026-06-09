@@ -12,6 +12,7 @@ import { getVideoMetadata, type CatalogEntry } from './google-drive';
 import { loadExistingCatalog } from './cataloger';
 import { formatSegmentTimelineForPrompt } from './scene-analyzer';
 import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
+import type { VideoUsageSummary } from './usage-tracker';
 import { selectTrack, shouldAddMusic } from './music';
 import { supabaseAdmin } from '../../lib/supabase';
 
@@ -26,6 +27,8 @@ export interface PipelineConfig {
 	minScore?: number;
 	maxAttempts?: number;
 	appUrl: string;  // Public URL for Lambda webhook callbacks (e.g. https://app.railway.app)
+	/** Prior-render clip usage — lets the planner avoid repeating the same cuts */
+	usageSummary?: VideoUsageSummary[];
 }
 
 export interface PipelineResult {
@@ -38,6 +41,9 @@ export interface PipelineResult {
 	supabaseId?: string;
 	publicUrl?: string;
 	error?: string;
+	/** Clips of the plan that actually rendered — lets the API layer record
+	 *  usage so future renders avoid re-cutting the same regions. */
+	editPlanClips?: Array<{ fileId: string; filename?: string; trimStart?: number; duration?: number; purpose?: string }>;
 }
 
 type PipelineLogger = {
@@ -55,6 +61,7 @@ async function generateEditPlan(
 	topic: string,
 	purpose: string,
 	logger: PipelineLogger,
+	usageSummary?: VideoUsageSummary[],
 ): Promise<Record<string, unknown>> {
 	const catalog = loadExistingCatalog();
 	const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
@@ -79,14 +86,16 @@ async function generateEditPlan(
 		}
 	}
 
-	// V2 PIPELINE FEATURE FLAG.
-	// When VIDEO_EDITOR_USE_V2_PIPELINE=true, route through the multi-step
-	// pipeline (4 focused Claude calls instead of one 14K-token monolith).
-	// Any v2 failure falls through to v1 below — so enabling v2 is safe.
-	if (process.env.VIDEO_EDITOR_USE_V2_PIPELINE === 'true') {
+	// V2 PIPELINE FEATURE FLAG — DEFAULT ON.
+	// The multi-step pipeline (focused Claude calls instead of one 14K-token
+	// monolith) is the default. Set VIDEO_EDITOR_USE_V2_PIPELINE=false to
+	// force the v1 monolith. Any v2 failure still falls through to v1 below.
+	// (Was opt-in until 2026-06: every deploy without the env var silently
+	// ran v1, so months of v2 quality work never reached production renders.)
+	if (process.env.VIDEO_EDITOR_USE_V2_PIPELINE !== 'false') {
 		try {
 			const { generateEditPlanV2 } = await import('./pipeline-v2');
-			logger.info('[auto-pipeline] VIDEO_EDITOR_USE_V2_PIPELINE=true → using v2 multi-step pipeline');
+			logger.info('[auto-pipeline] Using v2 multi-step pipeline (default; set VIDEO_EDITOR_USE_V2_PIPELINE=false to opt out)');
 			const plan = await generateEditPlanV2(
 				{
 					videoIds,
@@ -96,6 +105,7 @@ async function generateEditPlan(
 					purpose,
 					platform,
 					editMode: editMode as 'auto' | 'game_day' | 'our_story' | 'quick_hit' | 'showcase',
+					usageSummaries: usageSummary,
 				},
 				logger,
 			);
@@ -406,6 +416,7 @@ export async function runAutoPipeline(
 		minScore = 8,
 		maxAttempts = 3,
 		appUrl,
+		usageSummary,
 	} = config;
 
 	let currentPlan: Record<string, unknown> = {};
@@ -419,7 +430,7 @@ export async function runAutoPipeline(
 		try {
 			// Step 1: Generate (or revise) edit plan
 			if (attempt === 1) {
-				currentPlan = await generateEditPlan(videoIds, platform, editMode, topic, purpose, logger);
+				currentPlan = await generateEditPlan(videoIds, platform, editMode, topic, purpose, logger, usageSummary);
 			} else if (lastReview) {
 				logger.info('[auto-pipeline] Generating revised edit plan (score was %d/%d)...', lastReview.overallScore, 10);
 				const footageContext = buildFootageContext(currentPlan!);
@@ -464,6 +475,7 @@ export async function runAutoPipeline(
 					review,
 					supabaseId,
 					publicUrl,
+					editPlanClips: Array.isArray(currentPlan.clips) ? currentPlan.clips as PipelineResult['editPlanClips'] : undefined,
 				};
 			}
 
@@ -505,6 +517,7 @@ export async function runAutoPipeline(
 				review: lastReview,
 				supabaseId,
 				publicUrl,
+				editPlanClips: Array.isArray(currentPlan!.clips) ? currentPlan!.clips as PipelineResult['editPlanClips'] : undefined,
 			};
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);

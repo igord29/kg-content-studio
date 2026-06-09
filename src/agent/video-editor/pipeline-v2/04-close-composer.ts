@@ -15,6 +15,7 @@ import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import type { PipelineInput, StoryArc, HookClip, BodyClips, ClosePlan, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
+import { priorUsedRegions } from './usage-context';
 
 const CLOSE_COMPOSER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -144,6 +145,13 @@ export async function composeClose(
 	};
 	trackUsage(hook);
 	body.clips.forEach(trackUsage);
+	// Also fold in PRIOR-render used regions (usage tracker) so the close
+	// doesn't land on footage the audience already saw in a published video.
+	for (const v of input.videoMetadata) {
+		for (const [a, b] of priorUsedRegions(input, v.id)) {
+			trackUsage({ fileId: v.id, trimStart: a, duration: b - a });
+		}
+	}
 	const usedRangesSection = Array.from(usedRangesByFile.entries())
 		.map(([fileId, ranges]) => {
 			const formatted = ranges.map(([a, b]) => `${a}s-${b}s`).join(', ');

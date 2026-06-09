@@ -233,6 +233,15 @@ const AgentOutput = s.object({
 	review: s.any().optional(),
 	revisedEditPlanData: s.any().optional(),
 
+	// Auto-process output fields. editPlanClips MUST be declared here — the
+	// output schema strips undeclared fields, and the API layer reads it to
+	// record clip usage (freshness) after headless renders.
+	editPlanClips: s.array(s.any()).optional(),
+	score: s.number().optional(),
+	attempts: s.number().optional(),
+	supabaseId: s.string().optional(),
+	publicUrl: s.string().optional(),
+
 	// Drive save output fields
 	fileId: s.string().optional(),
 	webViewLink: s.string().optional(),
@@ -1025,7 +1034,12 @@ const agent = createAgent('video-editor', {
 			try {
 				const { runAutoPipeline } = await import('./auto-pipeline');
 				const result = await runAutoPipeline(
-					{ videoIds, platform, editMode, topic, purpose, minScore, maxAttempts, appUrl },
+					{
+						videoIds, platform, editMode, topic, purpose, minScore, maxAttempts, appUrl,
+						// Prior-render usage (loaded by the API layer) — keeps consecutive
+						// renders from re-picking the exact same cuts.
+						usageSummary: Array.isArray(input.usageSummary) ? input.usageSummary as any : undefined,
+					},
 					ctx.logger,
 				);
 
@@ -1041,6 +1055,8 @@ const agent = createAgent('video-editor', {
 					review: result.review,
 					supabaseId: result.supabaseId,
 					publicUrl: result.publicUrl,
+					// Forwarded so the API layer can record clip usage (freshness)
+					editPlanClips: result.editPlanClips,
 				};
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -2415,11 +2431,11 @@ IMPORTANT JSON RULES:
 			// │ PLAN-X-FORK:   shared edit-planner.ts and dispatch v2 BEFORE    │
 			// │ PLAN-X-FORK:   frame extraction.                                │
 			// └─────────────────────────────────────────────────────────────────┘
-			if (process.env.VIDEO_EDITOR_USE_V2_PIPELINE === 'true') {
+			if (process.env.VIDEO_EDITOR_USE_V2_PIPELINE !== 'false') {
 				try {
 					const platform = (input.platform || 'tiktok') as string;
 					const { generateEditPlanV2 } = await import('./pipeline-v2');
-					ctx.logger.info('[video-editor:edit] PLAN-X-FORK: VIDEO_EDITOR_USE_V2_PIPELINE=true → using v2 multi-step pipeline');
+					ctx.logger.info('[video-editor:edit] PLAN-X-FORK: using v2 multi-step pipeline (default; set VIDEO_EDITOR_USE_V2_PIPELINE=false to opt out)');
 					const v2Plan = await generateEditPlanV2(
 						{
 							videoIds,
@@ -2429,6 +2445,7 @@ IMPORTANT JSON RULES:
 							purpose,
 							platform,
 							editMode: editMode as 'auto' | 'game_day' | 'our_story' | 'quick_hit' | 'showcase',
+							usageSummaries: Array.from(usageSummaryMap.values()),
 						},
 						ctx.logger,
 					);

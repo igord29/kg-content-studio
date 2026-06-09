@@ -32,6 +32,7 @@
  */
 
 import type { CatalogEntry } from '../google-drive';
+import type { VideoUsageSummary } from '../usage-tracker';
 
 // --- Pipeline input (shared by all steps) ---
 
@@ -45,6 +46,13 @@ export interface PipelineInput {
 	editMode: 'game_day' | 'our_story' | 'quick_hit' | 'showcase' | 'auto';
 	/** Optional override — omit for mode default */
 	totalDurationTarget?: number;
+	/**
+	 * Prior-render clip usage per source video (from the usage tracker).
+	 * When present, the hook/body/close steps avoid re-cutting the same
+	 * time regions that earlier renders already published — the #1 cause
+	 * of "every video has the same edit cuts."
+	 */
+	usageSummaries?: VideoUsageSummary[];
 }
 
 export interface VideoMeta {

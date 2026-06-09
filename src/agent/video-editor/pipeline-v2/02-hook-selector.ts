@@ -18,6 +18,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { formatSegmentTimelineForPrompt } from '../scene-analyzer';
 import type { PipelineInput, StoryArc, HookClip, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
+import { priorUsedRegions, isTimestampUsed, formatPriorUsage } from './usage-context';
 
 const HOOK_SELECTOR_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -43,7 +44,7 @@ If scene analysis shows an interaction or action event at timestamp T:
 NEVER set trimStart = T. That starts the clip ON the peak and loses the buildup.
 
 PEAK DATA SOURCES (in priority order):
-1. TIMESTAMP ACTION SCORES — if provided, these are GPT-4o-vision-confirmed peak moments with action quality 1-10. Pick the top-scored timestamp as your T (peak), then apply trimStart = max(0, T - 3).
+1. TIMESTAMP ACTION SCORES — if provided, these are GPT-4o-vision-confirmed peak moments with action quality 1-10. Pick the strongest timestamp that is NOT marked as already used in a past render as your T (peak), then apply trimStart = max(0, T - 3). A previously-published hook re-cut from the same timestamp reads as a repost to the audience — only reuse a marked timestamp if every strong peak is marked.
 2. SCENE TIMELINE — if provided, use segment boundaries to find the strongest action region.
 3. NOTABLE MOMENTS — descriptive list; less precise but usable.
 
@@ -127,17 +128,28 @@ export async function selectHook(
 	// "estimated" despite anyHasScenes=true — sceneAnalysis can be technically
 	// present but unhelpful (e.g., one big segment covering the whole video) while
 	// timestampScores still pinpoints the high-action moments.
+	// Prior-render usage for the setup source. Without this, the hook anchors
+	// on the same top-scored timestamp every render — the audience sees the
+	// same opening shot on every post cut from this footage.
+	const usedRegions = priorUsedRegions(input, arc.setupSourceId);
+
 	let timestampSection = '';
 	if (hasTimestampScores) {
 		const top10 = setupCatalog.timestampScores!.slice(0, 10);
 		const lines = top10
-			.map(s =>
-				`    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people})`,
-			)
+			.map(s => {
+				const usedTag = isTimestampUsed(usedRegions, s.timestamp) ? ' [ALREADY USED in a past render]' : '';
+				return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people})${usedTag}`;
+			})
 			.join('\n');
-		const bestT = top10[0]?.timestamp ?? 0;
+		// Best UNUSED peak — code-picked so variety doesn't rely on the model
+		// noticing the [ALREADY USED] tags. Falls back to overall best when
+		// every strong peak has been published already.
+		const bestUnused = top10.find(s => !isTimestampUsed(usedRegions, s.timestamp));
+		const bestT = (bestUnused ?? top10[0])?.timestamp ?? 0;
+		const bestLabel = bestUnused ? `best unused peak is ${bestT}s` : `all top peaks already used — best overall is ${bestT}s, vary your trim window around it`;
 		timestampSection =
-			`\n  ✅ TIMESTAMP ACTION SCORES (use top-scored timestamp as T for trim formula — best is ${bestT}s):\n${lines}`;
+			`\n  ✅ TIMESTAMP ACTION SCORES (use the strongest UNUSED timestamp as T for trim formula — ${bestLabel}):\n${lines}`;
 	} else if (!hasSceneAnalysis) {
 		timestampSection =
 			'\n  ⚠️ No scene timeline AND no timestamp scores — use even-spread trim with honest estimate.';
@@ -169,10 +181,10 @@ Catalog data for the setup source:
 - Activity: ${setupCatalog.activity}
 - Location: ${setupCatalog.suspectedLocation || 'unknown'}
 - People: ${setupCatalog.peopleCount || '?'}
-- Notable moments: ${setupCatalog.notableMoments || 'None'}
+- Notable moments: ${setupCatalog.notableMoments || 'None'}${formatPriorUsage(input, arc.setupSourceId)}
 ${sceneSection}${timestampSection}
 
-Pick the hook clip. Apply the STORY HOOK ARC RULE. If timestamp scores are provided, use the highest-scoring timestamp as T (peak) — do NOT mark the hook as "estimated" when peak data exists. Return JSON only.`;
+Pick the hook clip. Apply the STORY HOOK ARC RULE. If timestamp scores are provided, use the highest-scoring UNUSED timestamp as T (peak) — do NOT mark the hook as "estimated" when peak data exists. Return JSON only.`;
 
 	const result = await generateText({
 		model: anthropic('claude-sonnet-4-6'),

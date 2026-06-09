@@ -33,12 +33,15 @@
  *                             HOW TO ENABLE
  * ═══════════════════════════════════════════════════════════════════════
  *
- *   Set env: VIDEO_EDITOR_USE_V2_PIPELINE=true
+ *   V2 is the DEFAULT since 2026-06 — no env var needed.
  *
- *   Railway: railway variables set VIDEO_EDITOR_USE_V2_PIPELINE=true
- *   Local:   export VIDEO_EDITOR_USE_V2_PIPELINE=true
+ *   To force the old v1 monolith instead:
+ *   Railway: railway variables set VIDEO_EDITOR_USE_V2_PIPELINE=false
+ *   Local:   export VIDEO_EDITOR_USE_V2_PIPELINE=false
  *
- *   Turn it off by unsetting or setting to "false".
+ *   (It was opt-in via VIDEO_EDITOR_USE_V2_PIPELINE=true before, which
+ *   meant any deploy without the var silently ran v1 and none of the v2
+ *   quality work reached production renders.)
  *
  * ═══════════════════════════════════════════════════════════════════════
  *                            HOW TO EXTEND

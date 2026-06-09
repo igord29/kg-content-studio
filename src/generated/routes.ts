@@ -7,7 +7,7 @@ import type manager from '../agent/manager/index.js';
 import type translate from '../agent/translate/index.js';
 import type venueProspector from '../agent/venue-prospector/index.js';
 import type videoEditor from '../agent/video-editor/index.js';
-import type { StateSchema as StateSchema_0, WebhookInput as WebhookInput_1 } from '../api/index';
+import type { StateSchema, WebhookInput } from '../api/index';
 import type { InferInput, InferOutput } from '@agentuity/core';
 
 // ============================================================================
@@ -122,7 +122,7 @@ export type GETApiTranslateHistoryInput = never;
 /**
  * Output type for route: GET /api/translate/history
  */
-export type GETApiTranslateHistoryOutput = InferOutput<typeof StateSchema_0>;
+export type GETApiTranslateHistoryOutput = InferOutput<typeof StateSchema>;
 
 /**
  * Input schema type for route: GET /api/translate/history
@@ -132,7 +132,7 @@ export type GETApiTranslateHistoryInputSchema = never;
 /**
  * Output schema type for route: GET /api/translate/history
  */
-export type GETApiTranslateHistoryOutputSchema = typeof StateSchema_0;
+export type GETApiTranslateHistoryOutputSchema = typeof StateSchema;
 
 /**
  * Input type for route: DELETE /api/translate/history
@@ -142,7 +142,7 @@ export type DELETEApiTranslateHistoryInput = never;
 /**
  * Output type for route: DELETE /api/translate/history
  */
-export type DELETEApiTranslateHistoryOutput = InferOutput<typeof StateSchema_0>;
+export type DELETEApiTranslateHistoryOutput = InferOutput<typeof StateSchema>;
 
 /**
  * Input schema type for route: DELETE /api/translate/history
@@ -152,7 +152,7 @@ export type DELETEApiTranslateHistoryInputSchema = never;
 /**
  * Output schema type for route: DELETE /api/translate/history
  */
-export type DELETEApiTranslateHistoryOutputSchema = typeof StateSchema_0;
+export type DELETEApiTranslateHistoryOutputSchema = typeof StateSchema;
 
 /**
  * Input type for route: POST /api/venue-prospector
@@ -197,7 +197,7 @@ export type POSTApiVideoEditorOutputSchema = typeof videoEditor extends { output
 /**
  * Input type for route: POST /api/webhook/publish
  */
-export type POSTApiWebhookPublishInput = InferInput<typeof WebhookInput_1>;
+export type POSTApiWebhookPublishInput = InferInput<typeof WebhookInput>;
 
 /**
  * Output type for route: POST /api/webhook/publish
@@ -207,7 +207,7 @@ export type POSTApiWebhookPublishOutput = never;
 /**
  * Input schema type for route: POST /api/webhook/publish
  */
-export type POSTApiWebhookPublishInputSchema = typeof WebhookInput_1;
+export type POSTApiWebhookPublishInputSchema = typeof WebhookInput;
 
 /**
  * Output schema type for route: POST /api/webhook/publish
@@ -288,6 +288,18 @@ declare module '@agentuity/frontend' {
 				stream: false;
 				params: { id: string };
 			};
+	'POST /api/debug-lambda-submit': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'GET /api/debug-remotion-version': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'POST /api/donor-researcher': {
 				inputSchema: POSTApiDonorResearcherInputSchema;
 				outputSchema: POSTApiDonorResearcherOutputSchema;
@@ -318,11 +330,23 @@ declare module '@agentuity/frontend' {
 				stream: false;
 				params: { processedId: string };
 			};
+	'POST /api/refine-question': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'GET /api/remotion-render/:renderId': {
 				inputSchema: never;
 				outputSchema: never;
 				stream: false;
 				params: { renderId: string };
+			};
+	'POST /api/remotion-webhook': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
 			};
 	'POST /api/translate': {
 				inputSchema: POSTApiTranslateInputSchema;
@@ -473,6 +497,18 @@ declare module '@agentuity/frontend' {
 				delete: { input: never; output: never; type: 'api'; params: { id: string }; paramsTuple: [string] };
 			};
 		};
+		debugLambdaSubmit: {
+			/**
+			 * Route: POST /api/debug-lambda-submit
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
+		debugRemotionVersion: {
+			/**
+			 * Route: GET /api/debug-remotion-version
+			 */
+			get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
 		donorResearcher: {
 			/**
 			 * Route: POST /api/donor-researcher
@@ -507,6 +543,12 @@ declare module '@agentuity/frontend' {
 				get: { input: never; output: never; type: 'api'; params: { processedId: string }; paramsTuple: [string] };
 			};
 		};
+		refineQuestion: {
+			/**
+			 * Route: POST /api/refine-question
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
 		remotionRender: {
 			renderId: {
 				/**
@@ -514,6 +556,12 @@ declare module '@agentuity/frontend' {
 				 */
 				get: { input: never; output: never; type: 'api'; params: { renderId: string }; paramsTuple: [string] };
 			};
+		};
+		remotionWebhook: {
+			/**
+			 * Route: POST /api/remotion-webhook
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 		};
 		translate: {
 			history: {
@@ -646,6 +694,18 @@ declare module '@agentuity/react' {
 				stream: false;
 				params: { id: string };
 			};
+	'POST /api/debug-lambda-submit': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'GET /api/debug-remotion-version': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'POST /api/donor-researcher': {
 				inputSchema: POSTApiDonorResearcherInputSchema;
 				outputSchema: POSTApiDonorResearcherOutputSchema;
@@ -676,11 +736,23 @@ declare module '@agentuity/react' {
 				stream: false;
 				params: { processedId: string };
 			};
+	'POST /api/refine-question': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'GET /api/remotion-render/:renderId': {
 				inputSchema: never;
 				outputSchema: never;
 				stream: false;
 				params: { renderId: string };
+			};
+	'POST /api/remotion-webhook': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
 			};
 	'POST /api/translate': {
 				inputSchema: POSTApiTranslateInputSchema;
@@ -812,6 +884,18 @@ declare module '@agentuity/react' {
 				delete: { input: never; output: never; type: 'api'; params: { id: string }; paramsTuple: [string] };
 			};
 		};
+		debugLambdaSubmit: {
+			/**
+			 * Route: POST /api/debug-lambda-submit
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
+		debugRemotionVersion: {
+			/**
+			 * Route: GET /api/debug-remotion-version
+			 */
+			get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
 		donorResearcher: {
 			/**
 			 * Route: POST /api/donor-researcher
@@ -846,6 +930,12 @@ declare module '@agentuity/react' {
 				get: { input: never; output: never; type: 'api'; params: { processedId: string }; paramsTuple: [string] };
 			};
 		};
+		refineQuestion: {
+			/**
+			 * Route: POST /api/refine-question
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+		};
 		remotionRender: {
 			renderId: {
 				/**
@@ -853,6 +943,12 @@ declare module '@agentuity/react' {
 				 */
 				get: { input: never; output: never; type: 'api'; params: { renderId: string }; paramsTuple: [string] };
 			};
+		};
+		remotionWebhook: {
+			/**
+			 * Route: POST /api/remotion-webhook
+			 */
+			post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 		};
 		translate: {
 			history: {
@@ -989,6 +1085,18 @@ const _rpcRouteMetadata = {
 						}
 				}
 		},
+		"debugLambdaSubmit": {
+				"post": {
+						"type": "api",
+						"path": "/api/debug-lambda-submit"
+				}
+		},
+		"debugRemotionVersion": {
+				"get": {
+						"type": "api",
+						"path": "/api/debug-remotion-version"
+				}
+		},
 		"donorResearcher": {
 				"post": {
 						"type": "api",
@@ -1029,6 +1137,12 @@ const _rpcRouteMetadata = {
 						}
 				}
 		},
+		"refineQuestion": {
+				"post": {
+						"type": "api",
+						"path": "/api/refine-question"
+				}
+		},
 		"remotionRender": {
 				"renderId": {
 						"get": {
@@ -1038,6 +1152,12 @@ const _rpcRouteMetadata = {
 										"renderId"
 								]
 						}
+				}
+		},
+		"remotionWebhook": {
+				"post": {
+						"type": "api",
+						"path": "/api/remotion-webhook"
 				}
 		},
 		"translate": {

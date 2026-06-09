@@ -17,13 +17,13 @@
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "@agentuity/evals": "latest",
-    "@agentuity/frontend": "latest",
-    "@agentuity/react": "latest",
-    "@agentuity/runtime": "^1.0.22",
-    "@agentuity/schema": "latest",
-    "@agentuity/server": "^1.0.33",
-    "@agentuity/workbench": "latest",
+    "@agentuity/evals": "1.0.64",
+    "@agentuity/frontend": "1.0.64",
+    "@agentuity/react": "1.0.64",
+    "@agentuity/runtime": "1.0.64",
+    "@agentuity/schema": "1.0.64",
+    "@agentuity/server": "1.0.64",
+    "@agentuity/workbench": "1.0.64",
     "@ai-sdk/anthropic": "^3.0.64",
     "@ai-sdk/openai": "latest",
     "@googleapis/drive": "^20.1.0",
@@ -38,7 +38,7 @@
     "remotion": "4.0.448"
   },
   "devDependencies": {
-    "@agentuity/cli": "1.0.33",
+    "@agentuity/cli": "1.0.64",
     "@tailwindcss/vite": "^4.1.18",
     "@types/bun": "latest",
     "@types/node": "^25.2.2",

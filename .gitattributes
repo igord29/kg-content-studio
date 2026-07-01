@@ -1,0 +1,5 @@
+# Shell scripts must stay LF-only. They run under bash (WSL locally, Linux on
+# Agentuity Cloud). Windows git's autocrlf was rewriting them to CRLF, which
+# made `bash create-stubs.sh` fail with `$'\r': command not found` and broke
+# `bun run deploy`. Forcing eol=lf keeps them runnable regardless of platform.
+*.sh text eol=lf

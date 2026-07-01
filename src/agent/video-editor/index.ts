@@ -2324,10 +2324,21 @@ IMPORTANT JSON RULES:
 			// so Claude can SEE the footage when making editorial decisions
 			const messageContent: Array<{ type: 'text'; text: string } | { type: 'image'; image: Uint8Array }> = [];
 
-			// Extract and include top-scored frame images (up to 2 per clip, max 10 total)
+			// Extract and include top-scored frame images (up to 2 per clip, max 10 total).
+			//
+			// GUARD (fixes the /api/video-editor 502 crashes): this block downloads
+			// EVERY selected source video (~300MB each) from Drive to disk to run
+			// ffmpeg for frame extraction. On the cloud server (1Gi RAM / 500Mi disk)
+			// those downloads overflow disk and crash the request the moment you pick
+			// more than ~2 clips — which is exactly the 502 seen on 5- and 10-clip
+			// generations. ffmpeg isn't installed there either, so every extract
+			// throws anyway. The DEFAULT v2 pipeline does not use these images at all
+			// (it feeds the composers structured catalog data), so only pay this cost
+			// when v1 is explicitly forced.
 			let frameCount = 0;
 			const MAX_FRAMES = 10;
-			try {
+			const includeFrameImages = process.env.VIDEO_EDITOR_USE_V2_PIPELINE === 'false';
+			if (includeFrameImages) try {
 				const fs = await import('fs');
 				const path = await import('path');
 				const { execSync } = await import('child_process');

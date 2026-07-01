@@ -195,33 +195,59 @@ Avoid: ${brief.avoid.join('; ')}`;
 		return a.trimStart < bEnd + MIN_SEPARATION && aEnd + MIN_SEPARATION > b.trimStart;
 	}
 	// Resolve close clips against the rest of the timeline.
-	const fixedClose = close.closeClips.map((c, i) => {
-		const earlier = [hook, ...body.clips, ...close.closeClips.slice(0, i)];
-		for (const e of earlier) {
-			if (overlaps(c, e)) {
-				// Shift close clip past the conflicting clip's end + buffer
-				const newStart = e.trimStart + e.duration + MIN_SEPARATION;
-				logger.warn(
-					'[pipeline-v2] Close clip %d (%s @ %ds-%ds) overlaps earlier clip @ %ds-%ds. Shifting to %ds.',
-					i, c.fileId.slice(0, 8), c.trimStart, c.trimStart + c.duration,
-					e.trimStart, e.trimStart + e.duration, newStart,
-				);
-				// Prepend a shift annotation so the editNote stays internally
-				// coherent with the (now-shifted) trimStart. Without this, the
-				// AI's editNote keeps referencing its pre-shift reasoning while
-				// the JSON value silently moved on — confusing to any human
-				// reviewing the plan (and the source of the "editNote says 142,
-				// JSON says 156" puzzle in the 2026-05-30 render).
-				const shiftNote = `[Auto-shifted from ${c.trimStart}s to ${newStart}s by cross-step dedup to clear earlier clip ending at ${e.trimStart + e.duration}s.] `;
-				return {
-					...c,
-					trimStart: newStart,
-					editNote: shiftNote + (c.editNote || ''),
-				};
+	//
+	// This must (1) re-check after EVERY shift and (2) compare against the
+	// already-FIXED positions of prior close clips — not their pre-shift
+	// positions. The old version did neither: it returned on the first
+	// conflict and compared against `closeClips.slice(0, i)` (pre-shift). So a
+	// close clip shifted forward to clear the HOOK could land exactly on the
+	// prior close clip and never notice — producing TWO identical clips at the
+	// same trimStart on the same source (the viewer sees the same shot twice
+	// back-to-back). Observed in the 2026-07-01 US-Open render: two "community"
+	// clips both at 164s on the same file.
+	//
+	// Now: loop the shift until the clip clears the whole timeline. If no
+	// in-bounds slot exists on that source (would run past the source end),
+	// DROP the clip — a second close beat that can't find its own footage is a
+	// redundant duplicate, and one clean beat beats two repeated ones.
+	const fixedClose: typeof close.closeClips = [];
+	for (let i = 0; i < close.closeClips.length; i++) {
+		const original = close.closeClips[i]!;
+		let cur = { ...original };
+		const srcMeta = input.videoMetadata.find(v => v.id === cur.fileId);
+		const srcDurSec = srcMeta?.duration ? Math.round(parseInt(srcMeta.duration) / 1000) : Infinity;
+
+		let dropped = false;
+		let guard = 0;
+		let conflict = [hook, ...body.clips, ...fixedClose].find(e => overlaps(cur, e));
+		while (conflict && guard++ < 24) {
+			const newStart = conflict.trimStart + conflict.duration + MIN_SEPARATION;
+			if (newStart + cur.duration > srcDurSec) {
+				dropped = true;
+				break;
 			}
+			cur = { ...cur, trimStart: newStart };
+			conflict = [hook, ...body.clips, ...fixedClose].find(e => overlaps(cur, e));
 		}
-		return c;
-	});
+
+		if (dropped) {
+			logger.warn(
+				'[pipeline-v2] Close clip %d (%s @ %ds) dropped — no non-overlapping slot on source (len=%ss). Redundant duplicate of another close beat.',
+				i, cur.fileId.slice(0, 8), original.trimStart, srcDurSec,
+			);
+			continue;
+		}
+		if (cur.trimStart !== original.trimStart) {
+			logger.warn(
+				'[pipeline-v2] Close clip %d (%s) shifted %ds -> %ds by cross-step dedup to clear the timeline.',
+				i, cur.fileId.slice(0, 8), original.trimStart, cur.trimStart,
+			);
+			// Keep the editNote honest about the shift (its reasoning still cites
+			// the pre-shift trimStart otherwise).
+			cur.editNote = `[Auto-shifted from ${original.trimStart}s to ${cur.trimStart}s by cross-step dedup to clear overlapping timeline clips.] ${original.editNote || ''}`;
+		}
+		fixedClose.push(cur);
+	}
 	// Body clip cross-check (mostly a sanity log; body composer already dedups).
 	body.clips.forEach((c, i) => {
 		if (overlaps(c, hook)) {

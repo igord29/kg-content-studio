@@ -27,6 +27,7 @@
     "@ai-sdk/anthropic": "^3.0.64",
     "@ai-sdk/openai": "latest",
     "@googleapis/drive": "^20.1.0",
+    "@remotion/captions": "4.0.448",
     "@remotion/lambda": "4.0.448",
     "@remotion/transitions": "4.0.448",
     "@supabase/supabase-js": "^2.97.0",

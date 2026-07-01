@@ -368,9 +368,16 @@ async function submitRenderWithRetry(
 			// Lambda responded with a {type:"error"} payload — e.g. version mismatch.
 			// This is NOT recoverable by retry; surface it so the caller fails fast
 			// instead of waiting for the 900s safety-net.
-			if (startError) {
-				const err = new Error(startError.message);
-				if (startError.fatal) {
+			//
+			// NOTE: startError is assigned inside the async IIFE above, so TS's
+			// control-flow analysis narrows it back to `null` here (assignments in
+			// nested closures aren't tracked). Copy through a typed const to restore
+			// the declared union type before the truthy check — otherwise `startError`
+			// reads as `never` and `.message`/`.fatal` fail to typecheck.
+			const startErr = startError as { message: string; fatal: boolean } | null;
+			if (startErr) {
+				const err = new Error(startErr.message);
+				if (startErr.fatal) {
 					// Tag as fatal so the outer retry loop doesn't waste attempts.
 					(err as Error & { fatal?: boolean }).fatal = true;
 				}

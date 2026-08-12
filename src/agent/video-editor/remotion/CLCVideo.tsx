@@ -25,6 +25,7 @@ import type { CLCVideoProps } from './types';
 import { VideoClip, getEffectForClip } from './VideoClip';
 import { TextOverlay } from './TextOverlay';
 import { getRemotionTransition } from './transitions';
+import { clipFramesFor } from './composition-timing';
 
 export const CLCVideo: React.FC<CLCVideoProps> = ({
 	clips,
@@ -49,10 +50,12 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 	const clipTimeline = React.useMemo(
 		() =>
 			clips.flatMap((clip, index) => {
-				const clipFrames = Math.max(
-					Math.ceil(clip.length * fps),
-					transitionDurationFrames * 2 + fps, // min: 2 transitions + 1 second
-				);
+				// Shared with entry.tsx's calculateMetadata so the composition length
+				// and the clips laid out inside it can never disagree. The old inline
+				// clamp applied a 2-transition floor to EVERY clip, including hard
+				// cuts that no transition touches — stretching deliberate short cuts
+				// and truncating the video's tail. See composition-timing.ts.
+				const clipFrames = clipFramesFor(clips, index, fps, transitionDurationFrames);
 
 				// Get effect for this clip position
 				const effect = clip.effect || getEffectForClip(mode, index);

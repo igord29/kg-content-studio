@@ -8,6 +8,7 @@ import { registerRoot, Composition } from 'remotion';
 import { CLCVideo } from './CLCVideo';
 import { TransitionShowcase, SHOWCASE_DURATION_IN_FRAMES } from './TransitionShowcase';
 import type { CLCVideoProps } from './types';
+import { computeCompositionFrames } from './composition-timing';
 
 const RemotionRoot: React.FC = () => {
 	// Cast component to satisfy Remotion's generic Composition typing
@@ -34,12 +35,15 @@ const RemotionRoot: React.FC = () => {
 					transitionDurationFrames: 15,
 				}}
 				calculateMetadata={({ props }) => {
-					// Calculate total duration from clips + transitions
+					// Duration math lives in composition-timing.ts, which CLCVideo
+					// also uses to lay out clips. Computing it separately here is what
+					// silently truncated every render — see that file's header.
 					const p = props as unknown as CLCVideoProps;
-					const totalSeconds = p.clips.reduce((sum: number, c: { length: number }) => sum + c.length, 0);
-					const transitionOverlap = Math.max(0, p.clips.length - 1) * (p.transitionDurationFrames / p.fps);
-					const effectiveDuration = totalSeconds - transitionOverlap;
-					const totalFrames = Math.max(30, Math.ceil(effectiveDuration * p.fps));
+					const totalFrames = computeCompositionFrames(
+						p.clips,
+						p.fps,
+						p.transitionDurationFrames,
+					);
 
 					return {
 						durationInFrames: totalFrames,

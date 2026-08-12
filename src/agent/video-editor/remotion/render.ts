@@ -17,6 +17,7 @@
  */
 
 import type { CLCVideoProps } from './types';
+import { computeCompositionFrames } from './composition-timing';
 import type { PreprocessedClip } from '../preprocess';
 import { PLATFORM_SETTINGS } from '../shotstack';
 import { buildProcessedFileProxyUrl } from '../drive-proxy';
@@ -629,8 +630,7 @@ export async function submitRemotionRender(
 
 	// Limit concurrent Lambda invocations for low-concurrency AWS accounts.
 	// Default limit is 10 for new accounts. Target max 4 renderers + 1 orchestrator = 5.
-	const totalDuration = props.clips.reduce((sum, c) => sum + c.length, 0);
-	const totalFrames = Math.ceil(totalDuration * props.fps);
+	const totalFrames = computeCompositionFrames(props.clips, props.fps, props.transitionDurationFrames);
 	const maxRendererLambdas = 4;
 	const framesPerLambda = Math.max(200, Math.ceil(totalFrames / maxRendererLambdas));
 
@@ -835,8 +835,7 @@ export async function submitRemotionRenderDirect(
 	// AWS account has a low concurrency limit (default 10 for new accounts).
 	// Remotion spawns (totalFrames / framesPerLambda) renderer Lambdas + 1 orchestrator.
 	// We target max ~4 renderer Lambdas (+ 1 orchestrator = 5 total) to stay well within limit.
-	const totalDuration = clipProps.reduce((sum, c) => sum + c.length, 0);
-	const totalFrames = Math.ceil(totalDuration * fps);
+	const totalFrames = computeCompositionFrames(props.clips, fps, transitionDurationFrames);
 	const maxRendererLambdas = 4;
 	const framesPerLambda = Math.max(200, Math.ceil(totalFrames / maxRendererLambdas));
 
@@ -1027,8 +1026,7 @@ export async function submitRemotionRenderPreprocessed(
 
 	// Step 4: Submit to Lambda (via wrapper that handles hung calls on Railway).
 
-	const totalDuration = clipProps.reduce((sum, c) => sum + c.length, 0);
-	const totalFrames = Math.ceil(totalDuration * fps);
+	const totalFrames = computeCompositionFrames(props.clips, fps, transitionDurationFrames);
 	const maxRendererLambdas = 4;
 	const framesPerLambda = Math.max(200, Math.ceil(totalFrames / maxRendererLambdas));
 
@@ -1287,8 +1285,7 @@ export async function submitRemotionRenderWithPreprocessing(
 
 		// Step 5: Submit to Remotion Lambda (via wrapper that handles hung calls on Railway).
 
-		const totalDuration = clipProps.reduce((sum, c) => sum + c.length, 0);
-		const totalFrames = Math.ceil(totalDuration * fps);
+		const totalFrames = computeCompositionFrames(props.clips, fps, transitionDurationFrames);
 		const maxRendererLambdas = 4;
 		const framesPerLambda = Math.max(200, Math.ceil(totalFrames / maxRendererLambdas));
 

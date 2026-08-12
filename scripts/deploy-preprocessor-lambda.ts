@@ -349,29 +349,80 @@ function roundEven(n) {
   return r % 2 === 0 ? r : r + 1;
 }
 
-function buildSmartCropFilter(sourceW, sourceH, targetAspect, subjectPosition) {
+// TWIN NOTE: this MUST stay in sync with buildSmartCropFilter() in
+// src/agent/video-editor/remotion/preprocessor-lambda.ts and computeCrop() in
+// src/agent/video-editor/smart-crop.ts. THIS copy is the one that actually
+// executes -- the others are reference mirrors that are never deployed.
+//
+// Two bugs fixed here, both of which produced tiny, badly-placed subjects:
+//
+//  1. extraZoom was accepted by the invoker, sent in the event, and then
+//     silently dropped: this function did not take the parameter at all. Every
+//     clip was framed at the bare fill-crop, so a kid shot from across a court
+//     stayed a speck in a 1080x1920 frame no matter what punch-in the director
+//     asked for.
+//
+//  2. The subjectPosition Y ordinate had no effect on the common 16:9 -> 9:16
+//     path. With scaleH pinned to targetH there is zero vertical slack, so
+//     cropY always clamped to 0. Solving for "put the subject at the output
+//     centre" needs K >= targetH / (2 * min(pos.y, 1-pos.y) * sourceH), which
+//     is what kCenterY supplies.
+//
+// At extraZoom 1.0 with a centred subject this is byte-for-byte identical to
+// the previous filter (1920x1080 -> 9:16 still yields
+// scale=3414:1920,crop=1080:1920:1168:0), so existing behaviour is preserved
+// wherever no punch-in was requested.
+function buildSmartCropFilter(sourceW, sourceH, targetAspect, subjectPosition, extraZoom) {
   const target = ASPECT_DIMS[targetAspect];
   if (!target) return '';
   const targetW = target.w, targetH = target.h;
+  const zoom = (typeof extraZoom === 'number' && isFinite(extraZoom)) ? extraZoom : 1.0;
 
   const sourceAR = sourceW / sourceH;
   const targetAR = targetW / targetH;
 
-  if (Math.abs(sourceAR - targetAR) < 0.01) {
+  // Aspect already matches AND no extra zoom requested -- just scale.
+  if (Math.abs(sourceAR - targetAR) < 0.01 && zoom <= 1.001) {
     return 'scale=' + targetW + ':' + targetH;
   }
 
   const key = (subjectPosition ? String(subjectPosition).toLowerCase().trim() : 'center');
   const pos = SUBJECT_POSITION_MAP[key] || SUBJECT_POSITION_MAP['center'];
 
-  let scaleW, scaleH;
-  if (sourceAR > targetAR) {
-    scaleH = targetH;
-    scaleW = roundEven(sourceW * (targetH / sourceH));
-  } else {
-    scaleW = targetW;
-    scaleH = roundEven(sourceH * (targetW / sourceW));
-  }
+  // Fill minimum -- K such that scaledW >= targetW AND scaledH >= targetH.
+  const kFill = Math.max(targetW / sourceW, targetH / sourceH);
+
+  // Subject-centring constraints -- K such that the crop window can slide far
+  // enough on each axis to place the subject at the output centre.
+  const marginX = Math.max(0.1, Math.min(pos.x, 1 - pos.x));
+  const marginY = Math.max(0.1, Math.min(pos.y, 1 - pos.y));
+  const kCenterX = targetW / (2 * marginX * sourceW);
+  const kCenterY = targetH / (2 * marginY * sourceH);
+
+  const kZoomed = kFill * Math.max(1.0, zoom);
+
+  // Centring an off-centre subject can demand a far bigger upscale than merely
+  // filling the frame does, and past a point the softness costs more than the
+  // better framing wins. Measured for 16:9 -> 9:16 with a thirds subject:
+  //
+  //   1920x1080  fill samples 608px of source width, centred samples 401px
+  //   3840x2160  fill samples 1215px,                centred samples 802px
+  //
+  // So the same constraint is cheap on 4K and expensive on 1080p. Bound it by
+  // the detail actually available rather than by a flat multiplier: allow full
+  // centring while the crop still samples a healthy region, and fall back to
+  // partial centring (crop slides as far as it can, subject lands off-centre
+  // but sharp) when it does not. An explicit extraZoom is never capped -- that
+  // is a deliberate creative choice, this is an incidental side effect.
+  const MIN_SOURCE_CROP_PX = 700;
+  const MAX_CENTERING_BOOST = 1.35;
+  const kCenter = Math.max(kCenterX, kCenterY);
+  const K = (targetW / kCenter >= MIN_SOURCE_CROP_PX)
+    ? Math.max(kZoomed, kCenter)
+    : Math.max(kZoomed, Math.min(kCenter, kZoomed * MAX_CENTERING_BOOST));
+
+  const scaleW = roundEven(sourceW * K);
+  const scaleH = roundEven(sourceH * K);
 
   let cropX = roundEven(pos.x * scaleW - targetW / 2);
   let cropY = roundEven(pos.y * scaleH - targetH / 2);
@@ -388,7 +439,7 @@ function buildVideoFilter(config) {
 
   // Framing: smart crop to target aspect when inputs are present, else plain scale cap.
   const cropFilter = (config.targetAspect && config.sourceWidth && config.sourceHeight)
-    ? buildSmartCropFilter(config.sourceWidth, config.sourceHeight, config.targetAspect, config.subjectPosition)
+    ? buildSmartCropFilter(config.sourceWidth, config.sourceHeight, config.targetAspect, config.subjectPosition, config.extraZoom)
     : '';
   if (cropFilter) {
     filters.push(cropFilter);
@@ -417,14 +468,64 @@ function buildVideoFilter(config) {
   return filters.join(',');
 }
 
-function buildAudioFilter(speed) {
-  if (speed === 1.0) return '';
+// Does the source actually carry an audio stream?
+//
+// Only bin/ffmpeg is bundled -- there is no ffprobe -- so ask ffmpeg. Given an
+// input and no output it prints the stream table and exits with "At least one
+// output file must be specified", which is fast because nothing is decoded.
+//
+// This guard matters: applying -af to a video with no audio stream makes FFmpeg
+// abort the whole clip. Silent source footage is common (phone clips recorded
+// with the mic muted), and before the audio chain below existed the old code
+// only set -af on speed changes, so the failure was rare enough to go unnoticed.
+function hasAudioStream(ffmpegPath, inputPath) {
+  try {
+    const out = execSync(ffmpegPath + ' -hide_banner -i "' + inputPath + '" 2>&1 || true',
+      { encoding: 'utf-8', timeout: 20000, maxBuffer: 4 * 1024 * 1024 });
+    return String(out).indexOf('Audio:') !== -1;
+  } catch (e) {
+    const out = String((e && (e.stdout || e.stderr)) || '');
+    return out.indexOf('Audio:') !== -1;
+  }
+}
+
+// Audio chain: retime -> loudness -> uniform rate -> de-click.
+//
+// Renders measured between -11.9 and -15.3 LUFS with true peaks above 0 dBFS,
+// i.e. actually clipping, against a -14 LUFS social target. Per-clip treatment
+// is the only option available here because the final mux happens in Remotion
+// Lambda, which does not expose an FFmpeg audio chain.
+function buildAudioFilter(speed, durationSec) {
+  const s = (typeof speed === 'number' && isFinite(speed) && speed > 0) ? speed : 1.0;
   const filters = [];
-  let remaining = speed;
-  // Chain atempo filters to stay within 0.5-2.0 range
-  while (remaining > 2.0) { filters.push('atempo=2.0'); remaining /= 2.0; }
-  while (remaining < 0.5) { filters.push('atempo=0.5'); remaining /= 0.5; }
-  filters.push('atempo=' + remaining.toFixed(4));
+
+  // Retime first so every later filter works on the OUTPUT timeline.
+  if (s !== 1.0) {
+    let remaining = s;
+    // Chain atempo filters to stay within the 0.5-2.0 range each accepts.
+    while (remaining > 2.0) { filters.push('atempo=2.0'); remaining /= 2.0; }
+    while (remaining < 0.5) { filters.push('atempo=0.5'); remaining /= 0.5; }
+    filters.push('atempo=' + remaining.toFixed(4));
+  }
+
+  // TP=-1.5 leaves headroom for the lossy encoder, which can overshoot a 0 dBFS
+  // ceiling on decode and is why the finished files measured above full scale.
+  filters.push('loudnorm=I=-16:TP=-1.5:LRA=11');
+
+  // loudnorm runs at 192kHz internally; bring everything back to one rate so
+  // clips from mixed-rate phone sources concatenate without drifting.
+  filters.push('aresample=48000');
+
+  // Most cuts are hard cuts, and an abrupt waveform start or end pops audibly
+  // at every boundary. 15ms is below the threshold of a perceived fade.
+  const outDur = (typeof durationSec === 'number' && isFinite(durationSec) && durationSec > 0)
+    ? durationSec / s
+    : 0;
+  if (outDur > 0.1) {
+    filters.push('afade=t=in:st=0:d=0.015');
+    filters.push('afade=t=out:st=' + (outDur - 0.015).toFixed(3) + ':d=0.015');
+  }
+
   return filters.join(',');
 }
 
@@ -435,9 +536,10 @@ exports.handler = async function(event) {
   const ffmpegPath = getFFmpegPath();
 
   console.log('[preprocessor] FFmpeg path: ' + ffmpegPath);
-  console.log('[preprocessor] Processing: input=%s, trim=%ds, dur=%ds, speed=%sx, stabilize=%s, sharpen=%s',
+  console.log('[preprocessor] Processing: input=%s, trim=%ds, dur=%ds, speed=%sx, stabilize=%s, sharpen=%s, extraZoom=%s, subject=%s',
     event.inputS3Key, event.trimStart, event.duration,
-    event.speed ?? 1.0, event.stabilize === true ? 'yes' : 'no', event.sharpen !== false ? 'yes' : 'no');
+    event.speed ?? 1.0, event.stabilize === true ? 'yes' : 'no', event.sharpen !== false ? 'yes' : 'no',
+    event.extraZoom ?? 1.0, event.subjectPosition || 'center');
   console.log('[preprocessor] Smart crop: aspect=%s, subject=%s, source=%sx%s',
     event.targetAspect || 'none', event.subjectPosition || 'none',
     event.sourceWidth || '?', event.sourceHeight || '?');
@@ -490,8 +592,15 @@ exports.handler = async function(event) {
       subjectPosition: event.subjectPosition,
       sourceWidth: event.sourceWidth,
       sourceHeight: event.sourceHeight,
+      // Previously omitted, so the punch-in the director asked for never
+      // reached FFmpeg. This is the line that makes extraZoom real.
+      extraZoom: event.extraZoom,
     });
-    const audioFilter = buildAudioFilter(speed);
+    const hasAudio = hasAudioStream(ffmpegPath, inputPath);
+    if (!hasAudio) {
+      console.log('[preprocessor] No audio stream in source -- skipping audio filters');
+    }
+    const audioFilter = hasAudio ? buildAudioFilter(speed, event.duration) : '';
 
     const ffmpegArgs = [
       ffmpegPath, '-y',

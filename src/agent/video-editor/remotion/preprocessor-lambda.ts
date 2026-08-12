@@ -136,7 +136,20 @@ function buildSmartCropFilter(
 	const kCenterY = targetH / (2 * marginY * sourceH);
 	// Apply extraZoom to the fill baseline, then take the max of all constraints.
 	const kZoomed = kFill * Math.max(1.0, extraZoom);
-	const K = Math.max(kZoomed, kCenterX, kCenterY);
+
+	// Bound the centring upscale by the detail actually available. Centring a
+	// thirds subject for 16:9 -> 9:16 samples 401px of a 1920-wide source (vs
+	// 608px at fill) and upscales that to 1080 — visibly soft. The same
+	// constraint on a 3840-wide source samples 802px and costs nothing. Allow
+	// full centring while the crop stays above the threshold, otherwise centre
+	// partially: the window slides as far as it can and the subject lands
+	// off-centre but sharp. An explicit extraZoom is deliberate and never capped.
+	const MIN_SOURCE_CROP_PX = 700;
+	const MAX_CENTERING_BOOST = 1.35;
+	const kCenter = Math.max(kCenterX, kCenterY);
+	const K = (targetW / kCenter >= MIN_SOURCE_CROP_PX)
+		? Math.max(kZoomed, kCenter)
+		: Math.max(kZoomed, Math.min(kCenter, kZoomed * MAX_CENTERING_BOOST));
 
 	const scaleW = roundEven(sourceW * K);
 	const scaleH = roundEven(sourceH * K);

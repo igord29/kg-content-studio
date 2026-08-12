@@ -40,6 +40,24 @@ BODY STRUCTURE:
 PEAK ANCHORING RULE (non-negotiable):
 For each clip, your trimStart MUST sit within 2 seconds of a TIMESTAMP ACTION SCORE provided in the footage data — never pick a blind number. The timestamp scores tell you exactly where players are visible and active; picking trimStart values that miss those scores produces wall shots and empty-court frames.
 
+EMOTIONAL ESCALATION (non-negotiable when emotion data is present):
+A body that is four competent action clips in a row is a highlight reel, not a
+story. It is the single most common reason an edit looks amateur.
+
+- AT LEAST ONE body clip MUST come from a moment with emotion >= 6 — a face, a
+  reaction, a look between two people. Sources that have any are listed under
+  "EMOTIONAL PEAKS". If NO source in this edit offers emotion >= 6, say so
+  explicitly in that clip's editNote rather than silently skipping the rule.
+- Order the body so emotional intensity RISES toward the climax. Establish
+  clips may sit low; the climax should be at or near the strongest emotion
+  available, not merely the strongest action.
+- A negative-valence moment (struggle, frustration, exhaustion) placed BEFORE a
+  positive one makes the payoff land. Use them — do not filter to positives
+  only. Struggle earns triumph.
+- Emotion and actionQuality are independent axes. Do not assume the
+  highest-action timestamp is also the most emotional one; the data usually says
+  otherwise.
+
 PEOPLE-PRESENCE FILTER (non-negotiable for showcase + climax):
 Showcase and climax clips MUST anchor on a timestamp where people>=4. Establish clips may use lower-people timestamps (wide venue shots are OK if intentional), but showcase/climax need a player visibly in frame doing the action. If no people>=4 timestamps exist for a beat's planned source, EITHER pick a different source OR demote the beat to establish.
 
@@ -183,10 +201,27 @@ export async function composeBody(
 				const lines = top15
 					.map(s => {
 						const usedTag = isTimestampUsed(usedRegions, s.timestamp) ? ' [ALREADY USED in a past render]' : '';
-						return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy})${usedTag}`;
+						const emoTag = typeof s.emotion === 'number'
+							? `, emotion=${s.emotion}/10${s.valence ? `/${s.valence}` : ''}${s.beat && s.beat !== 'none' ? `, beat=${s.beat}` : ''}`
+							: '';
+						return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy}${emoTag})${usedTag}`;
 					})
 					.join('\n');
 				timestampSection = `\n  ✅ TIMESTAMP ACTION SCORES (pick trim points NEAR these — never blind-pick a timestamp; prefer ones NOT marked [ALREADY USED]):\n${lines}`;
+
+				// Call out the emotional peaks explicitly. Buried in a 15-line table
+				// they get ignored; the body is where an edit either builds or stays
+				// a flat highlight reel.
+				const emotionalPeaks = top15
+					.filter(s => typeof s.emotion === 'number' && s.emotion >= 6)
+					.sort((a, b) => (b.emotion ?? 0) - (a.emotion ?? 0))
+					.slice(0, 5);
+				if (emotionalPeaks.length > 0) {
+					const peakLines = emotionalPeaks
+						.map(s => `    ${s.timestamp}s: emotion=${s.emotion}/10 (${s.valence ?? 'neutral'}, beat=${s.beat ?? 'none'}) — "${s.brief}"`)
+						.join('\n');
+					timestampSection += `\n  ❤️ EMOTIONAL PEAKS in this source (faces and reactions — at least one body clip MUST come from a moment like these):\n${peakLines}`;
+				}
 			}
 
 			const durSec = v.duration ? Math.round(parseInt(v.duration) / 1000) : 0;

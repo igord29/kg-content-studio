@@ -704,12 +704,57 @@ Examples of common failure patterns — score these HONESTLY LOW:
 
 Only score 4-5 on tennis/movement when you can IDENTIFY the specific action happening (e.g. "forehand swing", "serve toss", "chess piece being moved"). If you cannot name the specific action, score <=3.
 
+EMOTIONAL READ — SCORE THIS INDEPENDENTLY OF EVERYTHING ABOVE:
+
+The axes above measure athletic quality. Emotion does NOT. A kid grinning after
+netting an easy shot is emotionally excellent and athletically poor; a
+technically perfect rally between two blank-faced teenagers is the reverse. Do
+not let one drag the other. This is the single most common mistake here: scoring
+emotion as a rough copy of energy or tennis. If your emotion score always moves
+with those, you are doing it wrong.
+
+- emotion: 0-10, read ONLY from faces and body language.
+  - 0-2: no person legible, or backs turned / too distant to read a face
+  - 3-4: person legible, neutral or focused expression, no visible feeling
+  - 5-6: mild readable feeling — concentration, small smile, slight frustration
+  - 7-8: clear, strong feeling — laughing, shouting, visible determination,
+         head in hands, a coach and kid locking eyes
+  - 9-10: unmistakable peak human moment — pure joy, tears, embrace, a
+          celebration where the face is fully visible and fully readable
+  A face must be VISIBLE and READABLE to score above 4. Distance and motion blur
+  both cap it. Emotion is about a person, so a frame with no person is 0-1 no
+  matter how dramatic the lighting or how striking the venue.
+
+- valence: "positive" | "neutral" | "negative". The emotional direction. Joy,
+  pride, encouragement, celebration = positive. Focus, waiting, neutral action =
+  neutral. Frustration, exhaustion, disappointment, dejection = negative.
+  Negative is NOT bad footage — struggle is what makes a triumph land. Score it
+  honestly rather than flattening everything to positive.
+
+- beat: which story role this frame could serve. One of:
+  - "hook": arresting on its own, works as an opening frame that stops a scroll
+  - "setup": establishes place, context or who we are looking at
+  - "struggle": effort, difficulty, missing, fatigue, frustration
+  - "turn": the moment something changes — contact, a decision, a reaction
+  - "triumph": success, celebration, the payoff
+  - "reflection": quiet aftermath, a breath, a look between people
+  - "community": multiple people together — coaching, teammates, families
+  - "none": b-roll with no story role (signage, empty court, ground, sky)
+  Most frames in this footage are "none". Say so.
+
 Also provide:
 - brief: 10-word-max description. Be specific and LITERAL — "signage, no players visible" is correct for signage. Do NOT write "tennis action" unless you can see the action. Describe only what is visible in THIS frame.
 - subjectPosition: Where are the main subjects (people/action) in the frame? Use one of: "center", "bottom-center", "bottom-left", "bottom-right", "top-center", "left", "right". If no subject is visible (empty/signage/shadows), use "center" as a safe default.
 
+Emotional examples, to show the axes really do come apart:
+  - "Kid mid-forehand, face turned away" = tennis 5, energy 4, emotion 2, valence neutral, beat turn
+  - "Kid laughing after missing the ball" = tennis 2, energy 3, emotion 8, valence positive, beat reflection
+  - "Coach crouching, talking to kid, both faces visible" = tennis 2, movement 2, emotion 7, valence positive, beat community
+  - "Player slumped, hands on knees" = tennis 1, movement 1, emotion 7, valence negative, beat struggle
+  - "US Open signage" = everything low, emotion 0, valence neutral, beat none
+
 Return ONLY a JSON array, one object per frame in the order provided:
-[{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "subjectFillRatio": 0.45, "brief": "Two kids rallying on hard court", "subjectPosition": "bottom-center"}]
+[{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "subjectFillRatio": 0.45, "emotion": 6, "valence": "positive", "beat": "turn", "brief": "Two kids rallying on hard court", "subjectPosition": "bottom-center"}]
 
 No markdown, no explanation, just the JSON array.`;
 
@@ -845,6 +890,9 @@ async function scoreVideoTimestamps(
 				brief: string;
 				subjectPosition?: string;
 				subjectFillRatio?: number;
+				emotion?: number;
+				valence?: string;
+				beat?: string;
 			}>;
 
 			// Use original timestamps (not model-returned ones) to avoid hallucinated values
@@ -870,11 +918,30 @@ async function scoreVideoTimestamps(
 					: fillRatio < 0.35 ? 0.85
 					: 1.0;
 				const finalScore = Math.min(10, Math.max(1, Math.round(rawScore * fillMultiplier)));
+
+				// Emotion is deliberately NOT folded into actionQuality. They answer
+				// different questions and the selectors weigh them differently: a hook
+				// wants emotion, a slow-mo peak wants action. Collapsing them into one
+				// number is what made every edit feel like a highlight reel with no
+				// people in it.
+				const emotion = typeof score.emotion === 'number'
+					? Math.max(0, Math.min(10, Math.round(score.emotion)))
+					: undefined;
+				const VALENCES = ['positive', 'neutral', 'negative'];
+				const valence = typeof score.valence === 'string'
+					&& VALENCES.includes(score.valence.toLowerCase().trim())
+					? score.valence.toLowerCase().trim() as 'positive' | 'neutral' | 'negative'
+					: undefined;
+				const BEATS = ['hook', 'setup', 'struggle', 'turn', 'triumph', 'reflection', 'community', 'none'];
+				const beat = typeof score.beat === 'string'
+					&& BEATS.includes(score.beat.toLowerCase().trim())
+					? score.beat.toLowerCase().trim() as NonNullable<NonNullable<CatalogEntry['timestampScores']>[number]['beat']>
+					: undefined;
 				// Per-frame diagnostic log — makes it visible during rescore whether the
 				// model is producing believable scores. Format chosen to be greppable
 				// in Railway logs: look for "[cataloger] score ts=" prefix.
 				console.log(
-					`[cataloger] score ts=${originalTs}s q=${finalScore}/10 m=${score.movement} p=${score.people} t=${score.tennis} e=${score.energy} fill=${fillRatio.toFixed(2)} pos=${score.subjectPosition || 'bottom-center'} brief="${(score.brief || '').slice(0, 60)}"`,
+					`[cataloger] score ts=${originalTs}s q=${finalScore}/10 m=${score.movement} p=${score.people} t=${score.tennis} e=${score.energy} fill=${fillRatio.toFixed(2)} emo=${emotion ?? '-'}/${valence ?? '-'}/${beat ?? '-'} pos=${score.subjectPosition || 'bottom-center'} brief="${(score.brief || '').slice(0, 60)}"`,
 				);
 				allScores.push({
 					timestamp: originalTs,
@@ -884,6 +951,9 @@ async function scoreVideoTimestamps(
 					tennis: score.tennis,
 					energy: score.energy,
 					subjectFillRatio: fillRatio,
+					emotion,
+					valence,
+					beat,
 					brief: score.brief,
 					subjectPosition: score.subjectPosition || 'center',
 				});

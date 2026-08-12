@@ -29,6 +29,16 @@ Your job is to write:
 2. The CLOSE beat (1 clip, 3-5s): final landing moment + CLC branding shot
 3. TEXT OVERLAYS for the full video: location tag at opening, CLC branding at close, optional mid-video stat/quote
 
+WHAT MAKES A CLOSE LAND (when emotion data is present):
+The close is where a viewer decides whether they felt something. It is NOT
+another action beat.
+- Prefer moments tagged beat=community or beat=reflection over beat=turn or a
+  raw high-actionQuality frame. The list you are given is already ranked that way.
+- Prefer positive valence for the final clip. If the body ended on struggle,
+  the close resolving it is the whole point.
+- The community clip wants people TOGETHER with faces visible — emotion >= 6
+  and people >= 3 if such a timestamp exists.
+
 TEXT OVERLAY GUIDELINES:
 - Location tag: bottom position, slideUp animation, starts at ~1s, 3s duration
 - Mid-video stat (optional): center position, typewriter animation, mid-timeline, 3-4s duration
@@ -123,14 +133,33 @@ export async function composeClose(
 	// moments, not blind timestamps. Same fix pattern as body composer.
 	let closeTimestampSection = '';
 	if (closeCatalog?.timestampScores && closeCatalog.timestampScores.length > 0) {
-		const top10 = closeCatalog.timestampScores.slice(0, 10);
+		// A close is not an action beat. Rank it by what actually lands an ending:
+		// people together, a positive read, a quiet reflective moment. Entries
+		// without emotion data fall back to actionQuality, unchanged.
+		const closeScore = (s: {
+			actionQuality: number; emotion?: number; valence?: string; beat?: string;
+		}): number => {
+			if (typeof s.emotion !== 'number') return s.actionQuality;
+			const beatBonus =
+				s.beat === 'community' ? 3 :
+				s.beat === 'reflection' ? 2.5 :
+				s.beat === 'triumph' ? 2 : 0;
+			const valenceBonus = s.valence === 'positive' ? 1.5 : s.valence === 'negative' ? -1 : 0;
+			return s.emotion * 0.7 + s.actionQuality * 0.3 + beatBonus + valenceBonus;
+		};
+
+		const top10 = [...closeCatalog.timestampScores]
+			.sort((a, b) => closeScore(b) - closeScore(a))
+			.slice(0, 10);
 		const lines = top10
-			.map(
-				s =>
-					`    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy})`,
-			)
+			.map(s => {
+				const emoTag = typeof s.emotion === 'number'
+					? `, emotion=${s.emotion}/10${s.valence ? `/${s.valence}` : ''}${s.beat && s.beat !== 'none' ? `, beat=${s.beat}` : ''}`
+					: '';
+				return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy}${emoTag})`;
+			})
 			.join('\n');
-		closeTimestampSection = `\n\nTIMESTAMP ACTION SCORES for close source (anchor close clips within 2s of one of these — never blind-pick):\n${lines}`;
+		closeTimestampSection = `\n\nTIMESTAMP ACTION SCORES for close source, ranked for CLOSING value rather than action (anchor close clips within 2s of one of these — never blind-pick):\n${lines}`;
 	}
 
 	// Surface the hook + body trim ranges per source so close composer can

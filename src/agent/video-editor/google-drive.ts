@@ -155,6 +155,18 @@ export interface CatalogEntry {
      *  even if other axes are misjudged. Added 2026-04-27 — entries scored
      *  before this date may not have the field, treated as 0.30 default. */
     subjectFillRatio?: number;
+    /** 0-10 emotional strength read from faces and body language ONLY.
+     *  Deliberately independent of actionQuality: a kid laughing after a missed
+     *  shot is emotion 8 / action 2, and a blank-faced perfect rally is the
+     *  reverse. Kept as a separate axis because the hook, body and close
+     *  selectors weigh emotion and action differently. Undefined on entries
+     *  catalogued before this field existed. */
+    emotion?: number;
+    /** Emotional direction. Negative is not bad footage — struggle is what makes
+     *  a triumph land. */
+    valence?: 'positive' | 'neutral' | 'negative';
+    /** Which story role this moment can serve. Most b-roll is 'none'. */
+    beat?: 'hook' | 'setup' | 'struggle' | 'turn' | 'triumph' | 'reflection' | 'community' | 'none';
     brief: string;          // 10-word-max description
     subjectPosition?: string; // where subjects are in frame: center, bottom-center, bottom-left, etc.
   }>;

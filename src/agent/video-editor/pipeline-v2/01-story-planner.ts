@@ -99,12 +99,35 @@ export async function planStoryArc(
     community:  ${nb.community.slice(0, 3).map(b => `T=${b.timestamp}s "${b.description}" (${b.confidence})`).join(' | ') || 'none'}`
 			: '';
 
+		// Emotional profile of the source, so the arc is chosen against what the
+		// footage can actually deliver. Picking an emotionalCenter the library
+		// cannot support is how an edit ends up as a flat highlight reel — the
+		// later steps then have nothing to escalate toward.
+		const scores = ce.timestampScores || [];
+		const withEmotion = scores.filter(s => typeof s.emotion === 'number');
+		let emotionLine = '';
+		if (withEmotion.length > 0) {
+			const peak = withEmotion.reduce((a, b) => ((b.emotion ?? 0) > (a.emotion ?? 0) ? b : a));
+			const strong = withEmotion.filter(s => (s.emotion ?? 0) >= 6).length;
+			const beatCounts = new Map<string, number>();
+			for (const s of withEmotion) {
+				if (s.beat && s.beat !== 'none') beatCounts.set(s.beat, (beatCounts.get(s.beat) ?? 0) + 1);
+			}
+			const beatSummary = [...beatCounts.entries()]
+				.sort((a, b) => b[1] - a[1])
+				.map(([b, n]) => `${b}×${n}`)
+				.join(', ') || 'none tagged';
+			emotionLine = `\n  - EMOTIONAL PROFILE: ${strong} moment(s) at emotion>=6; peak ${peak.emotion}/10 at ${peak.timestamp}s (${peak.valence ?? 'neutral'}) "${peak.brief}"; beats present: ${beatSummary}`;
+		} else if (scores.length > 0) {
+			emotionLine = '\n  - EMOTIONAL PROFILE: not scored (catalogued before emotional tagging — treat emotional potential as unknown)';
+		}
+
 		return `[${i + 1}] ${v.id}: ${v.name} (${durSec}s, ${ce.contentType || 'unknown'})
   - Activity: ${ce.activity}
   - Location: ${ce.suspectedLocation || 'unknown'}
   - People: ${ce.peopleCount || '?'}
   - Notable moments: ${ce.notableMoments || 'None'}
-  - Scene analysis: ${hasScenes ? 'AVAILABLE' : 'MISSING'}${beatsLine}`;
+  - Scene analysis: ${hasScenes ? 'AVAILABLE' : 'MISSING'}${emotionLine}${beatsLine}`;
 	}).join('\n\n');
 
 	const anyHasScenes = input.videoMetadata.some(v => {

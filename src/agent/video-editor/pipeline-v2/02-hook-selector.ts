@@ -43,8 +43,19 @@ If scene analysis shows an interaction or action event at timestamp T:
   duration  = max(7, time_until_response_completes)
 NEVER set trimStart = T. That starts the clip ON the peak and loses the buildup.
 
+WHAT ACTUALLY STOPS A SCROLL:
+A readable human face beats a technically good rally, every time. When the
+timestamp scores carry an emotion value, treat it as at least as important as
+actionQuality when choosing your T — the list you are given is already ranked
+that way. A frame at actionQuality 4 / emotion 8 (a kid laughing, a coach and
+player locking eyes) is a BETTER hook than actionQuality 8 / emotion 2 (a
+perfectly struck ball with nobody's face visible). Prefer moments tagged
+beat=hook, beat=triumph or beat=turn.
+Emotion is only meaningful when a face is visible and readable — do not invent
+it for wide shots.
+
 PEAK DATA SOURCES (in priority order):
-1. TIMESTAMP ACTION SCORES — if provided, these are GPT-4o-vision-confirmed peak moments with action quality 1-10. Pick the strongest timestamp that is NOT marked as already used in a past render as your T (peak), then apply trimStart = max(0, T - 3). A previously-published hook re-cut from the same timestamp reads as a repost to the audience — only reuse a marked timestamp if every strong peak is marked.
+1. TIMESTAMP ACTION SCORES — if provided, these are GPT-4o-vision-confirmed peak moments with action quality 1-10, and where available an emotion score, valence and story beat. Pick the strongest timestamp that is NOT marked as already used in a past render as your T (peak), then apply trimStart = max(0, T - 3). A previously-published hook re-cut from the same timestamp reads as a repost to the audience — only reuse a marked timestamp if every strong peak is marked.
 2. SCENE TIMELINE — if provided, use segment boundaries to find the strongest action region.
 3. NOTABLE MOMENTS — descriptive list; less precise but usable.
 
@@ -135,11 +146,33 @@ export async function selectHook(
 
 	let timestampSection = '';
 	if (hasTimestampScores) {
-		const top10 = setupCatalog.timestampScores!.slice(0, 10);
+		// A hook has to stop a scroll, and a readable human face does that far more
+		// reliably than a technically good rally shot. Rank by a blend of action and
+		// emotion rather than actionQuality alone, with a bonus for moments the
+		// cataloger explicitly tagged as hook/triumph/turn beats.
+		//
+		// Entries catalogued before the emotion axis existed have no emotion field.
+		// Those fall back to actionQuality alone, so the existing library ranks
+		// exactly as it did before and only re-catalogued footage benefits.
+		const hookScore = (s: { actionQuality: number; emotion?: number; beat?: string }): number => {
+			if (typeof s.emotion !== 'number') return s.actionQuality;
+			const beatBonus =
+				s.beat === 'hook' ? 2 :
+				s.beat === 'triumph' ? 1.5 :
+				s.beat === 'turn' ? 1 : 0;
+			return s.actionQuality * 0.5 + s.emotion * 0.5 + beatBonus;
+		};
+
+		const top10 = [...setupCatalog.timestampScores!]
+			.sort((a, b) => hookScore(b) - hookScore(a))
+			.slice(0, 10);
 		const lines = top10
 			.map(s => {
 				const usedTag = isTimestampUsed(usedRegions, s.timestamp) ? ' [ALREADY USED in a past render]' : '';
-				return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people})${usedTag}`;
+				const emoTag = typeof s.emotion === 'number'
+					? `, emotion=${s.emotion}/10${s.valence ? `/${s.valence}` : ''}${s.beat && s.beat !== 'none' ? `, beat=${s.beat}` : ''}`
+					: '';
+				return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people}${emoTag})${usedTag}`;
 			})
 			.join('\n');
 		// Best UNUSED peak — code-picked so variety doesn't rely on the model

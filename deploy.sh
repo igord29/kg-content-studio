@@ -59,6 +59,37 @@ say "Typecheck"
 bun run typecheck
 ok "0 errors"
 
+say "Production build"
+# Run the real build before anything is pushed. Railway runs this same step, and
+# it is NOT hermetic: agentuity's bundler writes a throwaway package.json
+# containing only {name, version} and then runs `npm install <external>` with no
+# version, so build.external packages resolve to whatever is latest on npm at
+# that moment. Our pins in package.json are not consulted.
+#
+# In practice that means a Remotion release breaks the build for as long as it
+# takes them to finish publishing every package in the set. Observed 2026-08-12:
+# remotion@4.0.509 went up at 14:28 and the build failed on @remotion/studio,
+# then on @remotion/studio-shared, as the release rolled out package by package.
+#
+# Catching it here costs two minutes. Not catching it means pushing to main,
+# watching the Railway build fail, and shipping nothing — while the old
+# container keeps serving, so the app looks fine and the change silently is not
+# live. That is the exact failure mode this script exists to prevent.
+if ! bun run build > /tmp/kg-build.log 2>&1; then
+  tail -20 /tmp/kg-build.log
+  echo
+  if grep -q "ETARGET\|No matching version found" /tmp/kg-build.log; then
+    die "Build failed resolving an external dependency.
+     This is almost certainly an in-progress upstream release, not your code.
+     Check the version in the error against the registry:
+       npm view @remotion/lambda version
+     Wait for the publish to finish and re-run. Do NOT push to main until this
+     passes — Railway runs the same step and the deploy will fail."
+  fi
+  die "Build failed — see /tmp/kg-build.log"
+fi
+ok "build succeeded"
+
 say "Tests"
 for t in test-composition-timing.ts test-preprocessor-crop.ts test-emotion-wiring.ts; do
   if [[ -f "$t" ]]; then

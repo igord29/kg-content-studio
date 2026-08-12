@@ -217,6 +217,83 @@ Be specific and actionable. Reference exact timestamps. Every issue must include
  * Download a video from a URL and extract frames for review.
  * Returns paths to extracted JPEG frames.
  */
+/**
+ * Choose sample timestamps that correspond to actual shots.
+ *
+ * Detects cut boundaries with FFmpeg's scene filter, then samples the midpoint
+ * of each shot. Sampling AT a cut returns a transition blend that represents
+ * neither side; the midpoint is the frame a viewer actually registers.
+ *
+ * The first and last frames are always included. Reviewing a social video
+ * without seeing its opening frame makes the "does this hook in 3 seconds"
+ * question unanswerable, and without its final frame the close cannot be graded
+ * at all.
+ *
+ * Falls back to a uniform spread if scene detection finds nothing (a single
+ * continuous shot, or ffmpeg trouble) — degraded, but never worse than before.
+ */
+export function pickShotSampleTimes(
+	videoPath: string,
+	duration: number,
+	budget: number,
+	// Passed in rather than imported: this module loads child_process dynamically
+	// inside the async callers, and this function is sync.
+	execSync: (cmd: string, opts: Record<string, unknown>) => string,
+): number[] {
+	let cuts: number[] = [];
+	try {
+		// showinfo on the scene-selected frames prints pts_time for each cut.
+		const out = execSync(
+			`ffmpeg -nostats -hide_banner -i "${videoPath}" -vf "select='gt(scene,0.3)',showinfo" -f null - 2>&1`,
+			{ encoding: 'utf-8', timeout: 120000, maxBuffer: 16 * 1024 * 1024 },
+		);
+		const re = /pts_time:([\d.]+)/g;
+		let m: RegExpExecArray | null;
+		while ((m = re.exec(out)) !== null) {
+			const t = Number.parseFloat(m[1]!);
+			if (Number.isFinite(t) && t > 0.2 && t < duration - 0.2) cuts.push(t);
+		}
+	} catch {
+		cuts = [];
+	}
+
+	// Shot boundaries -> shot midpoints.
+	const boundaries = [0, ...cuts.sort((a, b) => a - b), duration];
+	const midpoints: number[] = [];
+	for (let i = 0; i < boundaries.length - 1; i++) {
+		const start = boundaries[i]!;
+		const end = boundaries[i + 1]!;
+		if (end - start < 0.35) continue; // too brief to sample meaningfully
+		midpoints.push(start + (end - start) / 2);
+	}
+
+	// Anchors: the actual first and last visible frames.
+	const first = Math.min(0.15, duration * 0.02);
+	const last = Math.max(duration - 0.25, 0);
+
+	let times = midpoints.length > 0
+		? midpoints
+		: Array.from({ length: budget }, (_, i) => duration * (0.05 + (0.9 * i) / Math.max(1, budget - 1)));
+
+	// If there are more shots than budget, keep an even spread ACROSS shots
+	// rather than truncating to the first N — the close matters most.
+	if (times.length > budget - 2) {
+		const step = times.length / (budget - 2);
+		times = Array.from({ length: budget - 2 }, (_, i) => times[Math.floor(i * step)]!);
+	}
+
+	const all = [first, ...times, last]
+		.filter(t => Number.isFinite(t) && t >= 0 && t <= duration)
+		.sort((a, b) => a - b);
+
+	// Drop near-duplicates so the budget is not spent on the same instant twice.
+	const deduped: number[] = [];
+	for (const t of all) {
+		if (deduped.length === 0 || t - deduped[deduped.length - 1]! > 0.2) deduped.push(t);
+	}
+	return deduped;
+}
+
 async function downloadAndExtractFrames(
 	downloadUrl: string,
 	frameCount: number = 8,
@@ -288,13 +365,28 @@ async function downloadAndExtractFrames(
 		return { videoPath, framePaths: [], duration: 0 };
 	}
 
-	// Extract frames evenly spaced across the video
-	// Use more frames than cataloging (8-10) for finer pacing analysis
+	// Choose WHICH moments to look at.
+	//
+	// A uniform grid was actively misleading. On a 4-shot video it put the first
+	// sample at ~9s, so the reviewer graded a social video without ever seeing
+	// its hook — the single most important second of the edit — and then scored
+	// "does this grab attention in the first 3 seconds". It also lands samples
+	// wherever the arithmetic falls, which on a cut boundary yields a dissolve
+	// blend representing neither shot.
+	//
+	// Instead: detect the cuts, sample the MIDDLE of each shot, and always
+	// anchor the first and last frame so the hook and the close are seen.
+	const shotTimestamps = pickShotSampleTimes(
+		videoPath, duration, frameCount,
+		execSync as unknown as (cmd: string, opts: Record<string, unknown>) => string,
+	);
+	console.log(
+		`[video-reviewer] Sampling ${shotTimestamps.length} frames at shot midpoints (+ first/last): ${shotTimestamps.map(t => t.toFixed(1) + 's').join(', ')}`,
+	);
+
 	const framePaths: string[] = [];
-	for (let i = 0; i < frameCount; i++) {
-		// Space frames from 5% to 95% of the video
-		const pct = 0.05 + (0.90 * i) / (frameCount - 1);
-		const timestamp = duration * pct;
+	for (let i = 0; i < shotTimestamps.length; i++) {
+		const timestamp = shotTimestamps[i]!;
 		const framePath = path.join(tempDir, `${videoId}_review_${i}.jpg`);
 
 		try {
@@ -343,6 +435,13 @@ export async function reviewRenderedVideo(
 	editPlan: Record<string, unknown> | null,
 	mode: string,
 	platform: string,
+	/**
+	 * Measurements from the render gate, if it ran. Handing these over stops the
+	 * model estimating loudness, clipping, frozen frames and duration from
+	 * stills, where none of them are observable — it previously guessed, and a
+	 * guess that contradicts a measurement is worse than no answer.
+	 */
+	measurements?: string,
 ): Promise<VideoReview> {
 	const fs = await import('fs');
 
@@ -400,8 +499,10 @@ Compare the rendered result against this intent. Did the edit plan's vision come
 
 ${frameLabels}
 
+Frames are sampled at the MIDDLE of each detected shot, plus the true first and last frame — so frame 1 IS the opening frame the viewer sees, and the final frame IS how the video ends. Judge the hook from frame 1 and the close from the last frame.
+
 Review these frames as the final rendered output that will be published. Evaluate the storytelling, pacing, and platform fit.
-${editPlanContext}
+${editPlanContext}${measurements ? `\n\n${measurements}` : ''}
 
 Return your review as JSON following the format specified in your instructions.`,
 		});

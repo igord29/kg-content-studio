@@ -12,7 +12,7 @@ import { getVideoMetadata, type CatalogEntry } from './google-drive';
 import { loadExistingCatalog, hydrateCatalogFromDrive } from './cataloger';
 import { formatSegmentTimelineForPrompt } from './scene-analyzer';
 import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
-import { runRenderGate, type GateResult } from './render-gate';
+import { runRenderGate, formatGateForReviewer, type GateResult } from './render-gate';
 import type { VideoUsageSummary } from './usage-tracker';
 import { selectTrack, shouldAddMusic } from './music';
 import { supabaseAdmin } from '../../lib/supabase';
@@ -480,7 +480,10 @@ export async function runAutoPipeline(
 
 			// Step 3b: Grade with gpt-5-mini vision
 			logger.info('[auto-pipeline] Grading render with gpt-5-mini vision...');
-			const review = await reviewRenderedVideo(downloadUrl, currentPlan!, editMode, platform);
+			const review = await reviewRenderedVideo(
+				downloadUrl, currentPlan!, editMode, platform,
+				gate && !gate.inconclusive ? formatGateForReviewer(gate) : undefined,
+			);
 			lastReview = review;
 
 			logger.info('[auto-pipeline] Score: %d/10 (storytelling=%d, pacing=%d, platform=%d) — %d issues',

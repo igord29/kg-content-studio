@@ -254,7 +254,10 @@ async function submitAndPollRender(
 	const musicTier = (editPlan.musicTier as number) || undefined;
 	let musicUrl: string | null = (editPlan.musicUrl as string) || null;
 	if (!musicUrl && shouldAddMusic(platform, musicTier)) {
-		const selection = selectTrack(editMode, musicDirection);
+		// Select against the mode the planner actually chose. `editMode` is the
+		// REQUESTED mode and is frequently 'auto', which matches no track.
+		const resolvedMode = (editPlan.mode as string) || editMode;
+		const selection = selectTrack(resolvedMode, musicDirection);
 		if (selection) {
 			musicUrl = selection.track.url;
 			logger.info('[auto-pipeline] Auto-selected music: "%s"', selection.track.title);

@@ -65,6 +65,7 @@ import { planStoryArc } from './01-story-planner';
 import { selectHook } from './02-hook-selector';
 import { composeBody } from './03-body-composer';
 import { composeClose } from './04-close-composer';
+import { getDefaultMusicTier } from '../music';
 
 export type { PipelineInput, EditPlanV2, StepLogger } from './types';
 
@@ -275,14 +276,23 @@ Avoid: ${brief.avoid.join('; ')}`;
 	);
 
 	// Mode-based defaults for transitions and music tier.
-	// These can be overridden by the StoryArc fields if we extend the
-	// planner later, but hardcoded defaults are fine for now.
 	const transitions =
 		arc.mode === 'game_day' ? 'fast_cuts' :
 		arc.mode === 'our_story' ? 'crossfade' :
 		arc.mode === 'quick_hit' ? 'fast_cuts' :
 		'minimal';
-	const musicTier = arc.mode === 'our_story' || arc.mode === 'showcase' ? 2 : 1;
+
+	// Tier is a PLATFORM decision, not a mode decision. This used to read
+	//   arc.mode === 'our_story' || arc.mode === 'showcase' ? 2 : 1
+	// which pinned every game_day and quick_hit edit to tier 1 — and
+	// shouldAddMusic() returns false outright for tier 1. So those two modes
+	// shipped with no music bed on EVERY platform, including the ones where
+	// getDefaultMusicTier would have said 2.
+	//
+	// Tier 1 means "original audio only", which is a deliberate TikTok/Reels
+	// convention (creators add trending sound in-app) and is preserved here —
+	// it just comes from the platform now, where that reasoning actually lives.
+	const musicTier = getDefaultMusicTier(input.platform, arc.mode);
 
 	return {
 		mode: arc.mode,

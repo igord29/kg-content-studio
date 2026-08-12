@@ -577,7 +577,8 @@ const agent = createAgent('video-editor', {
 					musicUrl = customMusicUrl;
 				}
 				if (!musicDisabled && !musicUrl && shouldAddMusic(platform, editPlanMusicTier)) {
-					const selection = selectTrack(editMode, editPlanMusicDirection);
+					// The plan's own mode, not the requested one — `editMode` is often 'auto'.
+					const selection = selectTrack((editPlanObj.mode as string) || editMode, editPlanMusicDirection);
 					if (selection) {
 						musicUrl = selection.track.url;
 						ctx.logger.info('[render-remotion] Auto-selected music: "%s" by %s',
@@ -743,8 +744,9 @@ const agent = createAgent('video-editor', {
 			}
 
 			if (!musicDisabled && !musicUrl && shouldAddMusic(platform, editPlanMusicTier)) {
-				// Auto-select from curated library based on mode and mood
-				const selection = selectTrack(editMode, editPlanMusicDirection);
+				// Auto-select from curated library based on mode and mood.
+				// The plan's own mode, not the requested one — `editMode` is often 'auto'.
+				const selection = selectTrack((editPlanObj.mode as string) || editMode, editPlanMusicDirection);
 				if (selection) {
 					musicUrl = selection.track.url;
 					musicSource = `auto:${selection.track.id}`;

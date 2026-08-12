@@ -9,6 +9,11 @@ import { CLCVideo } from './CLCVideo';
 import { TransitionShowcase, SHOWCASE_DURATION_IN_FRAMES } from './TransitionShowcase';
 import type { CLCVideoProps } from './types';
 import { computeCompositionFrames } from './composition-timing';
+import { ensureFontsLoaded } from './fonts';
+
+// Montserrat is referenced by every text component but was never actually
+// loaded, so Lambda's Chromium substituted a default sans on every render.
+ensureFontsLoaded();
 
 const RemotionRoot: React.FC = () => {
 	// Cast component to satisfy Remotion's generic Composition typing

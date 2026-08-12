@@ -26,6 +26,7 @@
     "@agentuity/workbench": "1.0.64",
     "@ai-sdk/anthropic": "^3.0.64",
     "@ai-sdk/openai": "latest",
+    "@fontsource/montserrat": "^5.3.0",
     "@googleapis/drive": "^20.1.0",
     "@remotion/captions": "4.0.448",
     "@remotion/lambda": "4.0.448",

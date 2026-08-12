@@ -131,8 +131,26 @@ export function selectTrack(
 	mode: string,
 	moodHint?: string,
 ): MusicSelection | null {
-	const candidates = getTracksForMode(mode);
-	if (candidates.length === 0) return null;
+	// No track is tagged with mode 'auto', and 'auto' reaches here whenever the
+	// caller passes the REQUESTED mode rather than the mode the planner actually
+	// chose (src/api/index.ts defaults editMode to 'auto'). getTracksForMode then
+	// returned [], this returned null, and the video shipped with no music at
+	// all -- silently, because "no track matched" and "music intentionally off"
+	// looked identical downstream.
+	//
+	// An unrecognised mode means we don't know which track fits best, not that
+	// music is unwanted. Fall back to the whole library and let the mood scoring
+	// below pick. Only a genuinely empty library yields null now.
+	let candidates = getTracksForMode(mode);
+	if (candidates.length === 0) {
+		candidates = getAllTracks();
+		if (candidates.length === 0) return null;
+		console.warn(
+			'[music] No tracks tagged for mode "%s" — falling back to the full library (%d tracks). '
+			+ 'Pass the edit plan\'s resolved mode rather than the requested one to get a better match.',
+			mode, candidates.length,
+		);
+	}
 
 	// If mood hint provided, prefer tracks matching that mood
 	if (moodHint) {

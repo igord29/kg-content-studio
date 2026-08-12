@@ -65,3 +65,5 @@ src/agent/translate.js
 
 # FFmpeg local cache (preprocess intermediate files)
 .ffmpeg-cache/
+
+.deploy-stamps/

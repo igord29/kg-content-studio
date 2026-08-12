@@ -9,7 +9,7 @@ import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { videoDirectorPrompt } from './video-director-prompt';
 import { getVideoMetadata, type CatalogEntry } from './google-drive';
-import { loadExistingCatalog } from './cataloger';
+import { loadExistingCatalog, hydrateCatalogFromDrive } from './cataloger';
 import { formatSegmentTimelineForPrompt } from './scene-analyzer';
 import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
 import type { VideoUsageSummary } from './usage-tracker';
@@ -63,6 +63,9 @@ async function generateEditPlan(
 	logger: PipelineLogger,
 	usageSummary?: VideoUsageSummary[],
 ): Promise<Record<string, unknown>> {
+	// Cover the path where auto-process is invoked outside the agent handler.
+	// Idempotent — a no-op if the handler already hydrated this process.
+	try { await hydrateCatalogFromDrive(); } catch { /* fall back to whatever is local */ }
 	const catalog = loadExistingCatalog();
 	const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
 

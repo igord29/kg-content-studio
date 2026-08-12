@@ -41,6 +41,7 @@ import {
 	catalogSingleVideo,
 	getCatalogSummary,
 	loadExistingCatalog,
+	hydrateCatalogFromDrive,
 	updateCatalogEntry,
 	startBackgroundCatalog,
 	getCatalogJobStatus,
@@ -279,6 +280,22 @@ const agent = createAgent('video-editor', {
 	handler: async (ctx, input) => {
 		const task = input.task || 'legacy';
 		ctx.logger.info('[video-editor] Task: %s', task);
+
+		// Restore the enriched catalog from Drive if this container came up without
+		// it. loadExistingCatalog() is synchronous and used in 24 places, so it
+		// cannot download; this is the one awaited chokepoint that covers them all.
+		// No-op after the first call. Without it, every Agentuity redeploy silently
+		// reverts the library to the un-enriched bundled seed.
+		try {
+			const hydrated = await hydrateCatalogFromDrive();
+			if (hydrated.restored) {
+				ctx.logger.info('[video-editor] Catalog restored from Drive: %d entries', hydrated.count);
+			} else if (hydrated.source === 'seed') {
+				ctx.logger.warn('[video-editor] Running on the BUNDLED SEED catalog — no enrichment loaded.');
+			}
+		} catch (err) {
+			ctx.logger.warn('[video-editor] Catalog hydration failed (continuing): %s', String(err));
+		}
 
 		// --- Direct data tasks (no AI needed) ---
 

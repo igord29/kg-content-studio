@@ -23,6 +23,7 @@ import {
 	listVideoFiles,
 	getVideoMetadata,
 	saveCatalog,
+	fetchLatestCatalogFromDrive,
 	type VideoFile,
 	type CatalogEntry,
 } from './google-drive';
@@ -866,6 +867,76 @@ async function scoreVideoTimestamps(
 }
 
 // --- Resume/Skip Logic ---
+
+/** Set once per process so we only ever hit Drive on a cold start. */
+let catalogHydrated = false;
+
+/**
+ * Restore the runtime catalog from Drive when the local copy is missing.
+ *
+ * MUST be awaited once before anything calls loadExistingCatalog(), which is
+ * synchronous (24 call sites) and cannot itself download. Cheap and idempotent:
+ * after the first successful run it is a no-op for the life of the process.
+ *
+ * The failure this prevents: PERSISTENT_DIR falls back to process.cwd() when
+ * /data is not mounted, and on Agentuity Cloud there is no volume to mount, so
+ * the enriched catalog ALWAYS sits on an ephemeral filesystem. Every redeploy
+ * wipes it, loadExistingCatalog() finds nothing, and quietly returns the bundled
+ * 247-entry seed with none of the timestamp scores. Nothing errors. The editor
+ * just goes back to guessing where the good moments are.
+ */
+export async function hydrateCatalogFromDrive(force = false): Promise<{
+	restored: boolean;
+	count: number;
+	source: 'local' | 'drive' | 'seed' | 'skipped';
+}> {
+	if (catalogHydrated && !force) return { restored: false, count: 0, source: 'skipped' };
+
+	// A healthy local file means nothing to do.
+	if (!force && fs.existsSync(CATALOG_RESULTS_PATH)) {
+		try {
+			const existing = JSON.parse(fs.readFileSync(CATALOG_RESULTS_PATH, 'utf-8')) as CatalogEntry[];
+			if (Array.isArray(existing) && existing.length > 0) {
+				catalogHydrated = true;
+				return { restored: false, count: existing.length, source: 'local' };
+			}
+		} catch { /* fall through and re-fetch */ }
+	}
+
+	// Loud, because running on an ephemeral filesystem is the root cause of the
+	// silent-revert failure and the operator should see it in the logs.
+	if (!fs.existsSync('/data')) {
+		console.warn(
+			'[cataloger] /data is NOT mounted — the catalog is being written to an EPHEMERAL filesystem (%s). '
+			+ 'On Agentuity Cloud this is expected and unavoidable, which makes the Drive copy the ONLY '
+			+ 'durable store: every redeploy discards local catalog enrichment.',
+			PERSISTENT_DIR,
+		);
+	}
+
+	const restored = await fetchLatestCatalogFromDrive();
+	if (!restored || restored.catalog.length === 0) {
+		catalogHydrated = true;
+		console.warn('[cataloger] Could not restore catalog from Drive — falling back to the bundled seed. '
+			+ 'If you have run a backfill, its results are NOT loaded.');
+		return { restored: false, count: 0, source: 'seed' };
+	}
+
+	try {
+		fs.mkdirSync(path.dirname(CATALOG_RESULTS_PATH), { recursive: true });
+		fs.writeFileSync(CATALOG_RESULTS_PATH, JSON.stringify(restored.catalog, null, 2), 'utf-8');
+		console.log('[cataloger] Catalog restored from Drive (%s) -> %s (%d entries)',
+			restored.fileName, CATALOG_RESULTS_PATH, restored.catalog.length);
+	} catch (err) {
+		// Even if the cache write fails, the data is in Drive and the next call
+		// will retry. Don't mark hydrated so we try again.
+		console.warn('[cataloger] Restored from Drive but could not cache locally:', (err as Error).message);
+		return { restored: true, count: restored.catalog.length, source: 'drive' };
+	}
+
+	catalogHydrated = true;
+	return { restored: true, count: restored.catalog.length, source: 'drive' };
+}
 
 /**
  * Load existing catalog from local file if it exists,

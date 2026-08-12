@@ -503,6 +503,73 @@ export async function saveCatalog(catalog: CatalogEntry[], parentFolderId?: stri
 }
 
 /**
+ * Fetch the most recently saved catalog back OUT of Google Drive.
+ *
+ * saveCatalog() has always uploaded a dated copy to Drive, but nothing ever
+ * read it back — loadExistingCatalog() checked only the local file and then
+ * fell through to the bundled catalog-seed.json. We deploy to Agentuity Cloud,
+ * whose containers have no attachable volume, so PERSISTENT_DIR always resolves
+ * to process.cwd() on an ephemeral filesystem. A redeploy silently reverts the
+ * whole library to the un-enriched seed. The log line even reads normally
+ * ("Loaded 247 entries from bundled catalog seed"), so a day of backfill can
+ * disappear with no visible error.
+ *
+ * Note saveCatalog uses files.create, so each save writes a NEW dated file
+ * rather than overwriting. We therefore sort by createdTime and take the
+ * newest, not the first match on the name.
+ */
+export async function fetchLatestCatalogFromDrive(
+  parentFolderId?: string,
+): Promise<{ catalog: CatalogEntry[]; fileName: string } | null> {
+  const root = parentFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+  if (!root) {
+    console.warn('[google-drive] No GOOGLE_DRIVE_FOLDER_ID — cannot restore catalog from Drive');
+    return null;
+  }
+
+  try {
+    const drive = getDrive();
+    const list = await drive.files.list({
+      q: `'${root}' in parents and name contains 'video-catalog-' and trashed = false`,
+      orderBy: 'createdTime desc',
+      pageSize: 5,
+      fields: 'files(id, name, createdTime, size)',
+    });
+
+    const files = list.data.files || [];
+    if (files.length === 0) {
+      console.log('[google-drive] No video-catalog-*.json found in Drive');
+      return null;
+    }
+
+    // Take the newest that actually parses — a save interrupted mid-upload can
+    // leave a truncated file, and silently loading a half-catalog is worse than
+    // falling back to the seed.
+    for (const f of files) {
+      if (!f.id) continue;
+      try {
+        const res = await drive.files.get(
+          { fileId: f.id, alt: 'media' },
+          { responseType: 'text' },
+        );
+        const parsed = JSON.parse(String(res.data)) as CatalogEntry[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log(`[google-drive] Restored ${parsed.length} catalog entries from Drive: ${f.name}`);
+          return { catalog: parsed, fileName: f.name || f.id };
+        }
+        console.warn(`[google-drive] ${f.name} parsed but was empty — trying the next newest`);
+      } catch (err) {
+        console.warn(`[google-drive] ${f.name} unreadable (${(err as Error).message}) — trying the next newest`);
+      }
+    }
+    return null;
+  } catch (err) {
+    console.warn('[google-drive] Catalog restore from Drive failed:', (err as Error).message);
+    return null;
+  }
+}
+
+/**
  * Organize videos based on a confirmed catalog
  * Moves files into the proper folder structure
  */

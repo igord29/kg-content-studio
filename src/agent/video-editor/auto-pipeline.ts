@@ -12,6 +12,7 @@ import { getVideoMetadata, type CatalogEntry } from './google-drive';
 import { loadExistingCatalog, hydrateCatalogFromDrive } from './cataloger';
 import { formatSegmentTimelineForPrompt } from './scene-analyzer';
 import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
+import { runRenderGate, type GateResult } from './render-gate';
 import type { VideoUsageSummary } from './usage-tracker';
 import { selectTrack, shouldAddMusic } from './music';
 import { supabaseAdmin } from '../../lib/supabase';
@@ -429,6 +430,7 @@ export async function runAutoPipeline(
 	let lastReview: VideoReview | undefined;
 	let lastDownloadUrl: string | undefined;
 	let lastRenderId = '';
+	let lastGate: GateResult | null = null;
 
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		logger.info('[auto-pipeline] === Attempt %d/%d ===', attempt, maxAttempts);
@@ -456,7 +458,27 @@ export async function runAutoPipeline(
 			lastRenderId = renderId;
 			lastDownloadUrl = downloadUrl;
 
-			// Step 3: Grade with gpt-5-mini vision
+			// Step 3a: Deterministic gate BEFORE the vision model.
+			// Measures what a language model looking at stills cannot observe:
+			// clipping, loudness, frozen frames, black holes, truncation.
+			let gate: GateResult | null = null;
+			try {
+				const plannedDuration = typeof currentPlan!.totalDuration === 'number'
+					? currentPlan!.totalDuration as number
+					: undefined;
+				gate = await runRenderGate(downloadUrl, { expectedDurationSec: plannedDuration });
+				lastGate = gate;
+				if (gate.inconclusive) {
+					logger.warn('[auto-pipeline] Render gate inconclusive — FFmpeg could not analyse the render.');
+				} else {
+					logger.info('[auto-pipeline] %s', gate.summary);
+				}
+			} catch (err) {
+				// Never let the gate itself break a render.
+				logger.warn('[auto-pipeline] Render gate errored (continuing): %s', String(err));
+			}
+
+			// Step 3b: Grade with gpt-5-mini vision
 			logger.info('[auto-pipeline] Grading render with gpt-5-mini vision...');
 			const review = await reviewRenderedVideo(downloadUrl, currentPlan!, editMode, platform);
 			lastReview = review;
@@ -464,8 +486,16 @@ export async function runAutoPipeline(
 			logger.info('[auto-pipeline] Score: %d/10 (storytelling=%d, pacing=%d, platform=%d) — %d issues',
 				review.overallScore, review.storytellingScore, review.pacingScore, review.platformFitScore, review.issues.length);
 
-			// Step 4: Check if score meets threshold
-			if (review.overallScore >= minScore) {
+			// Step 4: Check if score meets threshold.
+			// A MEASURED failure blocks the pass regardless of what the model
+			// scored — a clipping, truncated or frozen render is broken output,
+			// not a near-miss, and the model cannot see any of those.
+			if (gate && !gate.passed) {
+				logger.warn(
+					'[auto-pipeline] Render gate FAILED (%s) — not publishing despite score %d/10. Revising.',
+					gate.failures.map(f => f.name).join(', '), review.overallScore,
+				);
+			} else if (review.overallScore >= minScore) {
 				logger.info('[auto-pipeline] Score %d >= %d — passing! Saving to Supabase...', review.overallScore, minScore);
 
 				const { supabaseId, publicUrl } = await saveToSupabase(
@@ -505,7 +535,28 @@ export async function runAutoPipeline(
 		}
 	}
 
-	// Max attempts reached — save best effort to Supabase anyway
+	// Max attempts reached. Best effort gets saved — but a render that failed a
+	// MEASURED check does not. This path used to write success: true whatever
+	// the state of the file, so a clipping or truncated video was published as a
+	// finished asset and the operator had no signal anything was wrong.
+	if (lastGate && !lastGate.passed) {
+		logger.error(
+			'[auto-pipeline] Max attempts reached AND the render gate failed (%s). Refusing to publish.',
+			lastGate.failures.map(f => `${f.name}: ${f.measured} (expected ${f.expected})`).join('; '),
+		);
+		return {
+			success: false,
+			renderId: lastRenderId,
+			downloadUrl: lastDownloadUrl,
+			score: lastReview?.overallScore,
+			attempts: maxAttempts,
+			review: lastReview,
+			error:
+				'Render failed measured quality checks: '
+				+ lastGate.failures.map(f => `${f.name} (${f.measured}, expected ${f.expected})`).join('; '),
+		};
+	}
+
 	logger.warn('[auto-pipeline] Max attempts reached. Saving best result (score=%d)...', lastReview?.overallScore);
 
 	if (lastDownloadUrl && lastReview) {

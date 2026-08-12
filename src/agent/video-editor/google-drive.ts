@@ -11,6 +11,33 @@ import { drive_v3, auth as googleAuth } from '@googleapis/drive';
 import * as path from 'path';
 import * as fs from 'fs';
 
+/**
+ * Where durable state (the enriched catalog) should live.
+ *
+ * Previously hardcoded to `/data`, which only works if a volume happens to be
+ * mounted at exactly that path. Railway injects RAILWAY_VOLUME_MOUNT_PATH when
+ * a volume is attached, so honour that first and the mount point no longer has
+ * to match a magic string. Falls back to /data (for an explicitly-placed
+ * volume), then to the working directory.
+ *
+ * IMPORTANT: the cwd fallback is NOT durable. A container filesystem is
+ * discarded on every redeploy, which silently reverts the catalog to the
+ * bundled 247-entry seed. hydrateCatalogFromDrive() in cataloger.ts is the
+ * backstop for that; attaching a volume is the real fix.
+ */
+export function resolvePersistentDir(): string {
+	const mounted = process.env.RAILWAY_VOLUME_MOUNT_PATH;
+	if (mounted && fs.existsSync(mounted)) return mounted;
+	if (fs.existsSync('/data')) return '/data';
+	return process.cwd();
+}
+
+/** True when state is landing on storage that a redeploy will throw away. */
+export function isPersistentStorageEphemeral(): boolean {
+	const mounted = process.env.RAILWAY_VOLUME_MOUNT_PATH;
+	return !(mounted && fs.existsSync(mounted)) && !fs.existsSync('/data');
+}
+
 // --- Auth Setup ---
 
 /**
@@ -457,9 +484,7 @@ export async function generateBlankCatalog(folderId?: string): Promise<CatalogEn
  */
 export async function saveCatalog(catalog: CatalogEntry[], parentFolderId?: string): Promise<string> {
   const catalogJson = JSON.stringify(catalog, null, 2);
-  // Use persistent volume (/data) on Railway, fall back to cwd for local dev
-  const persistDir = fs.existsSync('/data') ? '/data' : process.cwd();
-  const localPath = path.join(persistDir, 'catalog-results.json');
+  const localPath = path.join(resolvePersistentDir(), 'catalog-results.json');
   
   // Always save locally first as a fallback
   try {

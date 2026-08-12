@@ -24,6 +24,8 @@ import {
 	getVideoMetadata,
 	saveCatalog,
 	fetchLatestCatalogFromDrive,
+	resolvePersistentDir,
+	isPersistentStorageEphemeral,
 	type VideoFile,
 	type CatalogEntry,
 } from './google-drive';
@@ -32,8 +34,8 @@ import catalogSeedData from './catalog-seed.json';
 // --- Constants ---
 
 const TEMP_DIR = path.join(process.cwd(), '.temp-cataloger');
-// Use persistent volume (/data) on Railway, fall back to cwd for local dev
-const PERSISTENT_DIR = fs.existsSync('/data') ? '/data' : process.cwd();
+// Honours RAILWAY_VOLUME_MOUNT_PATH, then /data, then cwd. See resolvePersistentDir.
+const PERSISTENT_DIR = resolvePersistentDir();
 const CATALOG_RESULTS_PATH = path.join(PERSISTENT_DIR, 'catalog-results.json');
 
 const BATCH_SIZE = 5;               // Smaller batches -- each video is heavier now
@@ -911,11 +913,12 @@ export async function hydrateCatalogFromDrive(force = false): Promise<{
 
 	// Loud, because running on an ephemeral filesystem is the root cause of the
 	// silent-revert failure and the operator should see it in the logs.
-	if (!fs.existsSync('/data')) {
+	if (isPersistentStorageEphemeral()) {
 		console.warn(
-			'[cataloger] /data is NOT mounted — the catalog is being written to an EPHEMERAL filesystem (%s), '
+			'[cataloger] No volume is mounted — the catalog is being written to an EPHEMERAL filesystem (%s), '
 			+ 'so every redeploy discards local catalog enrichment and the Drive copy is the only durable store. '
-			+ 'Attach a volume at /data on the host (Railway: Service -> Settings -> Volumes) to fix this properly.',
+			+ 'Fix properly by attaching a volume to the Railway service (Settings -> Volumes); '
+			+ 'RAILWAY_VOLUME_MOUNT_PATH is then picked up automatically, whatever mount path you choose.',
 			PERSISTENT_DIR,
 		);
 	}

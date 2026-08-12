@@ -560,6 +560,13 @@ export function generateNamedSegments(
 	sceneAnalysis: SceneAnalysis,
 	catalogActivity: string,
 	catalogContentType: string,
+	/**
+	 * Dense contact-sheet timeline, when the cataloger has one. Its frames are
+	 * the highest-resolution timestamp source available (20-30 across the whole
+	 * clip) and folding them in is what stops static-camera sports footage from
+	 * collapsing to a single segment. Optional so existing callers still work.
+	 */
+	visualTimeline?: { frames?: Array<{ timestamp: number }> },
 ): NamedSegment[] {
 	const { duration, sceneChanges, sceneDescriptions } = sceneAnalysis;
 
@@ -571,10 +578,14 @@ export function generateNamedSegments(
 	// For tennis / sports footage, FFmpeg alone produces 0-2 boundaries across 3 minutes,
 	// collapsing the whole video to one giant segment. Merging in the GPT-4o timestamps
 	// gives 10-20 real segments with meaningful cut-safety metadata.
+	//    - Contact-sheet visual timeline (densest source; 20-30 frames per clip)
 	const ffmpegTimestamps = sceneChanges.map(sc => sc.timestamp);
 	const visionTimestamps = (sceneDescriptions || []).map(d => d.timestamp);
-	const sortedTimestamps = [...new Set([...ffmpegTimestamps, ...visionTimestamps])]
-		.filter(t => t > 0 && t < duration)
+	const contactSheetTimestamps = (visualTimeline?.frames || []).map(f => f.timestamp);
+	const sortedTimestamps = [
+		...new Set([...ffmpegTimestamps, ...visionTimestamps, ...contactSheetTimestamps]),
+	]
+		.filter(t => Number.isFinite(t) && t > 0 && t < duration)
 		.sort((a, b) => a - b);
 
 	const boundaries = [0, ...sortedTimestamps, duration];

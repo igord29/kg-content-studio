@@ -792,9 +792,16 @@ export async function submitRemotionRenderDirect(
 			src: s3Info.s3Url,
 			length: clip.duration || 5,
 			trimStart: clip.trimStart || 0,
-			zoom: (clip as any).zoom || framing.zoom,
-			cropX: (clip as any).cropX || framing.cropX,
-			cropY: (clip as any).cropY || framing.cropY,
+			// ?? not || : cropX/cropY are 0-100 percentages where 0 is a REAL
+			// value (hard left / top of frame). With || an explicit 0 was falsy
+			// and got silently replaced by the content-type default of 50, so a
+			// clip deliberately framed on the left edge rendered dead centre.
+			// zoom keeps a positivity guard instead — 0 would render nothing.
+			zoom: typeof (clip as any).zoom === 'number' && (clip as any).zoom > 0
+				? (clip as any).zoom
+				: framing.zoom,
+			cropX: (clip as any).cropX ?? framing.cropX,
+			cropY: (clip as any).cropY ?? framing.cropY,
 		};
 	});
 

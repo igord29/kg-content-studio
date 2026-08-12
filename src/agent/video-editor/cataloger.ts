@@ -426,27 +426,7 @@ async function analyzeVideoFrames(
 			}
 		}
 
-		// Step 7c: Generate named segments (pure computation, no API calls)
-		if (sceneAnalysisResult && sceneAnalysisResult.duration > 0) {
-			try {
-				const { generateNamedSegments } = await import('./scene-analyzer');
-				const segments = generateNamedSegments(
-					sceneAnalysisResult as any,
-					analysis.activity || '',
-					mapContentType(analysis.contentType),
-				);
-				if (segments.length > 0) {
-					(sceneAnalysisResult as any).namedSegments = segments;
-					const actionSegs = segments.filter(s => s.type === 'action').length;
-					const dialogueSegs = segments.filter(s => s.type === 'dialogue').length;
-					console.log(`[cataloger] Named segments: ${segments.length} segments (${actionSegs} action, ${dialogueSegs} dialogue), full timeline coverage`);
-				}
-			} catch (err) {
-				console.warn(`[cataloger] Named segments skipped for ${video.name}: ${err}`);
-			}
-		}
-
-		// Step 7d: Timestamp-aware action scoring
+		// Step 7c: Timestamp-aware action scoring
 		let timestampScores: CatalogEntry['timestampScores'] | undefined;
 		try {
 			timestampScores = await scoreVideoTimestamps(videoPath, video.id, duration);
@@ -455,10 +435,18 @@ async function analyzeVideoFrames(
 			console.warn(`[cataloger] Timestamp scoring skipped for ${video.name}: ${err}`);
 		}
 
-		// Step 7e: Visual timeline via contact sheet (dense, cheap, high-coverage)
+		// Step 7d: Visual timeline via contact sheet (dense, cheap, high-coverage)
 		// Generates a single contact sheet image with 20-30 thumbnails, then sends
 		// it to GPT-4o-mini in ONE call — 10x cheaper than individual frame scoring
 		// while providing 3-5x denser temporal coverage.
+		//
+		// ORDERING: this MUST run before named segments below. It used to run
+		// after, so the segment boundaries were built from sceneDescriptions
+		// alone. For static-camera sports footage FFmpeg scene detection finds
+		// 0-2 boundaries across three minutes, which collapses the whole video
+		// into one giant segment and gives the editor nothing to cut on. The
+		// contact sheet is the densest timestamp source we have and was being
+		// computed 30 lines too late to be used.
 		let visualTimeline: CatalogEntry['visualTimeline'] | undefined;
 		try {
 			const { generateContactSheet, cleanupContactSheet } = await import('./contact-sheet');
@@ -476,6 +464,30 @@ async function analyzeVideoFrames(
 			cleanupContactSheet(contactSheet);
 		} catch (err) {
 			console.warn(`[cataloger] Visual timeline skipped for ${video.name}: ${err}`);
+		}
+
+		// Step 7e: Generate named segments (pure computation, no API calls).
+		// Runs LAST of the analysis steps so it can consume every timestamp
+		// source above — scene changes, scene descriptions AND the dense visual
+		// timeline.
+		if (sceneAnalysisResult && sceneAnalysisResult.duration > 0) {
+			try {
+				const { generateNamedSegments } = await import('./scene-analyzer');
+				const segments = generateNamedSegments(
+					sceneAnalysisResult as any,
+					analysis.activity || '',
+					mapContentType(analysis.contentType),
+					visualTimeline,
+				);
+				if (segments.length > 0) {
+					(sceneAnalysisResult as any).namedSegments = segments;
+					const actionSegs = segments.filter(s => s.type === 'action').length;
+					const dialogueSegs = segments.filter(s => s.type === 'dialogue').length;
+					console.log(`[cataloger] Named segments: ${segments.length} segments (${actionSegs} action, ${dialogueSegs} dialogue), full timeline coverage`);
+				}
+			} catch (err) {
+				console.warn(`[cataloger] Named segments skipped for ${video.name}: ${err}`);
+			}
 		}
 
 		// Step 8: Clean up temp files
@@ -701,6 +713,34 @@ Return ONLY a JSON array, one object per frame in the order provided:
 
 No markdown, no explanation, just the JSON array.`;
 
+/** Sampling bounds for timestamp scoring. */
+const SCORING_TARGET_FRAMES = 20;   // aim for this many samples per clip
+const SCORING_MAX_FRAMES = 26;      // hard cap — each frame is a vision API cost
+const SCORING_MIN_INTERVAL = 2;     // don't score near-identical frames
+const SCORING_MAX_INTERVAL = 15;    // don't leave huge blind gaps on long clips
+
+/**
+ * Pick a sampling interval scaled to clip length.
+ *
+ * A flat 10s grid sampled proportionally to duration, which is backwards: a
+ * 30s clip got 2 samples (the editor then picks a 4s cut from a 30s clip
+ * knowing almost nothing about it), while a 180s clip got 18. Aim for a roughly
+ * constant number of samples instead, bounded at both ends so short clips are
+ * not oversampled into near-duplicate frames and long clips stay affordable.
+ */
+export function chooseInterval(duration: number): number {
+	if (!Number.isFinite(duration) || duration <= 0) return 10;
+
+	let interval = duration / SCORING_TARGET_FRAMES;
+	interval = Math.max(SCORING_MIN_INTERVAL, Math.min(interval, SCORING_MAX_INTERVAL));
+
+	// Enforce the cost ceiling on long clips, where the max-interval clamp alone
+	// would still ask for more frames than we want to pay for.
+	if (duration / interval > SCORING_MAX_FRAMES) interval = duration / SCORING_MAX_FRAMES;
+
+	return Math.round(interval * 10) / 10;
+}
+
 /**
  * Score video timestamps for action quality using GPT-4o vision.
  * Extracts a frame every intervalSeconds, batches them, and scores.
@@ -710,7 +750,7 @@ async function scoreVideoTimestamps(
 	videoPath: string,
 	fileId: string,
 	duration: number,
-	intervalSeconds: number = 10,
+	intervalSeconds?: number,
 	batchSize: number = 6,
 ): Promise<CatalogEntry['timestampScores']> {
 	if (duration < 15) {
@@ -718,13 +758,15 @@ async function scoreVideoTimestamps(
 		return undefined;
 	}
 
+	const interval = intervalSeconds ?? chooseInterval(duration);
+
 	const tempDir = ensureTempDir();
 	const timestamps: number[] = [];
-	for (let t = intervalSeconds; t < duration - 2; t += intervalSeconds) {
-		timestamps.push(t);
+	for (let t = interval; t < duration - 2; t += interval) {
+		timestamps.push(Math.round(t * 10) / 10);
 	}
 
-	console.log(`[cataloger] Scoring ${timestamps.length} timestamps (every ${intervalSeconds}s)...`);
+	console.log(`[cataloger] Scoring ${timestamps.length} timestamps (every ${interval}s across ${Math.round(duration)}s)...`);
 
 	const allScores: NonNullable<CatalogEntry['timestampScores']> = [];
 

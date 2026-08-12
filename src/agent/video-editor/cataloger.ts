@@ -879,11 +879,17 @@ let catalogHydrated = false;
  * after the first successful run it is a no-op for the life of the process.
  *
  * The failure this prevents: PERSISTENT_DIR falls back to process.cwd() when
- * /data is not mounted, and on Agentuity Cloud there is no volume to mount, so
- * the enriched catalog ALWAYS sits on an ephemeral filesystem. Every redeploy
- * wipes it, loadExistingCatalog() finds nothing, and quietly returns the bundled
- * 247-entry seed with none of the timestamp scores. Nothing errors. The editor
- * just goes back to guessing where the good moments are.
+ * /data is not mounted, and a container filesystem does not survive a redeploy.
+ * No volume is declared anywhere in this repo, so unless one was attached from
+ * the host's dashboard the enriched catalog is sitting on disposable storage.
+ * Every redeploy wipes it, loadExistingCatalog() finds nothing, and quietly
+ * returns the bundled 247-entry seed with none of the timestamp scores. Nothing
+ * errors. The editor just goes back to guessing where the good moments are.
+ *
+ * Attaching a volume at /data is the better primary fix and is worth doing.
+ * This restore path is the belt to that pair of braces: it also covers a fresh
+ * container, a host migration, and a volume that was never mounted in the first
+ * place -- none of which announce themselves.
  */
 export async function hydrateCatalogFromDrive(force = false): Promise<{
 	restored: boolean;
@@ -907,9 +913,9 @@ export async function hydrateCatalogFromDrive(force = false): Promise<{
 	// silent-revert failure and the operator should see it in the logs.
 	if (!fs.existsSync('/data')) {
 		console.warn(
-			'[cataloger] /data is NOT mounted — the catalog is being written to an EPHEMERAL filesystem (%s). '
-			+ 'On Agentuity Cloud this is expected and unavoidable, which makes the Drive copy the ONLY '
-			+ 'durable store: every redeploy discards local catalog enrichment.',
+			'[cataloger] /data is NOT mounted — the catalog is being written to an EPHEMERAL filesystem (%s), '
+			+ 'so every redeploy discards local catalog enrichment and the Drive copy is the only durable store. '
+			+ 'Attach a volume at /data on the host (Railway: Service -> Settings -> Volumes) to fix this properly.',
 			PERSISTENT_DIR,
 		);
 	}

@@ -507,12 +507,12 @@ export async function saveCatalog(catalog: CatalogEntry[], parentFolderId?: stri
  *
  * saveCatalog() has always uploaded a dated copy to Drive, but nothing ever
  * read it back — loadExistingCatalog() checked only the local file and then
- * fell through to the bundled catalog-seed.json. We deploy to Agentuity Cloud,
- * whose containers have no attachable volume, so PERSISTENT_DIR always resolves
- * to process.cwd() on an ephemeral filesystem. A redeploy silently reverts the
- * whole library to the un-enriched seed. The log line even reads normally
- * ("Loaded 247 entries from bundled catalog seed"), so a day of backfill can
- * disappear with no visible error.
+ * fell through to the bundled catalog-seed.json. PERSISTENT_DIR resolves to
+ * /data only if that path exists, and no volume is declared anywhere in this
+ * repo, so it lands on the container's disposable filesystem. A redeploy
+ * silently reverts the whole library to the un-enriched seed. The log line even
+ * reads normally ("Loaded 247 entries from bundled catalog seed"), so a day of
+ * backfill can disappear with no visible error.
  *
  * Note saveCatalog uses files.create, so each save writes a NEW dated file
  * rather than overwriting. We therefore sort by createdTime and take the

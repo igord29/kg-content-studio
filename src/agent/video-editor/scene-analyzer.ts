@@ -555,25 +555,33 @@ function generatePositionalLabel(
  *
  * This is a pure function — no API calls, no file I/O.
  * Runs on existing scene analysis data from the catalog.
+ *
+ * `extraBoundaries` is an optional list of additional timestamps to seed
+ * boundaries from (e.g. the dense contact-sheet visual timeline). Optional and
+ * defaulted to undefined so existing 3-argument callers are unaffected.
  */
 export function generateNamedSegments(
 	sceneAnalysis: SceneAnalysis,
 	catalogActivity: string,
 	catalogContentType: string,
+	extraBoundaries?: number[],
 ): NamedSegment[] {
 	const { duration, sceneChanges, sceneDescriptions } = sceneAnalysis;
 
 	if (duration <= 0) return [];
 
-	// 1. Build boundaries from BOTH sources:
+	// 1. Build boundaries from ALL available sources:
 	//    - FFmpeg scene-detection timestamps (pixel-diff based; sparse for static-camera sports)
 	//    - GPT-4o visual timeline description timestamps (semantic; reliable for action content)
+	//    - extraBoundaries: caller-supplied timestamps, e.g. the dense contact-sheet
+	//      visual timeline (~30 frames), which is by far the richest source
 	// For tennis / sports footage, FFmpeg alone produces 0-2 boundaries across 3 minutes,
 	// collapsing the whole video to one giant segment. Merging in the GPT-4o timestamps
 	// gives 10-20 real segments with meaningful cut-safety metadata.
 	const ffmpegTimestamps = sceneChanges.map(sc => sc.timestamp);
 	const visionTimestamps = (sceneDescriptions || []).map(d => d.timestamp);
-	const sortedTimestamps = [...new Set([...ffmpegTimestamps, ...visionTimestamps])]
+	const extraTimestamps = extraBoundaries || [];
+	const sortedTimestamps = [...new Set([...ffmpegTimestamps, ...visionTimestamps, ...extraTimestamps])]
 		.filter(t => t > 0 && t < duration)
 		.sort((a, b) => a - b);
 

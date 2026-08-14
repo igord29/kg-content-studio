@@ -349,29 +349,37 @@ function roundEven(n) {
   return r % 2 === 0 ? r : r + 1;
 }
 
-function buildSmartCropFilter(sourceW, sourceH, targetAspect, subjectPosition) {
+function buildSmartCropFilter(sourceW, sourceH, targetAspect, subjectPosition, extraZoom) {
   const target = ASPECT_DIMS[targetAspect];
   if (!target) return '';
   const targetW = target.w, targetH = target.h;
 
+  // extraZoom > 1 punches IN past the aspect-fill minimum. Without it this
+  // function only ever did a fill-crop, which is why wide shots shipped with
+  // the subject at ~1% of frame. Capped at 2.5x — past that a 1080-wide crop
+  // from 2K source visibly softens.
+  const z = (typeof extraZoom === 'number' && isFinite(extraZoom) && extraZoom > 1)
+    ? Math.min(extraZoom, 3.2)
+    : 1.0;
+
   const sourceAR = sourceW / sourceH;
   const targetAR = targetW / targetH;
 
-  if (Math.abs(sourceAR - targetAR) < 0.01) {
+  if (Math.abs(sourceAR - targetAR) < 0.01 && z === 1.0) {
     return 'scale=' + targetW + ':' + targetH;
   }
 
   const key = (subjectPosition ? String(subjectPosition).toLowerCase().trim() : 'center');
   const pos = SUBJECT_POSITION_MAP[key] || SUBJECT_POSITION_MAP['center'];
 
-  let scaleW, scaleH;
-  if (sourceAR > targetAR) {
-    scaleH = targetH;
-    scaleW = roundEven(sourceW * (targetH / sourceH));
-  } else {
-    scaleW = targetW;
-    scaleH = roundEven(sourceH * (targetW / sourceW));
-  }
+  // Minimum magnification that covers the target on both axes, times the punch-in.
+  const kFill = Math.max(targetW / sourceW, targetH / sourceH);
+  const k = kFill * z;
+  let scaleW = roundEven(sourceW * k);
+  let scaleH = roundEven(sourceH * k);
+  // Never end up smaller than the crop window (guards float/rounding drift).
+  if (scaleW < targetW) scaleW = targetW;
+  if (scaleH < targetH) scaleH = targetH;
 
   let cropX = roundEven(pos.x * scaleW - targetW / 2);
   let cropY = roundEven(pos.y * scaleH - targetH / 2);
@@ -388,7 +396,7 @@ function buildVideoFilter(config) {
 
   // Framing: smart crop to target aspect when inputs are present, else plain scale cap.
   const cropFilter = (config.targetAspect && config.sourceWidth && config.sourceHeight)
-    ? buildSmartCropFilter(config.sourceWidth, config.sourceHeight, config.targetAspect, config.subjectPosition)
+    ? buildSmartCropFilter(config.sourceWidth, config.sourceHeight, config.targetAspect, config.subjectPosition, config.extraZoom)
     : '';
   if (cropFilter) {
     filters.push(cropFilter);
@@ -417,14 +425,34 @@ function buildVideoFilter(config) {
   return filters.join(',');
 }
 
-function buildAudioFilter(speed) {
-  if (speed === 1.0) return '';
+function buildAudioFilter(speed, outputDuration) {
   const filters = [];
-  let remaining = speed;
-  // Chain atempo filters to stay within 0.5-2.0 range
-  while (remaining > 2.0) { filters.push('atempo=2.0'); remaining /= 2.0; }
-  while (remaining < 0.5) { filters.push('atempo=0.5'); remaining /= 0.5; }
-  filters.push('atempo=' + remaining.toFixed(4));
+
+  // Speed compensation — unchanged, just no longer short-circuits the whole
+  // chain at 1.0x, because normalization now always has to run.
+  if (speed !== 1.0) {
+    let remaining = speed;
+    // Chain atempo filters to stay within 0.5-2.0 range
+    while (remaining > 2.0) { filters.push('atempo=2.0'); remaining /= 2.0; }
+    while (remaining < 0.5) { filters.push('atempo=0.5'); remaining /= 0.5; }
+    filters.push('atempo=' + remaining.toFixed(4));
+  }
+
+  // Loudness + true-peak ceiling. Delivered renders were measured clipping at
+  // +0.1 to +0.2 dBFS with a 3.4 LU spread between videos. Per-clip target is
+  // -16 so the music sum downstream lands near -14 without going over.
+  filters.push('loudnorm=I=-16:TP=-1.5:LRA=11');
+  // loudnorm resamples internally to 192k; without this the AAC encoder
+  // negotiates a pointless 48k -> 96k upsample.
+  filters.push('aresample=48000');
+
+  // De-click the splice points. Every clip boundary is a hard audio cut.
+  const FADE = 0.015;
+  if (typeof outputDuration === 'number' && isFinite(outputDuration) && outputDuration > FADE * 3) {
+    filters.push('afade=t=in:st=0:d=' + FADE);
+    filters.push('afade=t=out:st=' + (outputDuration - FADE).toFixed(3) + ':d=' + FADE);
+  }
+
   return filters.join(',');
 }
 
@@ -481,7 +509,18 @@ exports.handler = async function(event) {
     console.log('[preprocessor] Downloaded: ' + (inputSize / (1024 * 1024)).toFixed(1) + 'MB in ' + dlTime + 's');
 
     // Step 2: Build FFmpeg command
-    const speed = event.speed ?? 1.0;
+    // ?? does not catch 0, and `while (remaining < 0.5) remaining /= 0.5` never
+    // terminates at 0 — it spins until the 300s Lambda timeout while the filter
+    // array grows unbounded. Negative speed diverges the same way. speed comes
+    // straight from the director's plan and nothing validates it.
+    const rawSpeed = Number(event.speed);
+    const speed = Number.isFinite(rawSpeed) && rawSpeed >= 0.25 && rawSpeed <= 4.0 ? rawSpeed : 1.0;
+    if (speed !== (event.speed ?? 1.0)) {
+      console.warn('[preprocessor] Invalid speed ' + JSON.stringify(event.speed) + ' -> clamped to ' + speed);
+    }
+    // Hoisted from Step 5 — the audio fade-out needs to know how long the
+    // output actually is before the filter chain is built.
+    const effectiveDuration = event.duration / speed;
     const videoFilter = buildVideoFilter({
       stabilize: event.stabilize,
       sharpen: event.sharpen,
@@ -490,8 +529,9 @@ exports.handler = async function(event) {
       subjectPosition: event.subjectPosition,
       sourceWidth: event.sourceWidth,
       sourceHeight: event.sourceHeight,
+      extraZoom: event.extraZoom,
     });
-    const audioFilter = buildAudioFilter(speed);
+    const audioFilter = buildAudioFilter(speed, effectiveDuration);
 
     const ffmpegArgs = [
       ffmpegPath, '-y',
@@ -553,7 +593,6 @@ exports.handler = async function(event) {
     try { unlinkSync(inputPath); } catch(e) {}
     try { unlinkSync(outputPath); } catch(e) {}
 
-    const effectiveDuration = event.duration / speed;
     const totalTime = Date.now() - startTime;
     const outputS3Url = 'https://' + event.bucketName + '.s3.' + event.region + '.amazonaws.com/' + event.outputS3Key;
 

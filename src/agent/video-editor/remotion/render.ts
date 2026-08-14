@@ -29,6 +29,14 @@ import {
 	buildClipDiagnostics,
 } from '../../../lib/render-logger';
 
+// --- Music ---
+
+// Per-mode music gain. Our Story is voice-led; Showcase is music-led.
+const MODE_MUSIC_VOLUME: Record<string, number> = {
+	game_day: 0.35, our_story: 0.20, quick_hit: 0.30, showcase: 0.40,
+};
+const musicVolumeFor = (mode: string) => MODE_MUSIC_VOLUME[mode] ?? 0.28;
+
 // --- Types ---
 
 export interface RenderResult {
@@ -569,7 +577,7 @@ export function buildRemotionProps(
 		fps,
 		textOverlays,
 		musicSrc: config.musicUrl || undefined,
-		musicVolume: 0.3,
+		musicVolume: musicVolumeFor(config.mode),
 		bgColor: remotionMode.bgColor,
 		transitionDurationFrames,
 	};
@@ -792,9 +800,12 @@ export async function submitRemotionRenderDirect(
 			src: s3Info.s3Url,
 			length: clip.duration || 5,
 			trimStart: clip.trimStart || 0,
-			zoom: (clip as any).zoom || framing.zoom,
-			cropX: (clip as any).cropX || framing.cropX,
-			cropY: (clip as any).cropY || framing.cropY,
+			// ?? not || — cropX/cropY are 0-100 percentages and zoom is a multiplier,
+			// so an explicit 0 (e.g. cropX: 0 = hard left edge) is a VALID value that
+			// || silently discarded in favour of the content-type default.
+			zoom: (clip as any).zoom ?? framing.zoom,
+			cropX: (clip as any).cropX ?? framing.cropX,
+			cropY: (clip as any).cropY ?? framing.cropY,
 		};
 	});
 
@@ -821,7 +832,7 @@ export async function submitRemotionRenderDirect(
 		fps,
 		textOverlays,
 		musicSrc: config.musicUrl || undefined,
-		musicVolume: 0.3,
+		musicVolume: musicVolumeFor(config.mode),
 		bgColor: remotionMode.bgColor,
 		transitionDurationFrames,
 	};
@@ -1017,7 +1028,7 @@ export async function submitRemotionRenderPreprocessed(
 		fps,
 		textOverlays,
 		musicSrc: config.musicUrl || undefined,
-		musicVolume: 0.3,
+		musicVolume: musicVolumeFor(config.mode),
 		bgColor: remotionMode.bgColor,
 		transitionDurationFrames,
 	};
@@ -1277,7 +1288,7 @@ export async function submitRemotionRenderWithPreprocessing(
 			fps,
 			textOverlays,
 			musicSrc: config.musicUrl || undefined,
-			musicVolume: 0.3,
+			musicVolume: musicVolumeFor(config.mode),
 			bgColor: remotionMode.bgColor,
 			transitionDurationFrames,
 		};

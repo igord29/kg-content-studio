@@ -196,27 +196,59 @@ function buildVideoFilter(config: {
 }
 
 /**
- * Build the audio filter chain for speed adjustment.
- * atempo preserves pitch while changing speed.
- * FFmpeg requires atempo values between 0.5 and 100.0.
+ * Build the audio filter chain for a clip. Three jobs, applied in order:
+ *
+ *   1. atempo — pitch-preserving speed compensation. FFmpeg caps each atempo
+ *      stage at 0.5-2.0, so extreme speeds chain multiple stages.
+ *   2. loudnorm — every delivered video measured as CLIPPING (true peak +0.1
+ *      to +0.2 dBFS) with 3.4 LU of loudness spread between videos. Normalizing
+ *      per clip to -16 LUFS with a -1.5 dBTP ceiling fixes both and leaves
+ *      headroom for the music sum; the final mix is normalized to -14 downstream.
+ *   3. afade — 15ms ramps at both ends kill the clicks at clip splice points.
+ *
+ * The aresample after loudnorm is NOT optional: loudnorm's single-pass dynamic
+ * mode resamples internally to 192kHz, and since the AAC encoder tops out at
+ * 96kHz, ffmpeg silently negotiates the output up to 96kHz. Pinning to 48k also
+ * standardizes every clip to one rate, so the downstream concat/mix never has to
+ * reconcile a 44.1k clip against a 48k one.
+ *
+ * @param outputDuration - Clip length AFTER the speed change. The fades run
+ *   downstream of atempo, so they sit on the output timeline, not the source one.
+ * @returns The filter chain, or '' if there is genuinely nothing to do
+ *   (caller omits -af entirely in that case).
  */
-function buildAudioFilter(speed: number): string {
-	if (speed === 1.0) return '';
-
+function buildAudioFilter(speed: number, outputDuration?: number): string {
 	const filters: string[] = [];
-	let remaining = speed;
 
-	while (remaining > 2.0) {
-		filters.push('atempo=2.0');
-		remaining /= 2.0;
-	}
-	while (remaining < 0.5) {
-		filters.push('atempo=0.5');
-		remaining /= 0.5;
-	}
-	filters.push(`atempo=${remaining.toFixed(4)}`);
+	// Speed compensation — unchanged; simply skipped at 1.0x instead of
+	// short-circuiting the whole chain, since normalization now always applies.
+	if (speed !== 1.0) {
+		let remaining = speed;
 
-	return filters.join(',');
+		while (remaining > 2.0) {
+			filters.push('atempo=2.0');
+			remaining /= 2.0;
+		}
+		while (remaining < 0.5) {
+			filters.push('atempo=0.5');
+			remaining /= 0.5;
+		}
+		filters.push(`atempo=${remaining.toFixed(4)}`);
+	}
+
+	// Loudness + true-peak ceiling, then undo loudnorm's internal upsample.
+	filters.push('loudnorm=I=-16:TP=-1.5:LRA=11');
+	filters.push('aresample=48000');
+
+	// De-click the splice points. Skipped on clips too short to hold both
+	// ramps, where a fade would eat a meaningful share of the clip.
+	const FADE = 0.015;
+	if (typeof outputDuration === 'number' && Number.isFinite(outputDuration) && outputDuration > FADE * 3) {
+		filters.push(`afade=t=in:st=0:d=${FADE}`);
+		filters.push(`afade=t=out:st=${(outputDuration - FADE).toFixed(3)}:d=${FADE}`);
+	}
+
+	return filters.length > 0 ? filters.join(',') : '';
 }
 
 // --- Determine FFmpeg binary path ---
@@ -249,7 +281,9 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 
 	console.log('[preprocessor] Processing clip: input=%s, trim=%ds, dur=%ds, speed=%sx, stabilize=%s, sharpen=%s',
 		event.inputS3Key, event.trimStart, event.duration,
-		event.speed ?? 1.0, event.stabilize !== false ? 'yes' : 'no', event.sharpen !== false ? 'yes' : 'no');
+		// stabilize must mirror the `=== true` gate in buildVideoFilter — `!== false`
+		// logged "yes" for undefined, i.e. every clip that never opted in.
+		event.speed ?? 1.0, event.stabilize === true ? 'yes' : 'no', event.sharpen !== false ? 'yes' : 'no');
 
 	const inputPath = '/tmp/input.mp4';
 	const outputPath = '/tmp/output.mp4';
@@ -276,6 +310,9 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 
 		// Step 2: Build FFmpeg command
 		const speed = event.speed ?? 1.0;
+		// Output length after the speed change — the audio fades are placed on this
+		// timeline (they run after atempo), and Step 5 reports the same number.
+		const effectiveDuration = event.duration / speed;
 		const videoFilter = buildVideoFilter({
 			stabilize: event.stabilize,
 			sharpen: event.sharpen,
@@ -286,7 +323,7 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 			sourceHeight: event.sourceHeight,
 			extraZoom: event.extraZoom,
 		});
-		const audioFilter = buildAudioFilter(speed);
+		const audioFilter = buildAudioFilter(speed, effectiveDuration);
 
 		const ffmpegArgs: string[] = [
 			ffmpegPath, '-y',
@@ -350,9 +387,8 @@ export async function handler(event: PreprocessRequest): Promise<PreprocessResul
 		try { unlinkSync(inputPath); } catch { /* best effort */ }
 		try { unlinkSync(outputPath); } catch { /* best effort */ }
 
-		// Calculate effective duration after speed change
-		const effectiveDuration = event.duration / speed;
-
+		// effectiveDuration was computed back in Step 2 — the audio fades are
+		// positioned against it, so both must reference the same value.
 		const totalTime = Date.now() - startTime;
 		const outputS3Url = `https://${event.bucketName}.s3.${event.region}.amazonaws.com/${event.outputS3Key}`;
 

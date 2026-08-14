@@ -219,8 +219,14 @@ Be specific and actionable. Reference exact timestamps. Every issue must include
  */
 async function downloadAndExtractFrames(
 	downloadUrl: string,
-	frameCount: number = 8,
-): Promise<{ videoPath: string; framePaths: string[]; duration: number }> {
+	frameCount: number = 20,
+): Promise<{
+	videoPath: string;
+	framePaths: string[];
+	duration: number;
+	frameTimes: number[];
+	transcript: string | null;
+}> {
 	const fs = await import('fs');
 	const path = await import('path');
 	const { execSync } = await import('child_process');
@@ -285,18 +291,18 @@ async function downloadAndExtractFrames(
 	}
 
 	if (duration <= 0) {
-		return { videoPath, framePaths: [], duration: 0 };
+		return { videoPath, framePaths: [], duration: 0, frameTimes: [], transcript: null };
 	}
 
-	// Extract frames evenly spaced across the video
-	// Use more frames than cataloging (8-10) for finer pacing analysis
-	const framePaths: string[] = [];
-	for (let i = 0; i < frameCount; i++) {
-		// Space frames from 5% to 95% of the video
-		const pct = 0.05 + (0.90 * i) / (frameCount - 1);
-		const timestamp = duration * pct;
-		const framePath = path.join(tempDir, `${videoId}_review_${i}.jpg`);
+	// Choose WHICH moments to look at (see selectShotTimestamps) rather than
+	// sampling on a fixed grid.
+	const timestamps = selectShotTimestamps(videoPath, duration, frameCount, execSync);
 
+	const framePaths: string[] = [];
+	const frameTimes: number[] = [];
+	for (let i = 0; i < timestamps.length; i++) {
+		const timestamp = timestamps[i]!;
+		const framePath = path.join(tempDir, `${videoId}_review_${i}.jpg`);
 		try {
 			execSync(
 				`ffmpeg -y -ss ${timestamp.toFixed(2)} -i "${videoPath}" -frames:v 1 -q:v 2 "${framePath}"`,
@@ -304,13 +310,162 @@ async function downloadAndExtractFrames(
 			);
 			if (fs.existsSync(framePath)) {
 				framePaths.push(framePath);
+				frameTimes.push(timestamp);
 			}
 		} catch {
 			// Skip failed frames
 		}
 	}
 
-	return { videoPath, framePaths, duration };
+	// Pull the audio too. Reviewing an edit from stills alone means the model
+	// cannot hear a soundbite get cut off mid-word, cannot tell whether music
+	// is fighting a coach's voice, and cannot know if the video is silent.
+	const transcript = await transcribeForReview(videoPath, tempDir, videoId, execSync);
+
+	return { videoPath, framePaths, duration, frameTimes, transcript };
+}
+
+/**
+ * Pick one representative moment per shot, instead of sampling on a fixed grid.
+ *
+ * The old sampler took 8 frames evenly from 5% to 95%. On a 45s video that is
+ * one frame every ~5.6s, so a 1-second clip is invisible to it and a whole shot
+ * can go unseen — while it was being asked to judge whether "any clips are too
+ * short" and whether "the rhythm varies."
+ *
+ * Sampling AT the detected cut is also wrong: on a dissolve that frame is a
+ * blend of two shots and represents neither. So we detect cuts, derive shot
+ * boundaries, and sample the MIDDLE of each shot. Long shots get extra samples
+ * so a 10-second hold isn't represented by the same single frame as a 2-second
+ * beat. Falls back to the uniform grid if scene detection finds nothing.
+ */
+function selectShotTimestamps(
+	videoPath: string,
+	duration: number,
+	budget: number,
+	execSync: typeof import('child_process').execSync,
+): number[] {
+	const uniform = (n: number) =>
+		Array.from({ length: n }, (_, i) => duration * (0.05 + (0.90 * i) / Math.max(1, n - 1)));
+
+	let cuts: number[] = [];
+	try {
+		const out = execSync(
+			`ffmpeg -hide_banner -nostats -i "${videoPath}" -vf "select='gt(scene,0.18)',metadata=print:file=-" -an -f null - 2>&1`,
+			{ timeout: 120000, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+		);
+		cuts = [...String(out).matchAll(/pts_time:([\d.]+)/g)]
+			.map((m) => parseFloat(m[1]!))
+			.filter((n) => Number.isFinite(n) && n > 0.2 && n < duration - 0.2);
+	} catch {
+		return uniform(budget);
+	}
+
+	// Dissolves and strobing fire several detections in a row — collapse them.
+	const boundaries = cuts.filter((c, i) => i === 0 || c - cuts[i - 1]! > 0.4);
+	if (boundaries.length === 0) return uniform(budget);
+
+	const edges = [0, ...boundaries, duration];
+	const shots: Array<{ start: number; end: number }> = [];
+	for (let i = 1; i < edges.length; i++) {
+		const start = edges[i - 1]!, end = edges[i]!;
+		if (end - start > 0.35) shots.push({ start, end });
+	}
+	if (shots.length === 0) return uniform(budget);
+
+	// One frame at the middle of every shot — the shot's most representative moment.
+	const picks = shots.map((s) => (s.start + s.end) / 2);
+
+	// Spend any leftover budget on the longest shots, which carry the most
+	// unseen material. Round-robin so we widen coverage before deepening it.
+	let remaining = budget - picks.length;
+	if (remaining > 0) {
+		const byLength = [...shots].sort((a, b) => (b.end - b.start) - (a.end - a.start));
+		let pass = 1;
+		while (remaining > 0 && pass < 6) {
+			for (const s of byLength) {
+				if (remaining <= 0) break;
+				const len = s.end - s.start;
+				if (len < (pass + 1) * 1.5) continue;   // only subdivide shots long enough to hide something
+				const step = len / (pass + 2);
+				picks.push(s.start + step * pass);
+				remaining--;
+			}
+			pass++;
+		}
+	}
+
+	// ALWAYS anchor the opening and the ending, whatever the shot structure.
+	// On a 4-shot video the first shot's midpoint can be 9s in, which would mean
+	// reviewing a social video without ever seeing its hook — the single most
+	// important 2 seconds in the whole edit. Same at the tail for the CTA.
+	picks.push(Math.min(0.3, duration * 0.02));
+	picks.push(Math.max(duration - 0.4, duration * 0.98));
+
+	const sorted = [...new Set(picks.map((t) => Math.round(t * 10) / 10))]
+		.filter((t) => t >= 0 && t <= duration)
+		.sort((a, b) => a - b);
+	if (sorted.length <= budget) return sorted;
+
+	// Too many shots for the budget — even-sample, always keeping first and last.
+	const out: number[] = [];
+	const denom = Math.max(1, budget - 1);   // budget of 1 would divide by zero
+	for (let i = 0; i < budget; i++) {
+		out.push(sorted[Math.round((i * (sorted.length - 1)) / denom)]!);
+	}
+	return [...new Set(out)];
+}
+
+/**
+ * Transcribe the render's audio so the reviewer can judge sound as well as
+ * picture. Best-effort: any failure returns null and the review proceeds on
+ * frames alone, exactly as before.
+ */
+async function transcribeForReview(
+	videoPath: string,
+	tempDir: string,
+	videoId: string,
+	execSync: typeof import('child_process').execSync,
+): Promise<string | null> {
+	const fs = await import('fs');
+	const path = await import('path');
+	const audioPath = path.join(tempDir, `${videoId}.mp3`);
+	try {
+		execSync(
+			`ffmpeg -y -loglevel error -i "${videoPath}" -vn -ac 1 -ar 16000 -c:a libmp3lame -q:a 6 "${audioPath}"`,
+			{ timeout: 120000, stdio: 'pipe' },
+		);
+		if (!fs.existsSync(audioPath) || fs.statSync(audioPath).size < 2048) return null;
+
+		// Don't pay for a Whisper call on a silent render — just say so.
+		const vol = String(execSync(
+			`ffmpeg -hide_banner -nostats -i "${audioPath}" -af volumedetect -f null - 2>&1`,
+			{ timeout: 60000, encoding: 'utf8' },
+		));
+		const mean = vol.match(/mean_volume:\s*(-?[\d.]+) dB/);
+		if (mean && parseFloat(mean[1]!) < -46) {
+			return '(no audible speech or music — the render is effectively silent)';
+		}
+
+		const OpenAI = (await import('openai')).default;
+		const client = new OpenAI();
+		const res: any = await client.audio.transcriptions.create({
+			file: fs.createReadStream(audioPath) as any,
+			model: process.env.WHISPER_MODEL || 'whisper-1',
+			response_format: 'verbose_json',
+			timestamp_granularities: ['segment'],
+		});
+		const segs = (res.segments ?? []) as Array<{ start: number; end: number; text: string }>;
+		if (!segs.length) return (res.text ?? '').trim() || null;
+		return segs
+			.map((s) => `[${s.start.toFixed(1)}s-${s.end.toFixed(1)}s] ${(s.text ?? '').trim()}`)
+			.join('\n')
+			.slice(0, 6000);
+	} catch {
+		return null;
+	} finally {
+		try { if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath); } catch { /* best effort */ }
+	}
 }
 
 /**
@@ -343,11 +498,19 @@ export async function reviewRenderedVideo(
 	editPlan: Record<string, unknown> | null,
 	mode: string,
 	platform: string,
+	/**
+	 * Measurements from render-gate.ts. Pass these and the model stops guessing
+	 * at loudness, clipping, frozen frames and cut rhythm — all of which it
+	 * cannot see in stills — and spends its judgement on story and taste, which
+	 * is the only thing it is actually better at than a measurement.
+	 */
+	measured?: Record<string, number | null> | null,
 ): Promise<VideoReview> {
 	const fs = await import('fs');
 
-	// Download and extract frames
-	const { videoPath, framePaths, duration } = await downloadAndExtractFrames(downloadUrl, 8);
+	// Download, pick one representative frame per shot, and pull the audio
+	const { videoPath, framePaths, duration, frameTimes, transcript } =
+		await downloadAndExtractFrames(downloadUrl, 20);
 
 	if (framePaths.length === 0) {
 		await cleanupReviewFiles(videoPath, framePaths);
@@ -367,12 +530,27 @@ export async function reviewRenderedVideo(
 			});
 		}
 
-		// Build frame labels with approximate timestamps
+		// Real timestamps now — each frame is the middle of an actual shot, not a
+		// point on a grid, so "Frame 4 is 1.2s after Frame 3" means a real cut.
 		const frameLabels = framePaths.map((_, i) => {
-			const pct = 0.05 + (0.90 * i) / (framePaths.length - 1);
-			const ts = (duration * pct).toFixed(1);
-			return `Frame ${i + 1}: ~${ts}s into the video`;
+			const ts = (frameTimes[i] ?? 0).toFixed(1);
+			const gap = i > 0 ? ` (${((frameTimes[i] ?? 0) - (frameTimes[i - 1] ?? 0)).toFixed(1)}s after previous)` : '';
+			return `Frame ${i + 1}: ${ts}s${gap}`;
 		}).join('\n');
+
+		const transcriptBlock = transcript
+			? `\n\nAUDIO TRANSCRIPT (what the viewer actually hears):\n${transcript}\n\nUse this to judge whether any soundbite is cut off mid-sentence, whether the words support the pictures, and whether the edit lands on a spoken beat.`
+			: '\n\n(No transcript available for this render — judge picture only, and do not comment on audio.)';
+
+		const measuredBlock = measured
+			? `\n\nALREADY MEASURED — these are facts, not for you to re-estimate:\n`
+				+ Object.entries(measured)
+					.filter(([, v]) => v !== null && v !== undefined)
+					.map(([k, v]) => `  ${k}: ${typeof v === 'number' ? v.toFixed(2) : v}`)
+					.join('\n')
+				+ `\nDo NOT score loudness, clipping, frozen frames or cut-length variation — those are measured above.`
+				+ ` Spend your judgement on story, emotional arc, hook strength and whether this is worth a viewer's attention.`
+			: '';
 
 		// Build the text part with context
 		let editPlanContext = '';
@@ -400,7 +578,9 @@ Compare the rendered result against this intent. Did the edit plan's vision come
 
 ${frameLabels}
 
-Review these frames as the final rendered output that will be published. Evaluate the storytelling, pacing, and platform fit.
+Frames are sampled to cover the edit. Several frames may come from INSIDE the same long shot, so do NOT infer the number of cuts or the shot lengths from the number of frames or the gaps between them — you would conclude the edit is choppier than it is. Judge pacing only from the pacing figures supplied below, if any.
+
+Review this as the final rendered output that will be published. Evaluate the storytelling, pacing, and platform fit.${transcriptBlock}${measuredBlock}
 ${editPlanContext}
 
 Return your review as JSON following the format specified in your instructions.`,

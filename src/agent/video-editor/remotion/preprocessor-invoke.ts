@@ -43,6 +43,8 @@ export interface PreprocessorClipConfig {
 	sourceWidth?: number;        // Display width (after rotation)
 	sourceHeight?: number;       // Display height (after rotation)
 	extraZoom?: number;          // >1.0 tightens framing on subject (content-type driven)
+	subjectFillRatio?: number;   // 0-1 from the cataloger's vision pass — drives extraZoom (see deriveExtraZoom).
+	                             // Not sent to the Lambda; it only ever sees the resolved extraZoom.
 	// Remotion-only metadata — not used by the Lambda; forwarded on the result
 	// so render.ts can feed VideoClip without re-correlating clips from the edit plan.
 	effect?: string;
@@ -203,13 +205,17 @@ async function invokePreprocessorForClip(
 		extraZoom: clip.extraZoom,
 	};
 
-	logger?.info('[preprocessor] Firing async Lambda for %s (trim=%ds, dur=%ds, speed=%sx, stabilize=%s, aspect=%s, subject=%s)...',
+	logger?.info('[preprocessor] Firing async Lambda for %s (trim=%ds, dur=%ds, speed=%sx, stabilize=%s, aspect=%s, subject=%s, fill=%s, zoom=%sx)...',
 		clip.filename || clip.fileId, clip.trimStart, clip.duration,
 		clip.speed ?? 1.0, clip.stabilize === true ? 'yes' : 'no',
 		clip.targetAspect || 'source',
 		// Show explicitly when subjectPosition is unset vs explicitly 'center'
 		// so we can distinguish "lookup failed" from "catalog says center."
-		clip.subjectPosition === undefined ? 'UNSET→center' : clip.subjectPosition);
+		clip.subjectPosition === undefined ? 'UNSET→center' : clip.subjectPosition,
+		// fill drives zoom (see deriveExtraZoom) — log both so an over-zoomed or
+		// under-zoomed clip traces back to the cataloger's fill estimate.
+		typeof clip.subjectFillRatio === 'number' ? clip.subjectFillRatio.toFixed(3) : 'UNSET',
+		(clip.extraZoom ?? 1.0).toFixed(2));
 
 	const lambda = await getLambdaClient(region);
 	const startTime = Date.now();
@@ -359,6 +365,79 @@ const MODE_DEFAULT_EXTRA_ZOOM: Record<string, number> = {
 };
 
 /**
+ * Punch-in should be driven by how small the subject actually is, not by mode.
+ * subjectFillRatio comes from the cataloger's vision pass (0-1).
+ * A kid filling 5% of a wide frame needs a real push; a close-up needs none.
+ * The mode value acts as a floor so each mode keeps its baseline character.
+ */
+/** Empirically the point where a 9:16 crop from 2K source starts to visibly soften. */
+const MAX_DERIVED_ZOOM = 3.0;
+
+function deriveExtraZoom(subjectFillRatio: number | undefined, modeZoom: number): number {
+	if (typeof subjectFillRatio !== 'number' || !Number.isFinite(subjectFillRatio)) return modeZoom;
+	const r = Math.max(0, Math.min(1, subjectFillRatio));
+	// Target ~40% of frame area. Raised from 27% after measuring the actual
+	// degradation: a punch-in ladder on delivered footage stays clean through
+	// 2.2x and is acceptable at 3.0x — and that test punched into the ALREADY
+	// cropped 1080x1920 output. From the 2560x1440 source there is more headroom
+	// again. 27% was leaving the cheapest available quality win unclaimed:
+	// measured median subject size on shipped video was 1.0%-13.4% of frame.
+	// Area scales with zoom^2, so linear zoom is the sqrt of the area ratio.
+	const TARGET_FILL = 0.40;
+	const needed = r > 0.005 ? Math.sqrt(TARGET_FILL / r) : 3.0;
+	return Math.max(modeZoom, Math.min(MAX_DERIVED_ZOOM, needed));
+}
+
+/**
+ * Nudged framings used to make repeated cuts from ONE locked-off wide shot read
+ * as different cameras. Order matters: the first use of a source keeps whatever
+ * the cataloger said, and later uses step through these.
+ */
+const FRAMING_VARIANTS = ['center', 'left', 'right', 'bottom-center', 'top-center'] as const;
+
+/**
+ * Give clips that share a source different framings.
+ *
+ * The library is 247 clips averaging 152 seconds, most of them locked-off wide
+ * shots — 0 clips in the catalog describe a close-up or a reaction. A single
+ * static wide shot is the only coverage available for a whole beat, so when an
+ * edit cuts back to the same source twice it currently shows the identical
+ * framing twice and reads as a mistake.
+ *
+ * Varying the crop window turns one wide master into several apparent shots:
+ * the wide, the punch to the near player, the push toward the coach. This is
+ * the standard documentary answer to thin coverage, and it costs nothing
+ * because the preprocessor is already cropping every clip anyway.
+ *
+ * Deterministic (index-based, no randomness) so the same plan always renders
+ * the same way and a re-render is comparable to the last one.
+ */
+export function diversifyFraming<T extends { fileId?: string; subjectPosition?: string; extraZoom?: number }>(
+	clips: T[],
+): T[] {
+	const seen = new Map<string, number>();
+	return clips.map((clip) => {
+		const id = clip.fileId;
+		if (!id) return clip;
+		const n = seen.get(id) ?? 0;
+		seen.set(id, n + 1);
+		if (n === 0) return clip;   // first use keeps the cataloger's framing
+
+		// Later uses step through variants and tighten slightly, so a repeat is
+		// both differently placed AND differently sized — one alone still reads
+		// as the same shot.
+		const variant = FRAMING_VARIANTS[n % FRAMING_VARIANTS.length]!;
+		const tighten = 1 + Math.min(n, 3) * 0.22;
+		const base = typeof clip.extraZoom === 'number' ? clip.extraZoom : 1.0;
+		return {
+			...clip,
+			subjectPosition: variant,
+			extraZoom: Math.min(MAX_DERIVED_ZOOM, Math.max(base, base * tighten)),
+		};
+	});
+}
+
+/**
  * Build preprocessor clip configs from edit plan clips and raw S3 upload results.
  *
  * Maps each edit plan clip to its S3 key from the raw upload,
@@ -380,7 +459,9 @@ export function buildPreprocessorConfigs(
 		transitionType?: string;
 		transitionDirection?: string;
 		speedKeyframes?: Array<{ at: number; speed: number }>;
-		extraZoom?: number;  // Per-clip override from director; falls back to mode default.
+		extraZoom?: number;  // Per-clip override from director; wins over the derived zoom.
+		subjectFillRatio?: number;  // 0-1 from the cataloger; derives extraZoom when no override.
+		stabilize?: boolean;        // Opt in per-clip; see note above — default stays off.
 	}>,
 	s3Clips: Map<string, S3UploadedClip>,
 	defaultDuration: number = 5,
@@ -388,7 +469,11 @@ export function buildPreprocessorConfigs(
 	mode: string = 'game_day',
 ): PreprocessorClipConfig[] {
 	const modeExtraZoom = MODE_DEFAULT_EXTRA_ZOOM[mode] ?? MODE_DEFAULT_EXTRA_ZOOM['game_day']!;
-	return clips.map((clip) => {
+	// Repeated cuts from one locked-off wide shot get different framings so they
+	// read as different cameras rather than the same shot pasted twice.
+	// Applied BEFORE zoom derivation so a diversified clip's tightened zoom is
+	// treated as an explicit override and survives.
+	return diversifyFraming(clips).map((clip) => {
 		const s3Info = s3Clips.get(clip.fileId);
 		if (!s3Info) {
 			throw new Error(`S3 upload missing for clip ${clip.fileId} — was it uploaded?`);
@@ -402,13 +487,20 @@ export function buildPreprocessorConfigs(
 			duration: clip.duration || defaultDuration,
 			speed: clip.speed,
 			sharpen: true,       // Phone footage benefits from light sharpening.
-			stabilize: false,    // Disabled: deshake on 2K source @ 2048MB Lambda times out.
+			// Default stays OFF (deshake on 2K source @ 2048MB Lambda times out), but
+			// the documented per-clip opt-in is now actually reachable instead of being
+			// overwritten by a hardcoded false.
+			stabilize: clip.stabilize === true,
 			targetAspect,
 			subjectPosition: clip.subjectPosition,
 			sourceWidth: s3Info.width,
 			sourceHeight: s3Info.height,
-			// Tighten framing — per-clip override wins, else mode default.
-			extraZoom: typeof clip.extraZoom === 'number' ? clip.extraZoom : modeExtraZoom,
+			// Tighten framing — explicit per-clip override wins, else derive from how
+			// small the subject actually is, with the mode default as a floor.
+			extraZoom: typeof clip.extraZoom === 'number'
+				? clip.extraZoom
+				: deriveExtraZoom(clip.subjectFillRatio, modeExtraZoom),
+			subjectFillRatio: clip.subjectFillRatio,
 			// Remotion-only metadata forwarded on the preprocess result:
 			effect: clip.effect,
 			filter: clip.filter,

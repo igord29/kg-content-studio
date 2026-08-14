@@ -17,6 +17,23 @@ import type { PipelineInput, StoryArc, HookClip, BodyClips, ClosePlan, StepLogge
 import { EDITOR_PERSONA } from './editor-persona';
 import { priorUsedRegions } from './usage-context';
 
+/**
+ * Render the cataloger's emotional axes for one timestamp.
+ *
+ * emotion/valence/beat are newer than the catalog on disk — entries scored
+ * before they existed simply don't have them. Emit ONLY what's present so a
+ * stale catalog degrades to the old line instead of printing "undefined".
+ * (Typed locally rather than off CatalogEntry so this compiles against both
+ * the pre- and post-backfill catalog shape.)
+ */
+function emotionTags(s: { timestamp: number; emotion?: number; valence?: string; beat?: string }): string {
+	const parts: string[] = [];
+	if (typeof s.emotion === 'number') parts.push(`emotion=${s.emotion}/10`);
+	if (s.valence) parts.push(`valence=${s.valence}`);
+	if (s.beat) parts.push(`beat=${s.beat}`);
+	return parts.length > 0 ? `, ${parts.join(', ')}` : '';
+}
+
 const CLOSE_COMPOSER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
 
@@ -42,6 +59,8 @@ YOUR TOOLKIT FOR CLOSE CLIPS:
   - effect: "zoomOut" (pull back to reveal scale — default for the close clip), "zoomIn" (only for tight emotional moments), null (static)
   - extraZoom: 1.0 (default — community wants context), 0.9 (extra wide for the final landing on venue)
   - transitionType: OMIT for a hard cut into the close (default). Else "fade" (quiet landing), "circleWipe"/"clockWipe" (broadcast close), or "brandBurst" (celebratory/emotional close). Reserve for deliberate effect.
+
+LANDING ON FEELING: when timestamps carry emotion/valence/beat, prefer a beat: "reflection" or beat: "community" candidate with valence: "positive" for the closing beat — the video should land on feeling, not on another action peak. Only fall back to the highest actionQuality timestamp when no such candidate exists.
 
 CROSS-CLIP DEDUP (HARD RULE):
   - DO NOT pick a trimStart inside the hook's range +/- 3s on the same source. Hook fileId/range is in the prompt — keep ≥3s away.
@@ -127,7 +146,7 @@ export async function composeClose(
 		const lines = top10
 			.map(
 				s =>
-					`    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy})`,
+					`    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy}${emotionTags(s)})`,
 			)
 			.join('\n');
 		closeTimestampSection = `\n\nTIMESTAMP ACTION SCORES for close source (anchor close clips within 2s of one of these — never blind-pick):\n${lines}`;

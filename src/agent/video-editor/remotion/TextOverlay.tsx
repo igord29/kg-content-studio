@@ -12,7 +12,37 @@
 
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, spring } from 'remotion';
+// Self-hosted Montserrat. @fontsource ships the actual .woff2 files inside
+// node_modules, so the bundler inlines them and the renderer makes ZERO network
+// requests for type.
+//
+// The obvious alternative, @remotion/google-fonts, fetches from
+// fonts.gstatic.com at render time. Measured here: 45-90 requests per render,
+// and if that host is unreachable the render throws NetworkError and dies —
+// it does not fall back to a system font. On a farm rendering 15 videos a day
+// that is a needless external dependency in the hot path.
+import '@fontsource/montserrat/latin-400.css';
+import '@fontsource/montserrat/latin-500.css';
+import '@fontsource/montserrat/latin-600.css';
+import '@fontsource/montserrat/latin-800.css';
+import '@fontsource/montserrat/latin-900.css';
 import type { TextAnimation } from './types';
+
+/**
+ * Weights imported above are the complete set these styles reference:
+ * 400 our_story, 500/600 showcase, 800 game_day, 900 quick_hit.
+ * If you add a weight to a mode style, add its import too or the browser will
+ * synthesize it and the type will look subtly wrong.
+ */
+const MONTSERRAT = 'Montserrat, sans-serif';
+
+// Platform UI reserves real estate. These are the zones text must stay out of.
+// Measured against a 1080x1920 vertical frame.
+export const SAFE_AREA = {
+	vertical: { top: '11%', bottom: '18%' },   // ~210px top, ~345px bottom
+	square:   { top: '8%',  bottom: '10%' },
+	wide:     { top: '7%',  bottom: '8%' },
+} as const;
 
 interface TextOverlayProps {
 	text: string;
@@ -21,6 +51,7 @@ interface TextOverlayProps {
 	isFirst: boolean;
 	isLast: boolean;
 	animation?: TextAnimation;
+	safeArea?: keyof typeof SAFE_AREA;
 }
 
 const BRAND_GREEN = '#1B4D3E';
@@ -34,7 +65,7 @@ const MODE_DEFAULT_ANIMATION: Record<string, TextAnimation> = {
 	showcase: 'slideUp',
 };
 
-export const TextOverlay: React.FC<TextOverlayProps> = ({ text, mode, position, isFirst, isLast, animation }) => {
+export const TextOverlay: React.FC<TextOverlayProps> = ({ text, mode, position, isFirst, isLast, animation, safeArea = 'vertical' }) => {
 	const frame = useCurrentFrame();
 	const { durationInFrames, fps } = useVideoConfig();
 
@@ -50,9 +81,9 @@ export const TextOverlay: React.FC<TextOverlayProps> = ({ text, mode, position, 
 		right: 0,
 		display: 'flex',
 		justifyContent: 'center',
-		...(position === 'top' ? { top: '8%' } : {}),
+		...(position === 'top' ? { top: SAFE_AREA[safeArea].top } : {}),
 		...(position === 'center' ? { top: '50%', transform: 'translateY(-50%)' } : {}),
-		...(position === 'bottom' ? { bottom: '8%' } : {}),
+		...(position === 'bottom' ? { bottom: SAFE_AREA[safeArea].bottom } : {}),
 	};
 
 	// Mode-specific text styling
@@ -227,11 +258,12 @@ function getTypewriterText(
 
 function getTextStyle(mode: string, isFirst: boolean, isLast: boolean): React.CSSProperties {
 	const baseStyle: React.CSSProperties = {
-		fontFamily: "'Montserrat', sans-serif",
+		fontFamily: MONTSERRAT,
 		color: '#FFFFFF',
 		textAlign: 'center' as const,
 		margin: 0,
-		maxWidth: '85%',
+		maxWidth: '82%',
+		overflowWrap: 'break-word',
 	};
 
 	switch (mode) {

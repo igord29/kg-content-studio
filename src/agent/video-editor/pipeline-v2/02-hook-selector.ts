@@ -20,6 +20,23 @@ import type { PipelineInput, StoryArc, HookClip, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
 import { priorUsedRegions, isTimestampUsed, formatPriorUsage } from './usage-context';
 
+/**
+ * Render the cataloger's emotional axes for one timestamp.
+ *
+ * emotion/valence/beat are newer than the catalog on disk — entries scored
+ * before they existed simply don't have them. Emit ONLY what's present so a
+ * stale catalog degrades to the old line instead of printing "undefined".
+ * (Typed locally rather than off CatalogEntry so this compiles against both
+ * the pre- and post-backfill catalog shape.)
+ */
+function emotionTags(s: { timestamp: number; emotion?: number; valence?: string; beat?: string }): string {
+	const parts: string[] = [];
+	if (typeof s.emotion === 'number') parts.push(`emotion=${s.emotion}/10`);
+	if (s.valence) parts.push(`valence=${s.valence}`);
+	if (s.beat) parts.push(`beat=${s.beat}`);
+	return parts.length > 0 ? `, ${parts.join(', ')}` : '';
+}
+
 const HOOK_SELECTOR_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
 
@@ -47,6 +64,8 @@ PEAK DATA SOURCES (in priority order):
 1. TIMESTAMP ACTION SCORES — if provided, these are GPT-4o-vision-confirmed peak moments with action quality 1-10. Pick the strongest timestamp that is NOT marked as already used in a past render as your T (peak), then apply trimStart = max(0, T - 3). A previously-published hook re-cut from the same timestamp reads as a repost to the audience — only reuse a marked timestamp if every strong peak is marked.
 2. SCENE TIMELINE — if provided, use segment boundaries to find the strongest action region.
 3. NOTABLE MOMENTS — descriptive list; less precise but usable.
+
+EMOTION OUTRANKS ATHLETICS: when timestamps carry emotion (0-10), valence and beat, the strongest hook is the HIGHEST-emotion moment, not the highest actionQuality one — a kid's face, a reaction, a celebration beats a technically clean but emotionless rally every time. Prefer candidates tagged beat: "hook" or beat: "triumph" when any exist, and say in the editNote which emotion/beat you anchored on. Fall back to actionQuality only when no emotion data is present.
 
 If timestamp scores OR scene timeline OR notable moments exist for the setup source, you DO have peak data — do NOT mark the purpose as "estimated."
 
@@ -139,7 +158,7 @@ export async function selectHook(
 		const lines = top10
 			.map(s => {
 				const usedTag = isTimestampUsed(usedRegions, s.timestamp) ? ' [ALREADY USED in a past render]' : '';
-				return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people})${usedTag}`;
+				return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people}${emotionTags(s)})${usedTag}`;
 			})
 			.join('\n');
 		// Best UNUSED peak — code-picked so variety doesn't rely on the model
@@ -184,7 +203,7 @@ Catalog data for the setup source:
 - Notable moments: ${setupCatalog.notableMoments || 'None'}${formatPriorUsage(input, arc.setupSourceId)}
 ${sceneSection}${timestampSection}
 
-Pick the hook clip. Apply the STORY HOOK ARC RULE. If timestamp scores are provided, use the highest-scoring UNUSED timestamp as T (peak) — do NOT mark the hook as "estimated" when peak data exists. Return JSON only.`;
+Pick the hook clip. Apply the STORY HOOK ARC RULE. If timestamp scores are provided, use the strongest UNUSED timestamp as T (peak) — strongest means highest emotion (and beat: "hook"/"triumph") when those fields are present, otherwise highest actionQuality. Do NOT mark the hook as "estimated" when peak data exists. Return JSON only.`;
 
 	const result = await generateText({
 		model: anthropic('claude-sonnet-4-6'),

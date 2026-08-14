@@ -46,6 +46,21 @@ export interface CLCVideoProps {
 		isLast: boolean;
 		animation?: TextAnimation; // entry/exit animation style
 	}>;
+	/**
+	 * 'fill'  — footage full-bleed 9:16 (default; unchanged behaviour)
+	 * 'panel' — footage as a 16:9 panel in a designed frame; typography carries
+	 *           the message. Built for wide, subject-small source footage —
+	 *           see PanelFrame.tsx for why.
+	 */
+	layout?: 'fill' | 'panel';
+	/** Copy for the panel layout. Ignored when layout is 'fill'. */
+	panel?: {
+		headline?: string[];
+		headlineAccent?: string;
+		statLine?: string;
+		subLine?: string;
+		brandLine?: string;
+	};
 	musicSrc?: string | null;
 	musicVolume?: number;
 	bgColor: string;

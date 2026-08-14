@@ -26,8 +26,10 @@
     "@agentuity/workbench": "1.0.64",
     "@ai-sdk/anthropic": "^3.0.64",
     "@ai-sdk/openai": "latest",
+    "@fontsource/montserrat": "^5.3.0",
     "@googleapis/drive": "^20.1.0",
     "@remotion/captions": "4.0.448",
+    "@remotion/google-fonts": "4.0.448",
     "@remotion/lambda": "4.0.448",
     "@remotion/transitions": "4.0.448",
     "@supabase/supabase-js": "^2.97.0",
@@ -51,6 +53,7 @@
   "overrides": {
     "@remotion/lambda": "4.0.448",
     "@remotion/transitions": "4.0.448",
+    "@remotion/google-fonts": "4.0.448",
     "remotion": "4.0.448",
     "@remotion/renderer": "4.0.448",
     "@remotion/bundler": "4.0.448",
@@ -74,6 +77,7 @@
   "resolutions": {
     "@remotion/lambda": "4.0.448",
     "@remotion/transitions": "4.0.448",
+    "@remotion/google-fonts": "4.0.448",
     "remotion": "4.0.448",
     "@remotion/renderer": "4.0.448",
     "@remotion/bundler": "4.0.448",

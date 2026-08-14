@@ -75,7 +75,7 @@ Return JSON in this exact format:
 }
 
 IMPORTANT RULES:
-- Match timestamps to what's burned into each thumbnail. Read the timestamp labels carefully.
+- Report the thumbnails IN ORDER: left-to-right, then top-to-bottom. Return exactly ONE "frames" entry per thumbnail, in that grid order — do not skip, merge, reorder, or invent thumbnails. The caller assigns the true timestamps from grid position, so do not rely on the timestamp labels burned into the images; they are unreliable. Position in the returned array is what matters.
 - Be HONEST. If kids are just standing around, say so. Don't inflate energy.
 - ACTION means actual gameplay, movement, sports activity. Walking between points is NOT action.
 - The video editor needs to know WHERE to cut, so precision matters more than optimism.

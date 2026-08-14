@@ -111,29 +111,60 @@ async function probeSourceDimensions(
 }
 
 /**
- * Build the audio filter chain for speed adjustment.
- * atempo preserves pitch while changing speed.
- * FFmpeg requires atempo values between 0.5 and 100.0,
- * so we chain multiple filters for extreme values.
+ * Build the audio filter chain for a clip. Three jobs, applied in order:
+ *
+ *   1. atempo — pitch-preserving speed compensation. FFmpeg requires each
+ *      atempo stage to sit in 0.5–2.0, so extreme speeds chain multiple stages.
+ *   2. loudnorm — delivered videos measured as clipping (true peak +0.1 to
+ *      +0.2 dBFS) with 3.4 LU of spread between them. Per-clip normalization to
+ *      -16 LUFS with a -1.5 dBTP ceiling fixes both and leaves headroom for the
+ *      music sum; the final mix is normalized to -14 downstream.
+ *   3. afade — 15ms ramps at both ends kill the clicks at clip splice points.
+ *
+ * The aresample after loudnorm is NOT optional: loudnorm's single-pass dynamic
+ * mode resamples internally to 192kHz, and since the AAC encoder tops out at
+ * 96kHz, ffmpeg silently negotiates the output up to 96kHz without it. Pinning to
+ * 48k also standardizes every clip to one rate for the downstream concat/mix.
+ *
+ * TWIN NOTE: keep in sync with buildAudioFilter() in remotion/preprocessor-lambda.ts.
+ *
+ * @param outputDuration - Clip length AFTER the speed change. The fades run
+ *   downstream of atempo, so they sit on the output timeline, not the source one.
+ * @returns The filter chain, or '' if there is genuinely nothing to do.
  */
-function buildAudioFilter(speed: number): string {
-	if (speed === 1.0) return '';
-
+function buildAudioFilter(speed: number, outputDuration?: number): string {
 	const filters: string[] = [];
-	let remaining = speed;
 
-	// Chain atempo filters to stay within 0.5–2.0 range
-	while (remaining > 2.0) {
-		filters.push('atempo=2.0');
-		remaining /= 2.0;
-	}
-	while (remaining < 0.5) {
-		filters.push('atempo=0.5');
-		remaining /= 0.5;
-	}
-	filters.push(`atempo=${remaining.toFixed(4)}`);
+	// Speed compensation — unchanged; simply skipped at 1.0x instead of
+	// short-circuiting the whole chain, since normalization now always applies.
+	if (speed !== 1.0) {
+		let remaining = speed;
 
-	return filters.join(',');
+		// Chain atempo filters to stay within 0.5–2.0 range
+		while (remaining > 2.0) {
+			filters.push('atempo=2.0');
+			remaining /= 2.0;
+		}
+		while (remaining < 0.5) {
+			filters.push('atempo=0.5');
+			remaining /= 0.5;
+		}
+		filters.push(`atempo=${remaining.toFixed(4)}`);
+	}
+
+	// Loudness + true-peak ceiling, then undo loudnorm's internal upsample.
+	filters.push('loudnorm=I=-16:TP=-1.5:LRA=11');
+	filters.push('aresample=48000');
+
+	// De-click the splice points. Skipped on clips too short to hold both
+	// ramps, where a fade would eat a meaningful share of the clip.
+	const FADE = 0.015;
+	if (typeof outputDuration === 'number' && Number.isFinite(outputDuration) && outputDuration > FADE * 3) {
+		filters.push(`afade=t=in:st=0:d=${FADE}`);
+		filters.push(`afade=t=out:st=${(outputDuration - FADE).toFixed(3)}:d=${FADE}`);
+	}
+
+	return filters.length > 0 ? filters.join(',') : '';
 }
 
 // --- Core Pre-Processing ---
@@ -202,8 +233,13 @@ export async function preprocessClip(
 	}
 
 	// 2. Build FFmpeg command
+	// Output length after the speed change — the audio fades are placed on this
+	// timeline (they run after atempo), and step 5 reports the same number.
+	// speed=0.5 means 4s of source becomes 8s of output (slow-mo)
+	// speed=2.0 means 4s of source becomes 2s of output (fast)
+	const effectiveDuration = config.duration / speed;
 	const videoFilter = buildVideoFilter(effectiveConfig);
-	const audioFilter = buildAudioFilter(speed);
+	const audioFilter = buildAudioFilter(speed, effectiveDuration);
 
 	const ffmpegArgs: string[] = [
 		'ffmpeg', '-y',
@@ -246,10 +282,8 @@ export async function preprocessClip(
 		if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
 	} catch { /* best effort */ }
 
-	// 5. Calculate effective duration
-	// speed=0.5 means 4s of source becomes 8s of output (slow-mo)
-	// speed=2.0 means 4s of source becomes 2s of output (fast)
-	const effectiveDuration = config.duration / speed;
+	// 5. effectiveDuration was computed in step 2 — the audio fades are
+	// positioned against it, so both must reference the same value.
 
 	// Verify processed file exists and get its size
 	if (!fs.existsSync(processedPath)) {

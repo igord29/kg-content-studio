@@ -23,6 +23,23 @@ import type { PipelineInput, StoryArc, HookClip, BodyClips, ClipPick, StepLogger
 import { EDITOR_PERSONA } from './editor-persona';
 import { priorUsedRegions, isTimestampUsed, formatPriorUsage } from './usage-context';
 
+/**
+ * Render the cataloger's emotional axes for one timestamp.
+ *
+ * emotion/valence/beat are newer than the catalog on disk — entries scored
+ * before they existed simply don't have them. Emit ONLY what's present so a
+ * stale catalog degrades to the old line instead of printing "undefined".
+ * (Typed locally rather than off CatalogEntry so this compiles against both
+ * the pre- and post-backfill catalog shape.)
+ */
+function emotionTags(s: { timestamp: number; emotion?: number; valence?: string; beat?: string }): string {
+	const parts: string[] = [];
+	if (typeof s.emotion === 'number') parts.push(`emotion=${s.emotion}/10`);
+	if (s.valence) parts.push(`valence=${s.valence}`);
+	if (s.beat) parts.push(`beat=${s.beat}`);
+	return parts.length > 0 ? `, ${parts.join(', ')}` : '';
+}
+
 const BODY_COMPOSER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
 
@@ -42,6 +59,9 @@ For each clip, your trimStart MUST sit within 2 seconds of a TIMESTAMP ACTION SC
 
 PEOPLE-PRESENCE FILTER (non-negotiable for showcase + climax):
 Showcase and climax clips MUST anchor on a timestamp where people>=4. Establish clips may use lower-people timestamps (wide venue shots are OK if intentional), but showcase/climax need a player visibly in frame doing the action. If no people>=4 timestamps exist for a beat's planned source, EITHER pick a different source OR demote the beat to establish.
+
+EMOTIONAL ESCALATION RULE (applies whenever timestamps carry emotion/valence/beat):
+The body must ESCALATE — each successive clip should anchor on a timestamp with equal or higher emotion than the one before it, with the climax landing on the highest available. Prefer candidates whose beat matches the role the story planner assigned to that slot (setup/struggle → establish, struggle/turn → showcase, turn/triumph → climax, community → community). HARD RULE: at least ONE body clip must anchor on a timestamp with emotion >= 6 if any candidate offers it.
 
 SLOW-MO WINDOWING RULE (non-negotiable):
 If you use slow-mo (speed < 1.0) on any clip:
@@ -183,7 +203,7 @@ export async function composeBody(
 				const lines = top15
 					.map(s => {
 						const usedTag = isTimestampUsed(usedRegions, s.timestamp) ? ' [ALREADY USED in a past render]' : '';
-						return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy})${usedTag}`;
+						return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy}${emotionTags(s)})${usedTag}`;
 					})
 					.join('\n');
 				timestampSection = `\n  ✅ TIMESTAMP ACTION SCORES (pick trim points NEAR these — never blind-pick a timestamp; prefer ones NOT marked [ALREADY USED]):\n${lines}`;

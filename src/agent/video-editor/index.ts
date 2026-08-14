@@ -41,6 +41,7 @@ import {
 	catalogSingleVideo,
 	getCatalogSummary,
 	loadExistingCatalog,
+	hydrateCatalogFromDrive,
 	updateCatalogEntry,
 	startBackgroundCatalog,
 	getCatalogJobStatus,
@@ -280,6 +281,22 @@ const agent = createAgent('video-editor', {
 		const task = input.task || 'legacy';
 		ctx.logger.info('[video-editor] Task: %s', task);
 
+		// Restore the enriched catalog from Drive if this container came up without
+		// it. loadExistingCatalog() is synchronous and used in 24 places, so it
+		// cannot download; this is the one awaited chokepoint that covers them all.
+		// No-op after the first call. Without it, a Railway redeploy silently
+		// reverts the library to the un-enriched bundled seed.
+		try {
+			const hydrated = await hydrateCatalogFromDrive();
+			if (hydrated.restored) {
+				ctx.logger.info('[video-editor] Catalog restored from Drive: %d entries', hydrated.count);
+			} else if (hydrated.source === 'seed') {
+				ctx.logger.warn('[video-editor] Running on the BUNDLED SEED catalog — no enrichment loaded.');
+			}
+		} catch (err) {
+			ctx.logger.warn('[video-editor] Catalog hydration failed (continuing): %s', String(err));
+		}
+
 		// --- Direct data tasks (no AI needed) ---
 
 		if (task === 'test-connection') {
@@ -505,9 +522,13 @@ const agent = createAgent('video-editor', {
 					// Enrich with catalog-derived hints:
 					//   - contentType: for smart framing heuristics
 					//   - subjectPosition: closest-timestamp lookup, drives Lambda smart crop
+					//   - subjectFillRatio: same timestamp, drives the punch-in decision
+					//     (remotion/preprocessor-invoke.ts deriveExtraZoom). Without it every
+					//     clip fell back to the flat per-mode zoom and wide frames stayed wide.
 					const catEntry = catalogForValidation.find(e => e.fileId === clip.fileId);
 					const scores = catEntry?.timestampScores;
 					let subjectPosition: string | undefined;
+					let subjectFillRatio: number | undefined;
 					if (scores && scores.length > 0) {
 						const trimStart = clip.trimStart || 0;
 						let best = scores[0]!;
@@ -520,13 +541,17 @@ const agent = createAgent('video-editor', {
 							}
 						}
 						subjectPosition = best.subjectPosition || undefined;
+						subjectFillRatio = typeof best.subjectFillRatio === 'number'
+							? best.subjectFillRatio
+							: undefined;
 						ctx.logger.info(
-							'[render] Clip %s trimStart=%ds → closest catalog ts=%ds (delta=%ds) → subjectPosition=%s',
+							'[render] Clip %s trimStart=%ds → closest catalog ts=%ds (delta=%ds) → subjectPosition=%s fill=%s',
 							clip.fileId.slice(0, 8),
 							clip.trimStart || 0,
 							best.timestamp,
 							bestDelta,
 							subjectPosition || 'UNSET',
+							typeof subjectFillRatio === 'number' ? subjectFillRatio.toFixed(2) : 'UNSET',
 						);
 					} else {
 						ctx.logger.warn(
@@ -538,6 +563,7 @@ const agent = createAgent('video-editor', {
 						...clip,
 						contentType: catEntry?.contentType || 'unknown',
 						subjectPosition,
+						subjectFillRatio,
 					};
 				});
 
@@ -555,18 +581,36 @@ const agent = createAgent('video-editor', {
 				const editPlanMusicDirection = (editPlanObj.musicDirection as string) || undefined;
 				const customMusicUrl = (input as any).musicUrl as string | undefined;
 
+				// `editMode` is whatever the caller sent and is very often the literal
+				// 'auto'. getTracksForMode('auto') returns [] → selectTrack returns null
+				// → music silently skipped. The edit plan always resolves a concrete
+				// mode, so select against that and keep editMode only as a fallback.
+				const planMode = editPlanObj.mode;
+				const musicMode = typeof planMode === 'string' && planMode ? planMode : editMode;
+
 				let musicUrl: string | null = musicDisabled ? null : editPlanMusicUrl;
+				let musicVolume: number | undefined;
 				if (!musicDisabled && !musicUrl && customMusicUrl) {
 					musicUrl = customMusicUrl;
 				}
 				if (!musicDisabled && !musicUrl && shouldAddMusic(platform, editPlanMusicTier)) {
-					const selection = selectTrack(editMode, editPlanMusicDirection);
+					const selection = selectTrack(musicMode, editPlanMusicDirection);
 					if (selection) {
 						musicUrl = selection.track.url;
-						ctx.logger.info('[render-remotion] Auto-selected music: "%s" by %s',
-							selection.track.title, selection.track.artist);
+						musicVolume = selection.volume;
+						ctx.logger.info('[render-remotion] Auto-selected music: "%s" by %s (mode=%s, volume=%s)',
+							selection.track.title, selection.track.artist, musicMode, selection.volume);
+					} else {
+						ctx.logger.info('[render-remotion] No music track found for mode=%s, skipping', musicMode);
 					}
 				}
+				// TODO: the Remotion render config (`submitRemotionRenderWithPreprocessing`
+				// / `submitRemotionRenderDirect` in src/agent/video-editor/remotion/render.ts)
+				// has no `musicVolume` field — it derives the volume itself from
+				// `musicVolumeFor(config.mode)`. Add `musicVolume?: number` to those config
+				// types and prefer it over musicVolumeFor() so the per-mode volume the music
+				// library picked (logged above) is the one that actually renders.
+				void musicVolume;
 
 				const totalEditDuration = clips.reduce((sum, c) => sum + (c.duration || 0), 0);
 				ctx.logger.info('[render-remotion] Starting Remotion Lambda render: %d clips, platform: %s, mode: %s, total: %ds',
@@ -716,8 +760,16 @@ const agent = createAgent('video-editor', {
 			const editPlanMusicDirection = (editPlanObj.musicDirection as string) || undefined;
 			const customMusicUrl = (input as any).musicUrl as string | undefined;
 
+			// `editMode` is whatever the caller sent and is very often the literal
+			// 'auto'. getTracksForMode('auto') returns [] → selectTrack returns null
+			// → music silently skipped. The edit plan always resolves a concrete
+			// mode, so select against that and keep editMode only as a fallback.
+			const planMode = editPlanObj.mode;
+			const musicMode = typeof planMode === 'string' && planMode ? planMode : editMode;
+
 			let musicUrl: string | null = musicDisabled ? null : editPlanMusicUrl;
 			let musicSource = musicDisabled ? 'disabled' : 'edit-plan';
+			let musicVolume: number | undefined;
 
 			if (!musicDisabled && !musicUrl && customMusicUrl) {
 				// User provided a custom music URL via the UI
@@ -727,18 +779,25 @@ const agent = createAgent('video-editor', {
 
 			if (!musicDisabled && !musicUrl && shouldAddMusic(platform, editPlanMusicTier)) {
 				// Auto-select from curated library based on mode and mood
-				const selection = selectTrack(editMode, editPlanMusicDirection);
+				const selection = selectTrack(musicMode, editPlanMusicDirection);
 				if (selection) {
 					musicUrl = selection.track.url;
+					musicVolume = selection.volume;
 					musicSource = `auto:${selection.track.id}`;
-					ctx.logger.info('[render] Auto-selected music: "%s" by %s (mood: %s)',
-						selection.track.title, selection.track.artist, selection.track.mood.join(', '));
+					ctx.logger.info('[render] Auto-selected music: "%s" by %s (mode: %s, mood: %s, volume: %s)',
+						selection.track.title, selection.track.artist, musicMode,
+						selection.track.mood.join(', '), selection.volume);
 				} else {
-					ctx.logger.info('[render] No music track found for mode=%s, skipping', editMode);
+					ctx.logger.info('[render] No music track found for mode=%s, skipping', musicMode);
 				}
 			} else if (!musicUrl) {
 				ctx.logger.info('[render] Music skipped: tier=%s, platform=%s', editPlanMusicTier, platform);
 			}
+			// TODO: `buildRenderTimeline` in src/agent/video-editor/shotstack.ts sets the
+			// soundtrack volume itself and takes no volume argument, so the per-mode
+			// volume the music library picked (logged above) is discarded here. Add a
+			// `musicVolume?: number` option to buildRenderTimeline and pass it below.
+			void musicVolume;
 
 			const totalEditDuration = clips.reduce((sum, c) => sum + (c.duration || 0), 0);
 			ctx.logger.info('[render] Starting cloud render: %d clips, platform: %s, mode: %s, total planned duration: %ds, music: %s',
@@ -1310,12 +1369,18 @@ const agent = createAgent('video-editor', {
 			const catalogForCrop = loadExistingCatalog();
 			const catalogMapForCrop = new Map(catalogForCrop.map(entry => [entry.fileId, entry]));
 
-			// Pick the subjectPosition closest to the clip's trimStart from timestampScores.
-			// Falls back to 'center' when no scored timestamps exist for that source.
-			const pickSubjectPosition = (fileId: string, trimStart: number): string => {
+			// Pick the framing hints from the timestampScore closest to the clip's
+			// trimStart: subjectPosition (where to centre the crop) AND subjectFillRatio
+			// (how small the subject is — drives punch-in). Both come from the SAME
+			// scored frame, so they're resolved together instead of by two lookups.
+			// Falls back to 'center' / undefined when no scored timestamps exist.
+			const pickSubjectFraming = (
+				fileId: string,
+				trimStart: number,
+			): { subjectPosition: string; subjectFillRatio?: number } => {
 				const ce = catalogMapForCrop.get(fileId);
 				const scores = ce?.timestampScores;
-				if (!scores || scores.length === 0) return 'center';
+				if (!scores || scores.length === 0) return { subjectPosition: 'center' };
 				let best = scores[0]!;
 				let bestDelta = Math.abs(best.timestamp - trimStart);
 				for (let i = 1; i < scores.length; i++) {
@@ -1325,7 +1390,12 @@ const agent = createAgent('video-editor', {
 						bestDelta = delta;
 					}
 				}
-				return best.subjectPosition || 'center';
+				return {
+					subjectPosition: best.subjectPosition || 'center',
+					subjectFillRatio: typeof best.subjectFillRatio === 'number'
+						? best.subjectFillRatio
+						: undefined,
+				};
 			};
 
 			const targetAspect = platformConfig.aspectRatio as '9:16' | '1:1' | '4:5' | '16:9';
@@ -1333,11 +1403,18 @@ const agent = createAgent('video-editor', {
 			// --- Pre-process clips: download, smart crop, sharpen, stabilize, speed ---
 			const preprocessConfigs: PreprocessClipConfig[] = [];
 
+			// NOTE: PreprocessClipConfig (src/agent/video-editor/preprocess.ts) does not
+			// yet declare `subjectFillRatio`, so the local FFmpeg path can only consume
+			// subjectPosition. The Lambda path (remotion/preprocessor-invoke.ts) already
+			// reads subjectFillRatio and is wired up above. TODO: add
+			// `subjectFillRatio?: number` to PreprocessClipConfig in preprocess.ts and
+			// pass `framing.subjectFillRatio` through here so local renders punch in too.
 			if (editPlanClips && editPlanClips.length > 0) {
 				// Use edit plan clip configs (includes trimStart, duration, speed)
 				for (const clip of editPlanClips) {
 					const fileId = clip.fileId || videoIds[0]!;
 					const trimStart = clip.trimStart || 0;
+					const framing = pickSubjectFraming(fileId, trimStart);
 					preprocessConfigs.push({
 						fileId,
 						trimStart,
@@ -1345,19 +1422,20 @@ const agent = createAgent('video-editor', {
 						speed: clip.speed,
 						sharpen: true,
 						targetAspect,
-						subjectPosition: pickSubjectPosition(fileId, trimStart),
+						subjectPosition: framing.subjectPosition,
 					});
 				}
 			} else {
 				// Fallback: use raw videoIds with default trim
 				for (const fileId of videoIds) {
+					const framing = pickSubjectFraming(fileId, 0);
 					preprocessConfigs.push({
 						fileId,
 						trimStart: 0,
 						duration: modeConfig.defaultClipLength,
 						sharpen: true,
 						targetAspect,
-						subjectPosition: pickSubjectPosition(fileId, 0),
+						subjectPosition: framing.subjectPosition,
 					});
 				}
 			}
@@ -2451,6 +2529,39 @@ IMPORTANT JSON RULES:
 					);
 					ctx.logger.info('[video-editor:edit] PLAN-X-FORK: ✓ v2 plan ready — %d clips, %ds total, mode=%s',
 						v2Plan.clips.length, v2Plan.totalDuration, v2Plan.mode);
+
+					// Run the SAME validators the v1 path runs below. Until this was added
+					// the v2 fork returned before both of them, so every v2 plan — i.e.
+					// every plan on the default path — skipped dedup + bounds checking and
+					// went straight to render with unclamped trims.
+					let v2DedupWarnings: any[] = [];
+					const v2DedupResult = validateEditPlanDedup(v2Plan.clips);
+					if (!v2DedupResult.valid) {
+						ctx.logger.warn(
+							'[video-editor:edit] v2 plan has %d duplicate scene(s): %s',
+							v2DedupResult.duplicates.length,
+							v2DedupResult.duplicates.map(d =>
+								`Clip ${d.clipA + 1} & ${d.clipB + 1} overlap by ${d.overlapSeconds}s`
+							).join(', ')
+						);
+						v2DedupWarnings = v2DedupResult.duplicates;
+					}
+
+					// Comprehensive validation (duration bounds, action alignment, cut
+					// safety, file IDs, overlay timing). Mutates v2Plan in place to
+					// auto-fix trivial issues — same contract as the v1 path.
+					const { validateEditPlan: validateV2, formatValidationResult: formatV2 } =
+						await import('./edit-plan-validator');
+					const v2Validation = validateV2(v2Plan, catalogMap);
+					if (v2Validation.autoFixCount > 0) {
+						ctx.logger.info('[video-editor:edit] v2 plan validation: auto-fixed %d issues', v2Validation.autoFixCount);
+					}
+					if (!v2Validation.valid) {
+						ctx.logger.warn('[video-editor:edit] v2 plan validation FAILED:\n%s', formatV2(v2Validation));
+					} else if (v2Validation.warnings.length > 0) {
+						ctx.logger.info('[video-editor:edit] v2 plan validation passed with %d warnings', v2Validation.warnings.length);
+					}
+
 					return {
 						success: true,
 						editPlan: '```json\n' + JSON.stringify(v2Plan, null, 2) + '\n```',
@@ -2458,6 +2569,15 @@ IMPORTANT JSON RULES:
 						videoCount: videoDetails.length,
 						videos: videoDetails,
 						_pipelineVersion: 'v2',
+						dedupWarnings: v2DedupWarnings.length > 0 ? v2DedupWarnings : undefined,
+						validation: {
+							valid: v2Validation.valid,
+							errorCount: v2Validation.errors.length,
+							warningCount: v2Validation.warnings.length,
+							autoFixCount: v2Validation.autoFixCount,
+							errors: v2Validation.errors,
+							warnings: v2Validation.warnings,
+						},
 					};
 				} catch (err) {
 					ctx.logger.warn('[video-editor:edit] PLAN-X-FORK: ⚠️ V2 pipeline failed (%s) — falling back to V1 monolith.', String(err));

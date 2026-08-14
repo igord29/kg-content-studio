@@ -23,6 +23,7 @@ import {
 	listVideoFiles,
 	getVideoMetadata,
 	saveCatalog,
+	fetchLatestCatalogFromDrive,
 	type VideoFile,
 	type CatalogEntry,
 } from './google-drive';
@@ -423,40 +424,16 @@ async function analyzeVideoFrames(
 			}
 		}
 
-		// Step 7c: Generate named segments (pure computation, no API calls)
-		if (sceneAnalysisResult && sceneAnalysisResult.duration > 0) {
-			try {
-				const { generateNamedSegments } = await import('./scene-analyzer');
-				const segments = generateNamedSegments(
-					sceneAnalysisResult as any,
-					analysis.activity || '',
-					mapContentType(analysis.contentType),
-				);
-				if (segments.length > 0) {
-					(sceneAnalysisResult as any).namedSegments = segments;
-					const actionSegs = segments.filter(s => s.type === 'action').length;
-					const dialogueSegs = segments.filter(s => s.type === 'dialogue').length;
-					console.log(`[cataloger] Named segments: ${segments.length} segments (${actionSegs} action, ${dialogueSegs} dialogue), full timeline coverage`);
-				}
-			} catch (err) {
-				console.warn(`[cataloger] Named segments skipped for ${video.name}: ${err}`);
-			}
-		}
-
-		// Step 7d: Timestamp-aware action scoring
-		let timestampScores: CatalogEntry['timestampScores'] | undefined;
-		try {
-			timestampScores = await scoreVideoTimestamps(videoPath, video.id, duration);
-			console.log(`[cataloger] Timestamp scores: ${timestampScores?.length || 0} timestamps scored`);
-		} catch (err) {
-			console.warn(`[cataloger] Timestamp scoring skipped for ${video.name}: ${err}`);
-		}
-
-		// Step 7e: Visual timeline via contact sheet (dense, cheap, high-coverage)
+		// Step 7c: Visual timeline via contact sheet (dense, cheap, high-coverage)
 		// Generates a single contact sheet image with 20-30 thumbnails, then sends
 		// it to GPT-4o-mini in ONE call — 10x cheaper than individual frame scoring
 		// while providing 3-5x denser temporal coverage.
+		// MUST run before step 7d: its frame timestamps are the densest boundary
+		// source we have, and named segments are near-worthless without them on
+		// static-camera sports footage — see the boundary-source comment in
+		// generateNamedSegments (scene-analyzer.ts).
 		let visualTimeline: CatalogEntry['visualTimeline'] | undefined;
+		let timelineBoundaries: number[] = [];
 		try {
 			const { generateContactSheet, cleanupContactSheet } = await import('./contact-sheet');
 			const { analyzeContactSheet } = await import('./visual-timeline');
@@ -466,6 +443,9 @@ async function analyzeVideoFrames(
 
 			const timeline = await analyzeContactSheet(contactSheet, analysis.activity || '');
 			visualTimeline = timeline;
+			timelineBoundaries = timeline.frames
+				.map(f => f.timestamp)
+				.filter(t => typeof t === 'number' && isFinite(t));
 
 			const actionFrames = timeline.frames.filter(f => f.isAction).length;
 			console.log(`[cataloger] Visual timeline: ${timeline.frames.length} frames analyzed, ${actionFrames} action, ${timeline.actionWindows.length} action windows, ${timeline.bestMoments.length} best moments`);
@@ -473,6 +453,38 @@ async function analyzeVideoFrames(
 			cleanupContactSheet(contactSheet);
 		} catch (err) {
 			console.warn(`[cataloger] Visual timeline skipped for ${video.name}: ${err}`);
+		}
+
+		// Step 7d: Generate named segments (pure computation, no API calls)
+		// Seeded with the step 7c timeline timestamps so boundaries come from the
+		// dense 30-frame sampling, not just FFmpeg scene-change + <=6 scene frames.
+		if (sceneAnalysisResult && sceneAnalysisResult.duration > 0) {
+			try {
+				const { generateNamedSegments } = await import('./scene-analyzer');
+				const segments = generateNamedSegments(
+					sceneAnalysisResult as any,
+					analysis.activity || '',
+					mapContentType(analysis.contentType),
+					timelineBoundaries,
+				);
+				if (segments.length > 0) {
+					(sceneAnalysisResult as any).namedSegments = segments;
+					const actionSegs = segments.filter(s => s.type === 'action').length;
+					const dialogueSegs = segments.filter(s => s.type === 'dialogue').length;
+					console.log(`[cataloger] Named segments: ${segments.length} segments (${actionSegs} action, ${dialogueSegs} dialogue) from ${timelineBoundaries.length} timeline boundaries, full timeline coverage`);
+				}
+			} catch (err) {
+				console.warn(`[cataloger] Named segments skipped for ${video.name}: ${err}`);
+			}
+		}
+
+		// Step 7e: Timestamp-aware action scoring
+		let timestampScores: CatalogEntry['timestampScores'] | undefined;
+		try {
+			timestampScores = await scoreVideoTimestamps(videoPath, video.id, duration);
+			console.log(`[cataloger] Timestamp scores: ${timestampScores?.length || 0} timestamps scored`);
+		} catch (err) {
+			console.warn(`[cataloger] Timestamp scoring skipped for ${video.name}: ${err}`);
 		}
 
 		// Step 8: Clean up temp files
@@ -493,8 +505,8 @@ async function analyzeVideoFrames(
 			peopleCount: analysis.peopleCount || undefined,
 			quality: mapQuality(analysis.quality),
 			indoorOutdoor: analysis.indoorOutdoor || 'unknown',
-			notableMoments: analysis.notableMoments !== 'none' ? analysis.notableMoments : undefined,
-			readableText: analysis.readableText !== 'none' ? analysis.readableText : undefined,
+			notableMoments: blankIfEmpty(analysis.notableMoments),
+			readableText: blankIfEmpty(analysis.readableText),
 			suggestedModes: filterValidModes(analysis.suggestedModes || []),
 			thumbnailLink: video.thumbnailLink || undefined,
 			needsManualReview:
@@ -525,6 +537,22 @@ async function analyzeVideoFrames(
 }
 
 // --- Helper Functions ---
+
+/**
+ * Normalize a free-text field from the vision response to `undefined` when it
+ * carries no information. GPT-4o does not honour the prompt's lowercase 'none'
+ * sentinel consistently — it returns "None", "N/A", "Unknown" and empty strings
+ * too, and a strict `!== 'none'` check let those literals leak into downstream
+ * edit prompts (confirmed in 15 of 247 catalog entries).
+ */
+const blankIfEmpty = (v: unknown): string | undefined => {
+	if (typeof v !== 'string') return undefined;
+	const trimmed = v.trim();
+	if (trimmed === '') return undefined;
+	const normalized = trimmed.toLowerCase();
+	if (normalized === 'none' || normalized === 'n/a' || normalized === 'unknown') return undefined;
+	return trimmed;
+};
 
 /**
  * Map content type string from GPT response to valid enum value
@@ -651,7 +679,7 @@ function applyFilenameHeuristics(entry: CatalogEntry, filename: string): void {
 
 // --- Timestamp-Aware Action Scoring ---
 
-const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/chess nonprofit (CLC) video for video editing. Each frame is from a specific timestamp. Score each frame on 4 axes (1-5 scale):
+const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/chess nonprofit (CLC) video for video editing. Each frame is from a specific timestamp. Score each frame on the axes below. Note the scales differ: movement, people, tennis and energy are 1-5; subjectFillRatio is 0.0-1.0; emotion is 0-10; valence and beat are labels, not numbers.
 
 - movement: How much physical motion/action is visible? (1=static/empty/ground/sky, 2=slight movement, 3=moderate activity, 4=active gameplay, 5=peak action like serve/rally/celebration)
 - people: Are KIDS/PLAYERS actively visible and engaged? (1=empty/no people/backs only, 2=distant figures, 3=people visible but passive/spectating, 4=kids clearly visible and active, 5=close-up of kids playing/celebrating)
@@ -668,6 +696,33 @@ const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/che
 - tennis: How directly does this show tennis/chess GAMEPLAY? (1=irrelevant/empty space, 2=court visible but no play, 3=people near court/equipment, 4=active drills/practice, 5=rally/match/direct gameplay)
   IMPORTANT: An empty court or people standing around = 1-2. Actual ball-hitting, serving, rallying = 4-5.
 - energy: How visually compelling is this for a social media clip? (1=boring/static/empty, 2=mildly interesting, 3=decent content, 4=engaging action, 5=viral-worthy moment)
+
+- emotion: 0-10. How much visible HUMAN FEELING is in this frame, INDEPENDENT of athletic quality.
+  - 0-2: neutral. Walking, waiting, standing, listening.
+  - 3-4: mild engagement. Focused concentration, a small smile.
+  - 5-6: clear feeling. Laughing, visible effort, encouragement between kids.
+  - 7-8: strong. Celebration, a coach's hand on a shoulder, visible frustration, a kid's face lighting up.
+  - 9-10: peak. Tears, arms thrown up, a hug, a total crash-out.
+  IMPORTANT: Score emotion on the FACE and BODY LANGUAGE of the people, not on how exciting the sport action is. A perfectly struck forehand with a blank expression is emotion 2, athletic 5. A kid missing an easy shot and covering their face is emotion 8, athletic 1. ("athletic" here means the movement/tennis axes above — emotion is scored separately from them, and the two often disagree.)
+  If no people are visible at all (signage, empty court, shadows, ground/sky), emotion is 0 and valence is "neutral".
+  Faces you cannot read are not evidence of feeling — backs turned, distant figures, or motion blur where no expression is legible cap emotion at 3, no matter what the body is doing.
+
+- valence: the emotional DIRECTION of the feeling. One of "positive" | "neutral" | "negative".
+  - "positive": joy, pride, encouragement, celebration, warmth, focus that looks eager.
+  - "neutral": no clear direction — routine play, waiting, walking, b-roll, no legible faces.
+  - "negative": frustration, disappointment, exhaustion, tears, slumping, a kid pulling away.
+  Valence describes the FEELING, not the quality of the footage. A kid slumping after losing a point is a GREAT clip with "negative" valence — do not soften it to "neutral" because it looks sad.
+
+- beat: the narrative role this moment could play in an edited story. One of: "hook" | "setup" | "struggle" | "turn" | "triumph" | "reflection" | "community" | "none".
+  - "hook": arresting enough to open on — a face mid-reaction, a ball being struck clean, a striking angle.
+  - "setup": establishes who and where — arrivals, courts filling, a coach starting a drill.
+  - "struggle": visible effort or difficulty — a missed shot, frustration, fatigue, resetting to try again.
+  - "turn": the moment something changes — the shot that finally lands, an expression flipping mid-frame.
+  - "triumph": the payoff — celebration, a point won, a high five, arms up.
+  - "reflection": quiet aftermath — catching breath, a look off-court, sitting down, a private smile.
+  - "community": people together — huddles, group shots, a coach beside a kid, teammates side by side.
+  - "none": nothing an editor could use — signage, empty court, shadows, blurred transitions.
+  Pick the SINGLE strongest role. If you would not put this frame in any edit, use "none" — "none" is the correct answer for most b-roll frames.
 
 CRITICAL — BE SKEPTICAL BY DEFAULT:
 Most frames in these source videos are b-roll: signage, shadows, empty courts, ground/sky, transitions between plays, videographer setup. Those ARE the dominant content, not the exception. Your default score should be LOW.
@@ -694,20 +749,176 @@ Also provide:
 - subjectPosition: Where are the main subjects (people/action) in the frame? Use one of: "center", "bottom-center", "bottom-left", "bottom-right", "top-center", "left", "right". If no subject is visible (empty/signage/shadows), use "center" as a safe default.
 
 Return ONLY a JSON array, one object per frame in the order provided:
-[{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "subjectFillRatio": 0.45, "brief": "Two kids rallying on hard court", "subjectPosition": "bottom-center"}]
+[{"timestamp": 5.0, "movement": 3, "people": 4, "tennis": 5, "energy": 4, "subjectFillRatio": 0.45, "emotion": 6, "valence": "positive", "beat": "turn", "brief": "Two kids rallying on hard court", "subjectPosition": "bottom-center"}]
 
 No markdown, no explanation, just the JSON array.`;
+
+// Upper bound on frames sent to the scorer per video. Keeps the per-video cost
+// bounded on long clips while still allowing dense sampling on short ones.
+const MAX_SCORED_FRAMES = 26;
+
+// --- Content-aware frame selection (overextract → dedup → even-sample) ---
+// A uniform grid spends the 26-frame budget on the clock, not the content: on
+// the interview clips it lands on walls and ceilings between camera moves.
+// Instead: extract tiny grayscale thumbnails on a dense candidate grid, drop
+// frames nearly identical to the last kept one, and even-sample the survivors
+// down to the budget. Thumbnails are extracted with one fast seek per
+// candidate (the same -ss pattern the scoring loop uses) rather than a single
+// full-decode pass: full decode of a 3-minute clip exceeds any sane timeout on
+// the cloud vCPU, and a seeked frame sits exactly at its recorded timestamp,
+// so the frame judged for novelty IS the frame later scored. Cost stays capped
+// at MAX_SCORED_FRAMES but short clips (<~150s) now use more of the budget
+// than the old sparse grid did (~1.4-2.6x frames there), spent on distinct
+// moments.
+const DENSE_GRID_SECONDS = 2;    // candidate spacing floor
+const CANDIDATE_TARGET = 60;     // max thumbnail seeks per video; spacing widens on long clips
+const DEDUP_THUMB = 16;          // thumbnail edge in px; 16x16 gray = 256 bytes
+const DEDUP_THRESHOLD = 2.0;     // mean abs pixel diff (0-255) below which frames are "the same"
+const MIN_SCORED_FRAMES = 12;    // floor so static videos still yield a usable timeline map
+
+/**
+ * A scored timestamp plus the emotional axes.
+ *
+ * The base element type lives on CatalogEntry in google-drive.ts; the three
+ * emotional fields are layered on here so they survive serialization into the
+ * catalog without widening the shared type. Widen
+ * CatalogEntry['timestampScores'] with the same three optional fields when you
+ * want downstream consumers (pipeline-v2 composers) to read them type-safely.
+ */
+type ScoredTimestamp = NonNullable<CatalogEntry['timestampScores']>[number] & {
+	emotion?: number;
+	valence?: string;
+	beat?: string;
+};
+
+/**
+ * Choose a sampling interval based on video duration.
+ * The editor cuts 4-second clips, so a flat 10s interval (18 samples on a 180s
+ * clip) is far too coarse to actually locate "the 4 good seconds". Sample
+ * denser on short clips, then widen as needed so the frame count stays under
+ * MAX_SCORED_FRAMES.
+ */
+function chooseInterval(duration: number): number {
+	const base = duration <= 60 ? 5 : duration <= 150 ? 6 : 8;
+	// Widen if the base interval would blow the frame budget (e.g. a 300s clip
+	// at 8s would be ~36 frames; ceil(300/26) = 12s keeps it at ~24).
+	const budgeted = Math.ceil(duration / MAX_SCORED_FRAMES);
+	return Math.max(base, budgeted);
+}
+
+/** Evenly pick `target` items from a sorted array, always keeping first and last. */
+function evenSample<T>(items: T[], target: number): T[] {
+	if (items.length <= target) return items;
+	if (target <= 1) return [items[0]!];
+	const picked: T[] = [];
+	const seen = new Set<number>();
+	for (let i = 0; i < target; i++) {
+		const idx = Math.round((i * (items.length - 1)) / (target - 1));
+		if (!seen.has(idx)) {
+			seen.add(idx);
+			picked.push(items[idx]!);
+		}
+	}
+	return picked;
+}
+
+/**
+ * Pick scoring timestamps by visual novelty instead of the clock.
+ *
+ * Extracts a 16x16 grayscale thumbnail at each candidate timestamp (fast seek
+ * per candidate, exact frame); a greedy walk drops frames whose mean pixel
+ * diff vs the LAST KEPT frame is below DEDUP_THRESHOLD (near-identical), and
+ * survivors are even-sampled down to MAX_SCORED_FRAMES. If dedup collapses a
+ * static video below MIN_SCORED_FRAMES, survivors are topped up with an even
+ * spread over all candidates — survivors are never dropped by the floor, so a
+ * lone distinct moment always stays.
+ *
+ * Returns null when extraction fails for >20% of candidates (broken ffmpeg,
+ * truncated file) so the caller can fall back to the uniform grid rather than
+ * score a partially-covered timeline. Exported for local testing.
+ */
+export function selectScoringTimestamps(videoPath: string, duration: number): number[] | null {
+	try {
+		const frameBytes = DEDUP_THUMB * DEDUP_THUMB;
+		const step = Math.max(DENSE_GRID_SECONDS, Math.ceil((duration - 4) / CANDIDATE_TARGET));
+		const candidateTs: number[] = [];
+		for (let t = DENSE_GRID_SECONDS; t < duration - 2; t += step) {
+			candidateTs.push(t);
+		}
+		if (candidateTs.length === 0) return null;
+
+		const candidates: Array<{ ts: number; thumb: Buffer }> = [];
+		let failures = 0;
+		for (const ts of candidateTs) {
+			try {
+				const raw = execSync(
+					`ffmpeg -y -loglevel error -ss ${ts.toFixed(2)} -i "${videoPath}" -frames:v 1 -vf "scale=${DEDUP_THUMB}:${DEDUP_THUMB},format=gray" -f rawvideo -`,
+					{ timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1024 * 1024 },
+				) as unknown as Buffer;
+				if (raw.length >= frameBytes) {
+					candidates.push({ ts, thumb: raw.subarray(0, frameBytes) });
+				} else {
+					failures++;
+				}
+			} catch {
+				failures++;
+			}
+		}
+
+		// A high failure rate means the environment (not the video) is the problem;
+		// score the uniform grid instead of a partially-covered timeline.
+		if (candidates.length === 0 || failures > candidateTs.length * 0.2) {
+			console.warn(
+				`[cataloger] sampler extracted ${candidates.length}/${candidateTs.length} thumbnails (${failures} failures) — falling back to uniform grid`,
+			);
+			return null;
+		}
+
+		// Greedy dedup: keep a frame only if it differs enough from the last kept one.
+		const kept: Array<{ ts: number; thumb: Buffer }> = [candidates[0]!];
+		for (let i = 1; i < candidates.length; i++) {
+			const prev = kept[kept.length - 1]!.thumb;
+			const cur = candidates[i]!.thumb;
+			let diff = 0;
+			for (let p = 0; p < frameBytes; p++) {
+				diff += Math.abs(cur[p]! - prev[p]!);
+			}
+			if (diff / frameBytes > DEDUP_THRESHOLD) {
+				kept.push(candidates[i]!);
+			}
+		}
+
+		let selected = evenSample(kept, MAX_SCORED_FRAMES).map(c => c.ts);
+		if (selected.length < MIN_SCORED_FRAMES && candidates.length > selected.length) {
+			// Static video: dedup collapsed almost everything. Keep every survivor
+			// and top up with an even spread so the timeline map stays usable.
+			const floor = evenSample(candidates, Math.min(MIN_SCORED_FRAMES, candidates.length)).map(c => c.ts);
+			selected = [...new Set([...selected, ...floor])].sort((a, b) => a - b);
+		}
+
+		console.log(
+			`[cataloger] sampling: ${candidates.length} candidates -> ${kept.length} after dedup -> ${selected.length} selected (budget ${MAX_SCORED_FRAMES})`,
+		);
+		return selected;
+	} catch (err) {
+		console.warn(`[cataloger] content-aware sampling failed, falling back to uniform grid: ${err}`);
+		return null;
+	}
+}
 
 /**
  * Score video timestamps for action quality using GPT-4o vision.
  * Extracts a frame every intervalSeconds, batches them, and scores.
+ * When intervalSeconds is omitted, timestamps are chosen by visual novelty
+ * via selectScoringTimestamps() (falling back to the uniform grid on failure);
+ * passing intervalSeconds explicitly still forces the uniform grid.
  * Returns sorted array of timestamp scores.
  */
 async function scoreVideoTimestamps(
 	videoPath: string,
 	fileId: string,
 	duration: number,
-	intervalSeconds: number = 10,
+	intervalSeconds?: number,
 	batchSize: number = 6,
 ): Promise<CatalogEntry['timestampScores']> {
 	if (duration < 15) {
@@ -716,14 +927,26 @@ async function scoreVideoTimestamps(
 	}
 
 	const tempDir = ensureTempDir();
-	const timestamps: number[] = [];
-	for (let t = intervalSeconds; t < duration - 2; t += intervalSeconds) {
-		timestamps.push(t);
+
+	// Content-aware selection unless an explicit interval forces the uniform grid.
+	const smartTimestamps = intervalSeconds === undefined
+		? selectScoringTimestamps(videoPath, duration)
+		: null;
+
+	let timestamps: number[];
+	if (smartTimestamps && smartTimestamps.length > 0) {
+		timestamps = smartTimestamps;
+		console.log(`[cataloger] Scoring ${timestamps.length} timestamps (content-aware, duration ${duration.toFixed(0)}s)...`);
+	} else {
+		const interval = intervalSeconds ?? chooseInterval(duration);
+		timestamps = [];
+		for (let t = interval; t < duration - 2; t += interval) {
+			timestamps.push(t);
+		}
+		console.log(`[cataloger] Scoring ${timestamps.length} timestamps (every ${interval}s, duration ${duration.toFixed(0)}s)...`);
 	}
 
-	console.log(`[cataloger] Scoring ${timestamps.length} timestamps (every ${intervalSeconds}s)...`);
-
-	const allScores: NonNullable<CatalogEntry['timestampScores']> = [];
+	const allScores: ScoredTimestamp[] = [];
 
 	// Process in batches
 	for (let batchIdx = 0; batchIdx < timestamps.length; batchIdx += batchSize) {
@@ -800,6 +1023,9 @@ async function scoreVideoTimestamps(
 				brief: string;
 				subjectPosition?: string;
 				subjectFillRatio?: number;
+				emotion?: number;
+				valence?: string;
+				beat?: string;
 			}>;
 
 			// Use original timestamps (not model-returned ones) to avoid hallucinated values
@@ -825,11 +1051,25 @@ async function scoreVideoTimestamps(
 					: fillRatio < 0.35 ? 0.85
 					: 1.0;
 				const finalScore = Math.min(10, Math.max(1, Math.round(rawScore * fillMultiplier)));
+				// Emotional axes. These deliberately do NOT feed actionQuality — the
+				// composite formula above is unchanged. They ride alongside it so the
+				// editor can find "the kid celebrating" separately from "the best
+				// tennis". Labels are lowercased so downstream exact-match filters
+				// don't trip over "Positive" / "Triumph".
+				const emotion = typeof score.emotion === 'number' && isFinite(score.emotion)
+					? Math.max(0, Math.min(10, Math.round(score.emotion)))
+					: undefined;
+				const valence = typeof score.valence === 'string' && score.valence.trim() !== ''
+					? score.valence.trim().toLowerCase()
+					: undefined;
+				const beat = typeof score.beat === 'string' && score.beat.trim() !== ''
+					? score.beat.trim().toLowerCase()
+					: undefined;
 				// Per-frame diagnostic log — makes it visible during rescore whether the
 				// model is producing believable scores. Format chosen to be greppable
 				// in Railway logs: look for "[cataloger] score ts=" prefix.
 				console.log(
-					`[cataloger] score ts=${originalTs}s q=${finalScore}/10 m=${score.movement} p=${score.people} t=${score.tennis} e=${score.energy} fill=${fillRatio.toFixed(2)} pos=${score.subjectPosition || 'bottom-center'} brief="${(score.brief || '').slice(0, 60)}"`,
+					`[cataloger] score ts=${originalTs}s q=${finalScore}/10 m=${score.movement} p=${score.people} t=${score.tennis} e=${score.energy} fill=${fillRatio.toFixed(2)} emo=${emotion ?? '-'}/10 val=${valence || '-'} beat=${beat || '-'} pos=${score.subjectPosition || 'bottom-center'} brief="${(score.brief || '').slice(0, 60)}"`,
 				);
 				allScores.push({
 					timestamp: originalTs,
@@ -841,6 +1081,9 @@ async function scoreVideoTimestamps(
 					subjectFillRatio: fillRatio,
 					brief: score.brief,
 					subjectPosition: score.subjectPosition || 'center',
+					emotion,
+					valence,
+					beat,
 				});
 			}
 		} catch (err) {
@@ -871,6 +1114,93 @@ async function scoreVideoTimestamps(
  * Load existing catalog from local file if it exists,
  * falling back to the bundled seed data from catalog-seed.json
  */
+/** Set once per process so we only ever hit Drive on a cold start. */
+let catalogHydrated = false;
+/** After a failed restore, wait this long before trying Drive again. */
+const HYDRATE_RETRY_COOLDOWN_MS = 60_000;
+let hydrateCooldownUntil = 0;
+/** Guards against N concurrent cold-start requests all fetching the same file. */
+let hydrateInFlight: Promise<void> | null = null;
+
+/**
+ * Restore the runtime catalog from Drive when the local copy is missing.
+ *
+ * MUST be awaited once before anything calls loadExistingCatalog(), which is
+ * synchronous (24 call sites) and cannot itself download. Cheap and idempotent:
+ * after the first successful run it is a no-op for the life of the process.
+ *
+ * The failure this prevents: PERSISTENT_DIR falls back to process.cwd() when
+ * /data is not mounted, so on Railway the enriched catalog sits on an ephemeral
+ * filesystem. A redeploy wipes it, loadExistingCatalog() finds nothing, and
+ * quietly returns the bundled 247-entry seed with none of the emotion scores or
+ * timestamps. Nothing errors. The videos just go back to guessing.
+ */
+export async function hydrateCatalogFromDrive(force = false): Promise<{
+	restored: boolean;
+	count: number;
+	source: 'local' | 'drive' | 'seed' | 'skipped';
+}> {
+	if (catalogHydrated && !force) return { restored: false, count: 0, source: 'skipped' };
+	if (!force && Date.now() < hydrateCooldownUntil) {
+		return { restored: false, count: 0, source: 'skipped' };
+	}
+	// Collapse concurrent cold-start callers onto one Drive fetch.
+	if (hydrateInFlight && !force) {
+		await hydrateInFlight;
+		return { restored: false, count: 0, source: 'skipped' };
+	}
+
+	// A healthy local file means nothing to do.
+	if (!force && fs.existsSync(CATALOG_RESULTS_PATH)) {
+		try {
+			const existing = JSON.parse(fs.readFileSync(CATALOG_RESULTS_PATH, 'utf-8')) as CatalogEntry[];
+			if (Array.isArray(existing) && existing.length > 0) {
+				catalogHydrated = true;
+				return { restored: false, count: existing.length, source: 'local' };
+			}
+		} catch { /* fall through and re-fetch */ }
+	}
+
+	// Loud, because running on an ephemeral filesystem is the root cause of the
+	// silent-revert failure and the operator should see it in the logs.
+	if (!fs.existsSync('/data')) {
+		console.warn(
+			'[cataloger] /data is NOT mounted — the catalog is being written to an EPHEMERAL filesystem (%s). '
+			+ 'Mount a Railway volume at /data, or every redeploy discards catalog enrichment.',
+			PERSISTENT_DIR,
+		);
+	}
+
+	const restored = await fetchLatestCatalogFromDrive();
+	if (!restored || restored.catalog.length === 0) {
+		// Deliberately do NOT set catalogHydrated. A transient Drive failure (429,
+		// 503, token refresh) on the first request after a redeploy would
+		// otherwise pin this process to the bundled seed for its entire life —
+		// which is exactly the silent regression this function exists to prevent.
+		// Back off instead, so we retry without hammering Drive on every request.
+		hydrateCooldownUntil = Date.now() + HYDRATE_RETRY_COOLDOWN_MS;
+		console.warn('[cataloger] Could not restore catalog from Drive — using the bundled seed for now. '
+			+ 'If you have run a backfill, its results are NOT loaded. Retrying in %ds.',
+			Math.round(HYDRATE_RETRY_COOLDOWN_MS / 1000));
+		return { restored: false, count: 0, source: 'seed' };
+	}
+
+	try {
+		fs.mkdirSync(path.dirname(CATALOG_RESULTS_PATH), { recursive: true });
+		fs.writeFileSync(CATALOG_RESULTS_PATH, JSON.stringify(restored.catalog, null, 2), 'utf-8');
+		console.log('[cataloger] Catalog restored from Drive (%s) -> %s (%d entries)',
+			restored.fileName, CATALOG_RESULTS_PATH, restored.catalog.length);
+	} catch (err) {
+		// Even if the cache write fails, the data is in memory-adjacent Drive and
+		// the next call will retry. Don't mark hydrated so we try again.
+		console.warn('[cataloger] Restored from Drive but could not cache locally:', (err as Error).message);
+		return { restored: true, count: restored.catalog.length, source: 'drive' };
+	}
+
+	catalogHydrated = true;
+	return { restored: true, count: restored.catalog.length, source: 'drive' };
+}
+
 export function loadExistingCatalog(): CatalogEntry[] {
 	// Try runtime file first (written by saveCatalog during live cataloging)
 	if (fs.existsSync(CATALOG_RESULTS_PATH)) {

@@ -53,6 +53,7 @@ STRICT RULES:
 - Body beats MUST be 4-6 items covering establish/showcase/climax/community
 - If no clear narrative exists, pick the best available micro-story and mention it in emotionalCenter
 - When a video has NARRATIVE BEATS (brief-aware tags from Step 0.5), PREFER those as your primary evidence of what the video contains. The beats are tuned to THIS brief; the other catalog data is generic. Specifically: pick the source with the strongest "resolution" beat as responseSourceId (where the payoff lands); reference specific beat timestamps in your bodyBeats intents so the composers can find them; let the brief's "emphasize" items steer which beats matter most.
+- Every timestamp is also scored for emotion (0-10, visible human feeling) and tagged with a story beat (hook/setup/struggle/turn/triumph/reflection/community). When a video's "Emotion:" line is present, use it to judge which sources carry a REAL arc — a source whose beats move struggle → turn → triumph, or that holds the highest-emotion peak, outranks one that merely has the most action. Anchor emotionalCenter on that peak and give the highest-emotion source the hook (setupSourceId).
 - Never pick an ID not in the input list
 
 Output VALID JSON matching this exact schema — no markdown fences, no prose, JSON only:
@@ -99,12 +100,34 @@ export async function planStoryArc(
     community:  ${nb.community.slice(0, 3).map(b => `T=${b.timestamp}s "${b.description}" (${b.confidence})`).join(' | ') || 'none'}`
 			: '';
 
+		// Emotional axes from the cataloger's vision pass (emotion 0-10, valence,
+		// beat). SUMMARISED rather than dumped per timestamp: this step picks
+		// SOURCES, not trim points, and the prompt is budgeted at ~500 tokens.
+		// Entries scored before these fields existed have none — the line is
+		// omitted entirely in that case rather than printing "undefined".
+		type EmoScore = { timestamp: number; emotion?: number; valence?: string; beat?: string };
+		const scores: EmoScore[] = ce.timestampScores ?? [];
+		let peak: EmoScore | undefined;
+		const beatCounts = new Map<string, number>();
+		for (const s of scores) {
+			if (typeof s.emotion === 'number' && (peak === undefined || s.emotion > peak.emotion!)) peak = s;
+			if (s.beat && s.beat !== 'none') beatCounts.set(s.beat, (beatCounts.get(s.beat) ?? 0) + 1);
+		}
+		const beatSummary = Array.from(beatCounts.entries())
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 4)
+			.map(([b, n]) => `${b}x${n}`)
+			.join(', ');
+		const emotionLine = (peak || beatSummary)
+			? `\n  - Emotion: ${peak ? `peak ${peak.emotion}/10 @ ${peak.timestamp}s${peak.valence ? ` (${peak.valence})` : ''}` : 'unscored'}${beatSummary ? `; beats present: ${beatSummary}` : ''}`
+			: '';
+
 		return `[${i + 1}] ${v.id}: ${v.name} (${durSec}s, ${ce.contentType || 'unknown'})
   - Activity: ${ce.activity}
   - Location: ${ce.suspectedLocation || 'unknown'}
   - People: ${ce.peopleCount || '?'}
   - Notable moments: ${ce.notableMoments || 'None'}
-  - Scene analysis: ${hasScenes ? 'AVAILABLE' : 'MISSING'}${beatsLine}`;
+  - Scene analysis: ${hasScenes ? 'AVAILABLE' : 'MISSING'}${emotionLine}${beatsLine}`;
 	}).join('\n\n');
 
 	const anyHasScenes = input.videoMetadata.some(v => {

@@ -63,5 +63,10 @@ src/agent/translate.js
 # Cataloger temp files (video downloads + extracted frames)
 .temp-cataloger/
 
+# Local render outputs and session workspace leftovers
+out.mp4
+*.patch
+_to_delete/
+
 # FFmpeg local cache (preprocess intermediate files)
 .ffmpeg-cache/

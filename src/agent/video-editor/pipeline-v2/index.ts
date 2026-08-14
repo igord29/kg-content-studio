@@ -256,7 +256,13 @@ Avoid: ${brief.avoid.join('; ')}`;
 		arc.mode === 'our_story' ? 'crossfade' :
 		arc.mode === 'quick_hit' ? 'fast_cuts' :
 		'minimal';
-	const musicTier = arc.mode === 'our_story' || arc.mode === 'showcase' ? 2 : 1;
+	// Music tier feeds shouldAddMusic() in music.ts, where tier 1 means NO music
+	// at all (the "team adds a trending sound at upload" case). This used to send
+	// game_day and quick_hit to tier 1, so those two modes rendered completely
+	// SILENT. All four modes get library music now. showcase keeps the hero tier
+	// so it stays consistent with getDefaultMusicTier() (tier 3 = AI-generated
+	// score; until Suno lands it behaves exactly like tier 2 downstream).
+	const musicTier = arc.mode === 'showcase' ? 3 : 2;
 
 	return {
 		mode: arc.mode,

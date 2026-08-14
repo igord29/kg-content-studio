@@ -9,11 +9,13 @@ import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { videoDirectorPrompt } from './video-director-prompt';
 import { getVideoMetadata, type CatalogEntry } from './google-drive';
-import { loadExistingCatalog } from './cataloger';
+import { loadExistingCatalog, hydrateCatalogFromDrive } from './cataloger';
 import { formatSegmentTimelineForPrompt } from './scene-analyzer';
 import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
-import type { VideoUsageSummary } from './usage-tracker';
+import { validateEditPlanDedup, type VideoUsageSummary } from './usage-tracker';
+import { validateEditPlan, formatValidationResult } from './edit-plan-validator';
 import { selectTrack, shouldAddMusic } from './music';
+import { gateRender, formatGateResult, PUBLISH_THRESHOLDS, type GateResult } from './render-gate';
 import { supabaseAdmin } from '../../lib/supabase';
 
 // --- Types ---
@@ -63,6 +65,9 @@ async function generateEditPlan(
 	logger: PipelineLogger,
 	usageSummary?: VideoUsageSummary[],
 ): Promise<Record<string, unknown>> {
+	// Cover the path where auto-process is invoked outside the agent handler.
+	// Idempotent — a no-op if the handler already hydrated this process.
+	try { await hydrateCatalogFromDrive(); } catch { /* fall back to whatever is local */ }
 	const catalog = loadExistingCatalog();
 	const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
 
@@ -219,6 +224,48 @@ Wrap the JSON in \`\`\`json fences.`;
 	return JSON.parse(jsonMatch[1].trim());
 }
 
+// --- Pre-render Validation ---
+
+/**
+ * Run the same two validators the `task: 'edit'` handler runs before it hands a
+ * plan to the render engine: scene dedup + comprehensive bounds/alignment checks.
+ *
+ * This pipeline previously imported neither, so an out-of-bounds trim (trimStart
+ * past the end of the source, duration overflowing it, overlays past the end of
+ * the timeline) went straight to Lambda and burned a render. `validateEditPlan`
+ * mutates the plan in place to auto-fix the trivial cases; errors it can't fix
+ * are logged loudly but do NOT abort — a partially-valid render still gives the
+ * reviewer something to grade, which is how the quality loop recovers.
+ */
+function validatePlanBeforeRender(
+	plan: Record<string, unknown>,
+	logger: PipelineLogger,
+): void {
+	if (!Array.isArray(plan.clips) || plan.clips.length === 0) return;
+
+	const dedupResult = validateEditPlanDedup(plan.clips as any);
+	if (!dedupResult.valid) {
+		logger.warn(
+			'[auto-pipeline] Edit plan has %d duplicate scene(s): %s',
+			dedupResult.duplicates.length,
+			dedupResult.duplicates.map(d =>
+				`Clip ${d.clipA + 1} & ${d.clipB + 1} overlap by ${d.overlapSeconds}s`
+			).join(', '),
+		);
+	}
+
+	const catalogMap = new Map(loadExistingCatalog().map(entry => [entry.fileId, entry]));
+	const result = validateEditPlan(plan as any, catalogMap);
+	if (result.autoFixCount > 0) {
+		logger.info('[auto-pipeline] Edit plan validation: auto-fixed %d issues', result.autoFixCount);
+	}
+	if (!result.valid) {
+		logger.warn('[auto-pipeline] Edit plan validation FAILED:\n%s', formatValidationResult(result));
+	} else if (result.warnings.length > 0) {
+		logger.info('[auto-pipeline] Edit plan validation passed with %d warnings', result.warnings.length);
+	}
+}
+
 // --- Render Submission + Polling ---
 
 async function submitAndPollRender(
@@ -249,14 +296,30 @@ async function submitAndPollRender(
 	// Music selection
 	const musicDirection = (editPlan.musicDirection as string) || undefined;
 	const musicTier = (editPlan.musicTier as number) || undefined;
+	// `editMode` may be the literal 'auto'; getTracksForMode('auto') returns []
+	// so selectTrack would return null and music would be silently skipped.
+	// The plan always resolves a concrete mode — prefer it.
+	const planMode = editPlan.mode;
+	const musicMode = typeof planMode === 'string' && planMode ? planMode : editMode;
 	let musicUrl: string | null = (editPlan.musicUrl as string) || null;
+	let musicVolume: number | undefined;
 	if (!musicUrl && shouldAddMusic(platform, musicTier)) {
-		const selection = selectTrack(editMode, musicDirection);
+		const selection = selectTrack(musicMode, musicDirection);
 		if (selection) {
 			musicUrl = selection.track.url;
-			logger.info('[auto-pipeline] Auto-selected music: "%s"', selection.track.title);
+			musicVolume = selection.volume;
+			logger.info('[auto-pipeline] Auto-selected music: "%s" (mode=%s, volume=%s)',
+				selection.track.title, musicMode, selection.volume);
+		} else {
+			logger.info('[auto-pipeline] No music track found for mode=%s, skipping', musicMode);
 		}
 	}
+	// TODO: `submitRemotionRenderWithPreprocessing` in
+	// src/agent/video-editor/remotion/render.ts has no `musicVolume` field — it
+	// derives the volume from `musicVolumeFor(config.mode)`. Add
+	// `musicVolume?: number` to that config type and prefer it over
+	// musicVolumeFor() so the library's per-mode volume is what renders.
+	void musicVolume;
 
 	const renderId = `remotion_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 	preRegisterRender(renderId);
@@ -421,6 +484,7 @@ export async function runAutoPipeline(
 
 	let currentPlan: Record<string, unknown> = {};
 	let lastReview: VideoReview | undefined;
+	let lastGate: GateResult | null = null;
 	let lastDownloadUrl: string | undefined;
 	let lastRenderId = '';
 
@@ -442,6 +506,10 @@ export async function runAutoPipeline(
 				}
 			}
 
+			// Validate (and auto-fix) before the plan reaches the render engine.
+			// Covers both the freshly-generated plan and revised plans.
+			validatePlanBeforeRender(currentPlan!, logger);
+
 			logger.info('[auto-pipeline] Edit plan ready: %d clips',
 				Array.isArray(currentPlan!.clips) ? (currentPlan!.clips as any[]).length : 0);
 
@@ -450,16 +518,43 @@ export async function runAutoPipeline(
 			lastRenderId = renderId;
 			lastDownloadUrl = downloadUrl;
 
-			// Step 3: Grade with gpt-5-mini vision
-			logger.info('[auto-pipeline] Grading render with gpt-5-mini vision...');
-			const review = await reviewRenderedVideo(downloadUrl, currentPlan!, editMode, platform);
+			// Step 3a: Measure the render. This runs FIRST and is not negotiable —
+			// the AI reviewer below judges from 8 stills and no audio, so it cannot
+			// hear clipping, cannot see a 1s clip, and cannot catch a frozen frame.
+			// Everything here is measured with FFmpeg and cannot be talked out of.
+			let gate: GateResult | null = null;
+			try {
+				const plannedLengths = Array.isArray(currentPlan?.clips)
+					? (currentPlan!.clips as Array<{ duration?: number; speed?: number }>)
+						.map((c) => (typeof c.duration === 'number' ? c.duration / (c.speed || 1) : NaN))
+						.filter((n) => Number.isFinite(n) && n > 0)
+					: [];
+				gate = await gateRender(downloadUrl, PUBLISH_THRESHOLDS, plannedLengths.length >= 2 ? plannedLengths : undefined);
+				logger.info('[auto-pipeline] %s', gate.summary);
+				if (!gate.pass) logger.warn('\n%s', formatGateResult(gate));
+			} catch (gateErr) {
+				// A measurement failure must not silently become a pass.
+				const msg = gateErr instanceof Error ? gateErr.message : String(gateErr);
+				logger.error('[auto-pipeline] Render gate could not measure the output: %s', msg);
+				gate = null;
+			}
+			lastGate = gate;
+
+			// Step 3b: Grade with vision (taste, not correctness)
+			logger.info('[auto-pipeline] Grading render with vision model...');
+			const review = await reviewRenderedVideo(downloadUrl, currentPlan!, editMode, platform, gate?.metrics ?? null);
 			lastReview = review;
 
 			logger.info('[auto-pipeline] Score: %d/10 (storytelling=%d, pacing=%d, platform=%d) — %d issues',
 				review.overallScore, review.storytellingScore, review.pacingScore, review.platformFitScore, review.issues.length);
 
-			// Step 4: Check if score meets threshold
-			if (review.overallScore >= minScore) {
+			// Step 4: Publish only if BOTH the measured gate and the taste score pass.
+			if (gate && !gate.pass) {
+				logger.info('[auto-pipeline] Measured gate failed (%s) — will revise regardless of the %d/10 taste score.',
+					gate.failures.join(', '), review.overallScore);
+			} else if (!gate) {
+				logger.info('[auto-pipeline] Gate unmeasurable — treating as a fail and revising.');
+			} else if (review.overallScore >= minScore) {
 				logger.info('[auto-pipeline] Score %d >= %d — passing! Saving to Supabase...', review.overallScore, minScore);
 
 				const { supabaseId, publicUrl } = await saveToSupabase(
@@ -499,8 +594,27 @@ export async function runAutoPipeline(
 		}
 	}
 
-	// Max attempts reached — save best effort to Supabase anyway
-	logger.warn('[auto-pipeline] Max attempts reached. Saving best result (score=%d)...', lastReview?.overallScore);
+	// Max attempts reached. Previously this published unconditionally — a
+	// sub-threshold render went straight to finished_videos with success:true.
+	// A measured failure (clipping audio, frozen frames, black tail) is an
+	// objective defect, so it now blocks publication and routes to review
+	// instead. A merely-low taste score still publishes as before.
+	if (lastGate && !lastGate.pass) {
+		logger.warn('[auto-pipeline] Max attempts reached AND the measured gate still fails (%s). Holding for review — not publishing.',
+			lastGate.failures.join(', '));
+		return {
+			success: false,
+			renderId: lastRenderId,
+			downloadUrl: lastDownloadUrl,
+			score: lastReview?.overallScore,
+			attempts: maxAttempts,
+			review: lastReview,
+			error: `Render gate failed after ${maxAttempts} attempts: ${lastGate.failures.join(', ')}. Output is at the download URL for manual review.`,
+		};
+	}
+
+	logger.warn('[auto-pipeline] Max attempts reached. Saving best result (score=%d, gate=%s)...',
+		lastReview?.overallScore, lastGate ? 'pass' : 'unmeasured');
 
 	if (lastDownloadUrl && lastReview) {
 		try {

@@ -57,6 +57,7 @@ const POSITION_MAP: Record<SubjectPosition, { x: number; y: number }> = {
 	'right':         { x: 0.67, y: 0.50 },
 	'top-center':    { x: 0.50, y: 0.33 },
 	'bottom-center': { x: 0.50, y: 0.67 },
+	// Defensive only — the current cataloger prompt never emits these two.
 	'top-left':      { x: 0.33, y: 0.33 },
 	'top-right':     { x: 0.67, y: 0.33 },
 	'bottom-left':   { x: 0.33, y: 0.67 },

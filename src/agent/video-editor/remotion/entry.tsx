@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { registerRoot, Composition } from 'remotion';
-import { CLCVideo } from './CLCVideo';
+import { CLCVideo, computeCompositionFrames } from './CLCVideo';
 import { TransitionShowcase, SHOWCASE_DURATION_IN_FRAMES } from './TransitionShowcase';
 import type { CLCVideoProps } from './types';
 
@@ -34,15 +34,13 @@ const RemotionRoot: React.FC = () => {
 					transitionDurationFrames: 15,
 				}}
 				calculateMetadata={({ props }) => {
-					// Calculate total duration from clips + transitions
 					const p = props as unknown as CLCVideoProps;
-					const totalSeconds = p.clips.reduce((sum: number, c: { length: number }) => sum + c.length, 0);
-					const transitionOverlap = Math.max(0, p.clips.length - 1) * (p.transitionDurationFrames / p.fps);
-					const effectiveDuration = totalSeconds - transitionOverlap;
-					const totalFrames = Math.max(30, Math.ceil(effectiveDuration * p.fps));
-
+					// Delegate to the SAME helper CLCVideo uses to lay out the timeline.
+					// These two numbers must agree exactly: if the registered duration is
+					// short the tail of the video is cut off, and if it is long the render
+					// ends on dead background frames. Computing it twice is how they drifted.
 					return {
-						durationInFrames: totalFrames,
+						durationInFrames: computeCompositionFrames(p.clips, p.fps, p.transitionDurationFrames),
 						width: p.width,
 						height: p.height,
 						fps: p.fps,

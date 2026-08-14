@@ -25,6 +25,70 @@ import type { CLCVideoProps } from './types';
 import { VideoClip, getEffectForClip } from './VideoClip';
 import { TextOverlay } from './TextOverlay';
 import { getRemotionTransition } from './transitions';
+import { PanelFrame } from './PanelFrame';
+
+/**
+ * How many frames a single clip occupies in its own TransitionSeries.Sequence,
+ * and whether it is preceded by a transition.
+ *
+ * Deliberately a single shared helper: the picture timeline and the overlay
+ * time remap below BOTH need these numbers, and if the two ever computed them
+ * differently the overlays would silently desync from the video again.
+ *
+ * The transition-related floor applies ONLY to clips that actually carry a
+ * transition. It used to apply unconditionally, which padded every clip up to
+ * (2 * transitionDuration + 1s) — in our_story (1.0s transitions) a planned
+ * 1.5s beat was forced out to 3.0s and the extra 1.5s rendered as a FROZEN
+ * last frame.
+ *
+ * Math.round (not Math.ceil) because clip.length is a float: 5 / 0.3 * 30
+ * evaluates to 500.00000000000006, and ceil turns that into a spurious held frame.
+ */
+export function planClip(
+	clip: CLCVideoProps['clips'][number],
+	index: number,
+	fps: number,
+	transitionDurationFrames: number,
+): { clipFrames: number; hasTransition: boolean } {
+	const hasTransition = index > 0 && transitionDurationFrames > 0 && !!clip.transitionType;
+	const clipFrames = Math.max(
+		Math.round(clip.length * fps),
+		hasTransition ? transitionDurationFrames * 2 + Math.round(fps * 0.3) : Math.round(fps * 0.4),
+	);
+	return { clipFrames, hasTransition };
+}
+
+/**
+ * Total frames the composition occupies. THIS is the number
+ * `calculateMetadata` in entry.tsx must register — it has to agree with the
+ * tree built below or the video is cut short (or padded with dead frames).
+ *
+ * The previous entry.tsx formula subtracted overlap for EVERY clip boundary
+ * (`clips.length - 1`), assuming a transition on every cut. But a transition
+ * is only emitted when `clip.transitionType` is set, and the director is told
+ * to make ~80% of cuts hard. An 8-clip our_story edit with 2 real transitions
+ * therefore had 7 x 30 frames subtracted instead of 2 x 30 — five seconds of
+ * finished video silently truncated off the end.
+ *
+ * It also summed raw `clip.length`, ignoring the per-clip minimum floor that
+ * planClip applies, so short clips desynced the two clocks further.
+ */
+export function computeCompositionFrames(
+	clips: CLCVideoProps['clips'],
+	fps: number,
+	transitionDurationFrames: number,
+): number {
+	let total = 0;
+	let transitionCount = 0;
+	clips.forEach((clip, index) => {
+		const { clipFrames, hasTransition } = planClip(clip, index, fps, transitionDurationFrames);
+		total += clipFrames;
+		if (hasTransition) transitionCount++;
+	});
+	// Each transition pulls its clip back onto its predecessor, shortening the
+	// timeline by exactly one transition duration.
+	return Math.max(30, total - transitionCount * transitionDurationFrames);
+}
 
 export const CLCVideo: React.FC<CLCVideoProps> = ({
 	clips,
@@ -37,6 +101,8 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 	musicVolume = 0.3,
 	bgColor,
 	transitionDurationFrames,
+	layout = 'fill',
+	panel,
 }) => {
 	const { durationInFrames, width: compWidth, height: compHeight } = useVideoConfig();
 
@@ -49,10 +115,7 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 	const clipTimeline = React.useMemo(
 		() =>
 			clips.flatMap((clip, index) => {
-				const clipFrames = Math.max(
-					Math.ceil(clip.length * fps),
-					transitionDurationFrames * 2 + fps, // min: 2 transitions + 1 second
-				);
+				const { clipFrames, hasTransition } = planClip(clip, index, fps, transitionDurationFrames);
 
 				// Get effect for this clip position
 				const effect = clip.effect || getEffectForClip(mode, index);
@@ -66,7 +129,7 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 				// This honors the director prompt's "80% hard cuts — reserve transitions
 				// for deliberate moments" rule. (Previously an omitted type fell through
 				// to the mode pool, forcing a transition on EVERY cut, which reads amateur.)
-				if (index > 0 && transitionDurationFrames > 0 && clip.transitionType) {
+				if (hasTransition) {
 					elements.push(
 						<TransitionSeries.Transition
 							key={`transition-${index}`}
@@ -109,6 +172,56 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 		[clips, mode, fps, transitionDurationFrames, compWidth, compHeight],
 	);
 
+	/**
+	 * Overlay clock remap — fixes text overlays drifting LATE.
+	 *
+	 * TransitionSeries does not ADD time for a transition, it OVERLAPS the two
+	 * adjacent sequences by transitionDurationFrames. So the real picture
+	 * timeline is SHORTER than the naive sum of clip lengths by
+	 * (number of transitions x transitionDurationFrames).
+	 *
+	 * Overlay startFrame values are computed upstream in render.ts as
+	 * Math.round(overlay.start * fps) against a BUTT-JOINED timeline that knows
+	 * nothing about that overlap. With 4 transitions at 1.0s @30fps, an overlay
+	 * meant for the last clip lands 120 frames — 4 SECONDS — late, frequently
+	 * past the end of the composition entirely.
+	 *
+	 * Fix: build both clocks side by side, find which clip a given butt-joined
+	 * frame falls into, and re-express the same offset-within-that-clip on the
+	 * actual (transition-compressed) clock.
+	 */
+	const remapOverlayFrame = React.useMemo(() => {
+		// For each clip: its start on the butt-joined clock, its start on the
+		// actual clock, and its own length.
+		const starts: Array<{ butt: number; actual: number; frames: number }> = [];
+		let butt = 0;
+		let actual = 0;
+		for (let i = 0; i < clips.length; i++) {
+			const { clipFrames, hasTransition } = planClip(clips[i]!, i, fps, transitionDurationFrames);
+			// A transition pulls this clip BACK onto its predecessor by
+			// transitionDurationFrames. That subtraction is the entire drift.
+			if (hasTransition) actual -= transitionDurationFrames;
+			starts.push({ butt, actual, frames: clipFrames });
+			butt += clipFrames;
+			actual += clipFrames;
+		}
+
+		return (buttFrame: number): number => {
+			if (starts.length === 0) return Math.max(0, buttFrame);
+			// Walk backwards to the first clip that starts at or before this frame.
+			for (let i = starts.length - 1; i >= 0; i--) {
+				const s = starts[i]!;
+				if (buttFrame >= s.butt) {
+					// Preserve the offset into the clip (clamped to the clip's own length
+					// so a stale/overlong startFrame can't run past the clip it belongs to).
+					const offset = Math.min(buttFrame - s.butt, s.frames);
+					return Math.max(0, s.actual + offset);
+				}
+			}
+			return Math.max(0, buttFrame);
+		};
+	}, [clips, fps, transitionDurationFrames]);
+
 	if (clips.length === 0) {
 		return (
 			<AbsoluteFill style={{ background: bgColor, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -119,34 +232,59 @@ export const CLCVideo: React.FC<CLCVideoProps> = ({
 		);
 	}
 
+	// The picture layers. In 'panel' layout these get composited inside
+	// PanelFrame instead of filling the frame — see PanelFrame.tsx for why that
+	// is the right call on wide, subject-small source footage.
+	const picture = (
+		<>
+			<AbsoluteFill style={{ background: bgColor }} />
+			<TransitionSeries>{clipTimeline}</TransitionSeries>
+		</>
+	);
+
 	return (
 		<AbsoluteFill>
-			{/* Layer 1: Background color (prevents black during transitions) */}
-			<AbsoluteFill style={{ background: bgColor }} />
-
-			{/* Layer 2: Video clips with transitions */}
-			<TransitionSeries>{clipTimeline}</TransitionSeries>
-
-			{/* Layer 3: Text overlays */}
-			{textOverlays.map((overlay, index) => (
-				<Sequence
-					key={`text-${index}`}
-					from={Math.min(overlay.startFrame, durationInFrames - 1)}
-					durationInFrames={Math.min(
-						overlay.durationFrames,
-						durationInFrames - Math.min(overlay.startFrame, durationInFrames - 1),
-					)}
+			{layout === 'panel' ? (
+				<PanelFrame
+					headline={panel?.headline}
+					headlineAccent={panel?.headlineAccent}
+					statLine={panel?.statLine}
+					subLine={panel?.subLine}
+					brandLine={panel?.brandLine}
 				>
-					<TextOverlay
-						text={overlay.text}
-						mode={mode}
-						position={overlay.position}
-						isFirst={overlay.isFirst}
-						isLast={overlay.isLast}
-						animation={overlay.animation}
-					/>
-				</Sequence>
-			))}
+					{picture}
+				</PanelFrame>
+			) : (
+				picture
+			)}
+
+			{/* Layer 3: Text overlays — startFrame is on the butt-joined clock, so it
+			    must be remapped onto the transition-compressed picture timeline. */}
+			{textOverlays.map((overlay, index) => {
+				const from = remapOverlayFrame(overlay.startFrame);
+				// Anything landing at or past the end used to be clamped to
+				// (durationInFrames - 1), which flashed the card for a single frame.
+				// A 1-frame title card reads as a glitch — drop it instead.
+				if (from >= durationInFrames - 1) return null;
+				// Still clamp the tail so the Sequence cannot run past the composition.
+				const durationFrames = Math.max(1, Math.min(overlay.durationFrames, durationInFrames - from));
+				return (
+					<Sequence
+						key={`text-${index}`}
+						from={from}
+						durationInFrames={durationFrames}
+					>
+						<TextOverlay
+							text={overlay.text}
+							mode={mode}
+							position={overlay.position}
+							isFirst={overlay.isFirst}
+							isLast={overlay.isLast}
+							animation={overlay.animation}
+						/>
+					</Sequence>
+				);
+			})}
 
 			{/* Layer 4: Music soundtrack with fade in/out */}
 			{musicSrc && (

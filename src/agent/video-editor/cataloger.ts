@@ -1611,7 +1611,31 @@ export function getProcessedFileIds(): string[] {
  * Downloads each video, runs scoreVideoTimestamps, saves scores to catalog.
  * Skips entries that already have timestampScores unless force=true.
  */
+/**
+ * Guards against concurrent rescore loops: each HTTP re-trigger of the
+ * rescore task previously started ANOTHER full loop over the same entries,
+ * multiplying Drive downloads exactly when a stalled run tempts the operator
+ * (or a driver script) to re-trigger. Mirrors the _catalogJob running guard.
+ */
+let _rescoreInFlight = false;
+
 export async function rescoreExistingCatalog(
+	options: { force?: boolean; fileIds?: string[] } = {},
+	onProgress?: (completed: number, total: number, currentFile: string) => void,
+): Promise<{ scored: number; skipped: number; failed: number }> {
+	if (_rescoreInFlight) {
+		console.log('[cataloger] Re-score already running — ignoring duplicate trigger');
+		return { scored: 0, skipped: 0, failed: 0 };
+	}
+	_rescoreInFlight = true;
+	try {
+		return await rescoreExistingCatalogInner(options, onProgress);
+	} finally {
+		_rescoreInFlight = false;
+	}
+}
+
+async function rescoreExistingCatalogInner(
 	options: { force?: boolean; fileIds?: string[] } = {},
 	onProgress?: (completed: number, total: number, currentFile: string) => void,
 ): Promise<{ scored: number; skipped: number; failed: number }> {

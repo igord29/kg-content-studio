@@ -1727,7 +1727,9 @@ async function rescoreExistingCatalogInner(
 				parentFolderId: (video.parents && video.parents[0]) || '',
 			};
 
-			const videoPath = await withTimeout(downloadVideoToTemp(videoFile), 10 * 60_000, `download ${entry.filename}`);
+			// 25 min: a ~330MB 180s clip at throttled Drive speeds (~300KB/s) needs
+			// ~18 min. The 10-min limit left every long clip in a fail-retry loop.
+			const videoPath = await withTimeout(downloadVideoToTemp(videoFile), 25 * 60_000, `download ${entry.filename}`);
 			const actualDuration = getVideoDuration(videoPath);
 
 			// Run timestamp scoring. The outer ceiling guarantees no video —

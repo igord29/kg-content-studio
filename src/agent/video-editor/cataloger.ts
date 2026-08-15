@@ -1619,6 +1619,23 @@ export function getProcessedFileIds(): string[] {
  */
 let _rescoreInFlight = false;
 
+/**
+ * Reject if a promise takes longer than ms. The underlying operation is not
+ * aborted (Drive downloads have no cancel path here) — the point is to keep
+ * the rescore LOOP moving: without this, one stalled download on a throttled
+ * Drive connection hangs the loop forever, and the in-flight guard then
+ * blocks every recovery re-trigger as a duplicate.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const t = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
+		p.then(
+			v => { clearTimeout(t); resolve(v); },
+			e => { clearTimeout(t); reject(e); },
+		);
+	});
+}
+
 export async function rescoreExistingCatalog(
 	options: { force?: boolean; fileIds?: string[] } = {},
 	onProgress?: (completed: number, total: number, currentFile: string) => void,
@@ -1667,8 +1684,8 @@ async function rescoreExistingCatalogInner(
 		if (onProgress) onProgress(scored + failed + skipped, toScore.length, entry.filename);
 
 		try {
-			// Download video to temp
-			const video = await getVideoMetadata(entry.fileId);
+			// Download video to temp (bounded — see withTimeout)
+			const video = await withTimeout(getVideoMetadata(entry.fileId), 60_000, `metadata ${entry.filename}`);
 			const videoFile: VideoFile = {
 				id: entry.fileId,
 				name: entry.filename,
@@ -1679,7 +1696,7 @@ async function rescoreExistingCatalogInner(
 				parentFolderId: (video.parents && video.parents[0]) || '',
 			};
 
-			const videoPath = await downloadVideoToTemp(videoFile);
+			const videoPath = await withTimeout(downloadVideoToTemp(videoFile), 10 * 60_000, `download ${entry.filename}`);
 			const actualDuration = getVideoDuration(videoPath);
 
 			// Run timestamp scoring

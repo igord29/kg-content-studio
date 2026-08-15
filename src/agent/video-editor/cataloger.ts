@@ -24,6 +24,8 @@ import {
 	getVideoMetadata,
 	saveCatalog,
 	fetchLatestCatalogFromDrive,
+	fetchCatalogFromSupabase,
+	fetchCatalogFromKV,
 	type VideoFile,
 	type CatalogEntry,
 } from './google-drive';
@@ -1138,7 +1140,7 @@ let hydrateInFlight: Promise<void> | null = null;
 export async function hydrateCatalogFromDrive(force = false): Promise<{
 	restored: boolean;
 	count: number;
-	source: 'local' | 'drive' | 'seed' | 'skipped';
+	source: 'local' | 'kv' | 'supabase' | 'drive' | 'seed' | 'skipped';
 }> {
 	if (catalogHydrated && !force) return { restored: false, count: 0, source: 'skipped' };
 	if (!force && Date.now() < hydrateCooldownUntil) {
@@ -1169,6 +1171,31 @@ export async function hydrateCatalogFromDrive(force = false): Promise<{
 			+ 'Mount a Railway volume at /data, or every redeploy discards catalog enrichment.',
 			PERSISTENT_DIR,
 		);
+	}
+
+	// Platform KV first — the credential-free backup (see saveCatalog).
+	const fromKV = await fetchCatalogFromKV();
+	if (fromKV && fromKV.length > 0) {
+		try {
+			fs.mkdirSync(path.dirname(CATALOG_RESULTS_PATH), { recursive: true });
+			fs.writeFileSync(CATALOG_RESULTS_PATH, JSON.stringify(fromKV, null, 2), 'utf-8');
+		} catch { /* restored in-memory; cache write retries next time */ }
+		catalogHydrated = true;
+		console.log('[cataloger] Catalog restored from KV (%d entries)', fromKV.length);
+		return { restored: true, count: fromKV.length, source: 'kv' };
+	}
+
+	// Then Supabase (works when creds are present; Drive uploads fail silently
+	// on service-account storage quota; see saveCatalog).
+	const fromSupabase = await fetchCatalogFromSupabase();
+	if (fromSupabase && fromSupabase.length > 0) {
+		try {
+			fs.mkdirSync(path.dirname(CATALOG_RESULTS_PATH), { recursive: true });
+			fs.writeFileSync(CATALOG_RESULTS_PATH, JSON.stringify(fromSupabase, null, 2), 'utf-8');
+		} catch { /* still restored in-memory; next load retries the cache write */ }
+		catalogHydrated = true;
+		console.log('[cataloger] Catalog restored from Supabase (%d entries)', fromSupabase.length);
+		return { restored: true, count: fromSupabase.length, source: 'supabase' };
 	}
 
 	const restored = await fetchLatestCatalogFromDrive();

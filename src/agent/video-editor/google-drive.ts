@@ -10,6 +10,79 @@
 import { drive_v3, auth as googleAuth } from '@googleapis/drive';
 import * as path from 'path';
 import * as fs from 'fs';
+import { gzipSync, gunzipSync } from 'node:zlib';
+import { supabaseAdmin } from '../../lib/supabase';
+
+// --- Agentuity KV catalog persistence ---
+// The catalog has no durable home on this platform: /data is not mounted
+// (local file dies with the container), Drive uploads fail on service-account
+// storage quota, and the cloud env has no Supabase credentials. The runtime's
+// own KV storage needs none of those — the handler injects ctx.kv here once
+// per request via setCatalogKV().
+type CatalogKV = {
+	get<T>(name: string, key: string): Promise<{ exists: boolean; data?: T }>;
+	set<T>(name: string, key: string, value: T, params?: { contentType?: string }): Promise<void>;
+};
+let catalogKV: CatalogKV | null = null;
+export function setCatalogKV(kv: CatalogKV): void {
+	catalogKV = kv;
+}
+
+const KV_NAMESPACE = 'video-catalog';
+// Chunk the gzip'd base64 so no single value approaches per-value size caps.
+const KV_CHUNK_CHARS = 512 * 1024;
+
+export async function saveCatalogToKV(catalogJson: string): Promise<boolean> {
+	if (!catalogKV) return false;
+	try {
+		const b64 = gzipSync(Buffer.from(catalogJson, 'utf-8')).toString('base64');
+		const chunks: string[] = [];
+		for (let i = 0; i < b64.length; i += KV_CHUNK_CHARS) {
+			chunks.push(b64.slice(i, i + KV_CHUNK_CHARS));
+		}
+		for (let i = 0; i < chunks.length; i++) {
+			await catalogKV.set(KV_NAMESPACE, `main.${i}`, chunks[i]!);
+		}
+		// Manifest last, so a torn write leaves a stale-but-consistent manifest;
+		// a mismatched read fails gunzip/parse and falls through to other sources.
+		await catalogKV.set(
+			KV_NAMESPACE,
+			'main.manifest',
+			JSON.stringify({ chunks: chunks.length, savedAt: new Date().toISOString() }),
+		);
+		console.log(`[google-drive] KV catalog backup saved (${chunks.length} chunk(s), ${Math.round(b64.length / 1024)}KB gz)`);
+		return true;
+	} catch (err) {
+		console.warn('[google-drive] KV catalog backup failed:', (err as Error).message);
+		return false;
+	}
+}
+
+export async function fetchCatalogFromKV(): Promise<CatalogEntry[] | null> {
+	if (!catalogKV) return null;
+	try {
+		const manifestRes = await catalogKV.get<string>(KV_NAMESPACE, 'main.manifest');
+		if (!manifestRes.exists || manifestRes.data === undefined) return null;
+		const rawManifest = manifestRes.data;
+		const manifest = (typeof rawManifest === 'string' ? JSON.parse(rawManifest) : rawManifest) as { chunks: number };
+		if (!manifest || typeof manifest.chunks !== 'number' || manifest.chunks < 1) return null;
+
+		let b64 = '';
+		for (let i = 0; i < manifest.chunks; i++) {
+			const chunk = await catalogKV.get<string>(KV_NAMESPACE, `main.${i}`);
+			if (!chunk.exists || typeof chunk.data !== 'string') {
+				console.warn(`[google-drive] KV catalog chunk ${i} missing — backup unreadable`);
+				return null;
+			}
+			b64 += chunk.data;
+		}
+		const parsed = JSON.parse(gunzipSync(Buffer.from(b64, 'base64')).toString('utf-8')) as CatalogEntry[];
+		return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+	} catch (err) {
+		console.warn('[google-drive] KV catalog read failed:', (err as Error).message);
+		return null;
+	}
+}
 
 // --- Auth Setup ---
 
@@ -470,13 +543,38 @@ export async function saveCatalog(catalog: CatalogEntry[], parentFolderId?: stri
   // Use persistent volume (/data) on Railway, fall back to cwd for local dev
   const persistDir = fs.existsSync('/data') ? '/data' : process.cwd();
   const localPath = path.join(persistDir, 'catalog-results.json');
-  
+
   // Always save locally first as a fallback
   try {
     fs.writeFileSync(localPath, catalogJson, 'utf-8');
     console.log(`[google-drive] Local catalog saved: ${localPath}`);
   } catch (localErr) {
     console.warn('[google-drive] Failed to save local catalog:', localErr);
+  }
+
+  // Platform KV first — needs no external credentials at all.
+  await saveCatalogToKV(catalogJson);
+
+  // Supabase Storage as a second durable copy when credentials exist (they
+  // are absent in the current cloud env). The Drive upload below fails
+  // silently — service accounts have no storage quota of their own, so
+  // files.create into a personal-Drive folder is rejected.
+  try {
+    if (supabaseAdmin) {
+      const { error } = await supabaseAdmin.storage
+        .from('raw-videos')
+        .upload('catalog/catalog-backup.json', catalogJson, {
+          upsert: true,
+          contentType: 'application/json',
+        });
+      if (error) {
+        console.warn('[google-drive] Supabase catalog backup failed:', error.message);
+      } else {
+        console.log('[google-drive] Supabase catalog backup saved');
+      }
+    }
+  } catch (err) {
+    console.warn('[google-drive] Supabase catalog backup error:', (err as Error).message);
   }
 
   // Try to save to Google Drive
@@ -574,6 +672,83 @@ export async function fetchLatestCatalogFromDrive(
     return null;
   } catch (err) {
     console.warn('[google-drive] Catalog restore from Drive failed:', (err as Error).message);
+    return null;
+  }
+}
+
+/**
+ * Scan recent catalog backups and return the one with the MOST scored entries.
+ *
+ * fetchLatestCatalogFromDrive takes the newest file, which is wrong after a
+ * wipe: a cold start that failed to hydrate falls back to the seed, and the
+ * rescore loop then uploads new backups of the nearly-unscored catalog —
+ * making "newest" the poisoned one while the pre-wipe backup with a day of
+ * scoring sits one file older. Recovery must pick by content, not recency.
+ */
+export async function fetchBestScoredCatalogFromDrive(
+  parentFolderId?: string,
+): Promise<{ catalog: CatalogEntry[]; fileName: string; scoredCount: number; scanned: number } | null> {
+  const root = parentFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+  if (!root) return null;
+
+  try {
+    const drive = getDrive();
+    const list = await drive.files.list({
+      q: `'${root}' in parents and name contains 'video-catalog-' and trashed = false`,
+      orderBy: 'createdTime desc',
+      pageSize: 15,
+      fields: 'files(id, name, createdTime, size)',
+    });
+
+    const files = list.data.files || [];
+    let best: { catalog: CatalogEntry[]; fileName: string; scoredCount: number } | null = null;
+    let scanned = 0;
+
+    for (const f of files) {
+      if (!f.id) continue;
+      try {
+        const res = await drive.files.get(
+          { fileId: f.id, alt: 'media' },
+          { responseType: 'text' },
+        );
+        const parsed = JSON.parse(String(res.data)) as CatalogEntry[];
+        if (!Array.isArray(parsed) || parsed.length === 0) continue;
+        scanned++;
+        const scoredCount = parsed.filter(e => e.timestampScores && e.timestampScores.length > 0).length;
+        console.log(`[google-drive] Backup ${f.name}: ${scoredCount} scored of ${parsed.length}`);
+        if (!best || scoredCount > best.scoredCount) {
+          best = { catalog: parsed, fileName: f.name || f.id, scoredCount };
+        }
+      } catch (err) {
+        console.warn(`[google-drive] Backup ${f.name} unreadable: ${(err as Error).message}`);
+      }
+    }
+
+    return best ? { ...best, scanned } : null;
+  } catch (err) {
+    console.warn('[google-drive] Backup scan failed:', (err as Error).message);
+    return null;
+  }
+}
+
+/**
+ * Read the catalog backup out of Supabase Storage (see saveCatalog for why
+ * this is the backup that actually survives restarts).
+ */
+export async function fetchCatalogFromSupabase(): Promise<CatalogEntry[] | null> {
+  try {
+    if (!supabaseAdmin) return null;
+    const { data, error } = await supabaseAdmin.storage
+      .from('raw-videos')
+      .download('catalog/catalog-backup.json');
+    if (error || !data) {
+      console.warn('[google-drive] No Supabase catalog backup:', error?.message || 'empty');
+      return null;
+    }
+    const parsed = JSON.parse(await data.text()) as CatalogEntry[];
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+  } catch (err) {
+    console.warn('[google-drive] Supabase catalog read failed:', (err as Error).message);
     return null;
   }
 }

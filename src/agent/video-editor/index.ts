@@ -23,6 +23,10 @@ import {
 	listVideoFiles,
 	getFolderSummary,
 	getVideoMetadata,
+	fetchBestScoredCatalogFromDrive,
+	fetchCatalogFromSupabase,
+	fetchCatalogFromKV,
+	setCatalogKV,
 	getVideoThumbnail,
 	getHighResThumbnailUrl,
 	downloadVideo,
@@ -280,6 +284,13 @@ const agent = createAgent('video-editor', {
 	handler: async (ctx, input) => {
 		const task = input.task || 'legacy';
 		ctx.logger.info('[video-editor] Task: %s', task);
+
+		// Hand the platform KV service to the catalog module before anything
+		// touches the catalog — it is the only durable store this deployment
+		// has (no /data volume, no Supabase creds, Drive uploads quota-fail).
+		try {
+			setCatalogKV((ctx as any).kv);
+		} catch { /* KV unavailable — persistence falls back to Supabase/Drive */ }
 
 		// Restore the enriched catalog from Drive if this container came up without
 		// it. loadExistingCatalog() is synchronous and used in 24 places, so it
@@ -1908,6 +1919,110 @@ const agent = createAgent('video-editor', {
 			return {
 				success: true,
 				status,
+			};
+		}
+
+		// Recover scoring lost to a wiped runtime catalog: scan Drive backups,
+		// take the one with the most scored entries, and fill in scores the
+		// current catalog is missing. Never overwrites fresh scores. Results in
+		// `message` (the output validator strips unknown fields).
+		if (task === 'catalog-merge-backups') {
+			let best = await fetchBestScoredCatalogFromDrive();
+			for (const [label, cat] of [
+				['supabase:catalog/catalog-backup.json', await fetchCatalogFromSupabase()],
+				['kv:video-catalog/main', await fetchCatalogFromKV()],
+			] as const) {
+				if (!cat) continue;
+				const scored = cat.filter(e => e.timestampScores && e.timestampScores.length > 0).length;
+				if (!best || scored > best.scoredCount) {
+					best = {
+						catalog: cat,
+						fileName: label,
+						scoredCount: scored,
+						scanned: (best?.scanned ?? 0) + 1,
+					};
+				}
+			}
+			if (!best) {
+				return { success: false, message: 'catalog-merge: no readable backups found' };
+			}
+			const catalog = loadExistingCatalog();
+			const byId = new Map(best.catalog.filter(e => e.fileId).map(e => [e.fileId, e]));
+			let merged = 0;
+			for (const entry of catalog) {
+				if (entry.timestampScores && entry.timestampScores.length > 0) continue;
+				const backup = entry.fileId ? byId.get(entry.fileId) : undefined;
+				if (backup?.timestampScores && backup.timestampScores.length > 0) {
+					entry.timestampScores = backup.timestampScores;
+					if (!entry.sceneAnalysis && backup.sceneAnalysis) {
+						entry.sceneAnalysis = backup.sceneAnalysis;
+					}
+					merged++;
+				}
+			}
+			if (merged > 0) {
+				await saveCatalog(catalog);
+			}
+			return {
+				success: true,
+				message: JSON.stringify({
+					bestFile: best.fileName,
+					backupScored: best.scoredCount,
+					backupsScanned: best.scanned,
+					merged,
+				}),
+			};
+		}
+
+		// Server-side Drive diagnostic: the cloud exposes no runtime logs, so
+		// this returns the ACTUAL Google API error strings over HTTP. Results
+		// ride in `message` (a string) because the route's output validator
+		// strips unknown response fields (see catalog-status, which loses
+		// `status` the same way).
+		if (task === 'drive-health') {
+			const fsMod = await import('node:fs');
+			const pathMod = await import('node:path');
+			const osMod = await import('node:os');
+			const results: Record<string, string> = {};
+			const timed = async (label: string, ms: number, fn: () => Promise<unknown>) => {
+				const t0 = Date.now();
+				try {
+					await Promise.race([
+						fn(),
+						new Promise((_, rej) => setTimeout(() => rej(new Error(`probe timeout ${ms}ms`)), ms)),
+					]);
+					results[label] = `ok in ${Date.now() - t0}ms`;
+				} catch (err) {
+					results[label] = `FAIL after ${Date.now() - t0}ms: ${((err as Error).message || String(err)).slice(0, 300)}`;
+				}
+			};
+			const catalog = loadExistingCatalog();
+			const smallest = [...catalog]
+				.filter(e => e.fileId && (parseInt(e.duration || '0') || 0) > 0)
+				.sort((a, b) => (parseInt(a.duration || '999') || 999) - (parseInt(b.duration || '999') || 999))[0];
+			const probeId = smallest?.fileId;
+			if (!probeId) {
+				return { success: false, message: 'drive-health: no catalog entry with a fileId to probe' };
+			}
+			await timed('metadata', 30_000, () => getVideoMetadata(probeId));
+			const tmpPath = pathMod.join(osMod.tmpdir(), `drive_health_${Date.now()}.mp4`);
+			await timed('download', 120_000, async () => {
+				await downloadVideo(probeId, tmpPath);
+				fsMod.unlinkSync(tmpPath);
+			});
+			// KV backup readout — the only HTTP-visible way to confirm the
+			// credential-free backup actually holds data.
+			try {
+				const kvCat = await fetchCatalogFromKV();
+				results['kvBackup'] = kvCat
+					? `${kvCat.length} entries, ${kvCat.filter(e => e.timestampScores?.length).length} scored`
+					: 'none';
+			} catch (err) {
+				results['kvBackup'] = `error: ${(err as Error).message.slice(0, 120)}`;
+			}
+			return {
+				success: true,
+				message: JSON.stringify({ probeFile: smallest?.filename, ...results }),
 			};
 		}
 

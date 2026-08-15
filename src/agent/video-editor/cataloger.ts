@@ -1008,6 +1008,10 @@ async function scoreVideoTimestamps(
 			// stadium signage, tracked back to gpt-4o-mini hallucinating that score.
 			const result = await generateText({
 				model: openai('gpt-4o'),
+				// A hung scoring request froze the whole rescore loop behind the
+				// in-flight guard (observed 2026-08-15: flat for 90+ min with Drive
+				// healthy). Kill the request itself rather than racing it.
+				abortSignal: AbortSignal.timeout(120_000),
 				messages: [{ role: 'user', content: contentParts }],
 			});
 
@@ -1726,8 +1730,14 @@ async function rescoreExistingCatalogInner(
 			const videoPath = await withTimeout(downloadVideoToTemp(videoFile), 10 * 60_000, `download ${entry.filename}`);
 			const actualDuration = getVideoDuration(videoPath);
 
-			// Run timestamp scoring
-			const scores = await scoreVideoTimestamps(videoPath, entry.fileId, actualDuration);
+			// Run timestamp scoring. The outer ceiling guarantees no video —
+			// whatever the failure mode inside — can freeze the loop; a video
+			// that blows it fails alone and the next sweep retries it.
+			const scores = await withTimeout(
+				scoreVideoTimestamps(videoPath, entry.fileId, actualDuration),
+				25 * 60_000,
+				`scoring ${entry.filename}`,
+			);
 
 			// Update the entry in the catalog
 			const catalogIndex = catalog.findIndex(e => e.fileId === entry.fileId);

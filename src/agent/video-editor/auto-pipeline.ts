@@ -31,6 +31,12 @@ export interface PipelineConfig {
 	appUrl: string;  // Public URL for Lambda webhook callbacks (e.g. https://app.railway.app)
 	/** Prior-render clip usage — lets the planner avoid repeating the same cuts */
 	usageSummary?: VideoUsageSummary[];
+	/**
+	 * Stage heartbeat. The pipeline runs detached (the gateway kills held HTTP
+	 * streams) and cloud runtime logs are unreachable, so this is the only way
+	 * to see WHERE a run died: the caller persists each stage to KV.
+	 */
+	onStage?: (stage: string) => void;
 }
 
 export interface PipelineResult {
@@ -488,8 +494,11 @@ export async function runAutoPipeline(
 	let lastDownloadUrl: string | undefined;
 	let lastRenderId = '';
 
+	const stage = (s: string) => { try { config.onStage?.(s); } catch { /* heartbeat must never break the pipeline */ } };
+
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		logger.info('[auto-pipeline] === Attempt %d/%d ===', attempt, maxAttempts);
+		stage(`attempt ${attempt}/${maxAttempts}: generating edit plan`);
 
 		try {
 			// Step 1: Generate (or revise) edit plan
@@ -514,9 +523,11 @@ export async function runAutoPipeline(
 				Array.isArray(currentPlan!.clips) ? (currentPlan!.clips as any[]).length : 0);
 
 			// Step 2: Render
+			stage(`attempt ${attempt}: submitting render (preprocess + Lambda)`);
 			const { renderId, downloadUrl } = await submitAndPollRender(currentPlan!, platform, editMode, appUrl, logger);
 			lastRenderId = renderId;
 			lastDownloadUrl = downloadUrl;
+			stage(`attempt ${attempt}: render complete (${renderId}) — measuring`);
 
 			// Step 3a: Measure the render. This runs FIRST and is not negotiable —
 			// the AI reviewer below judges from 8 stills and no audio, so it cannot
@@ -542,6 +553,7 @@ export async function runAutoPipeline(
 
 			// Step 3b: Grade with vision (taste, not correctness)
 			logger.info('[auto-pipeline] Grading render with vision model...');
+			stage(`attempt ${attempt}: gate ${gate ? (gate.pass ? 'PASS' : 'FAIL') : 'unmeasured'} — reviewing`);
 			const review = await reviewRenderedVideo(downloadUrl, currentPlan!, editMode, platform, gate?.metrics ?? null);
 			lastReview = review;
 
@@ -556,10 +568,23 @@ export async function runAutoPipeline(
 				logger.info('[auto-pipeline] Gate unmeasurable — treating as a fail and revising.');
 			} else if (review.overallScore >= minScore) {
 				logger.info('[auto-pipeline] Score %d >= %d — passing! Saving to Supabase...', review.overallScore, minScore);
+				stage(`attempt ${attempt}: PASSED (score ${review.overallScore}) — saving to library`);
 
-				const { supabaseId, publicUrl } = await saveToSupabase(
-					downloadUrl, currentPlan!, review, platform, editMode, topic, renderId, attempt - 1, videoIds, logger,
-				);
+				// Library save must not sink a successful render: the cloud env has
+				// no Supabase credentials right now, so this write fails — but the
+				// render itself is real and downloadable. Log, and return success.
+				let supabaseId: string | undefined;
+				let publicUrl: string | undefined;
+				try {
+					const saved = await saveToSupabase(
+						downloadUrl, currentPlan!, review, platform, editMode, topic, renderId, attempt - 1, videoIds, logger,
+					);
+					supabaseId = saved.supabaseId;
+					publicUrl = saved.publicUrl;
+				} catch (saveErr) {
+					const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
+					logger.warn('[auto-pipeline] Library save failed (render still available at downloadUrl): %s', msg);
+				}
 
 				return {
 					success: true,
@@ -579,6 +604,7 @@ export async function runAutoPipeline(
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			logger.error('[auto-pipeline] Attempt %d failed: %s', attempt, msg);
+			stage(`attempt ${attempt} FAILED: ${msg.slice(0, 250)}`);
 
 			if (attempt === maxAttempts) {
 				return {

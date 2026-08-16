@@ -108,6 +108,34 @@ import {
  * This adapter uses bare `console.*` which writes to stdout/stderr.
  * Railway captures both; the prefix keeps the render id correlatable.
  */
+/**
+ * Write a small JSON object to the Remotion S3 bucket. Used for auto-process
+ * heartbeats/results: KV writes from the detached pipeline context fail
+ * silently (unresolved), while S3 writes from the same context demonstrably
+ * work (the preprocessing pipeline uploads clips through it) — and S3 is
+ * readable from the operator's machine without the agent in the loop.
+ */
+async function putS3Status(key: string, body: unknown): Promise<void> {
+	try {
+		const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+		const client = new S3Client({
+			region: process.env.REMOTION_AWS_REGION || 'us-east-1',
+			credentials: {
+				accessKeyId: process.env.REMOTION_AWS_ACCESS_KEY_ID!,
+				secretAccessKey: process.env.REMOTION_AWS_SECRET_ACCESS_KEY!,
+			},
+		});
+		await client.send(new PutObjectCommand({
+			Bucket: process.env.REMOTION_BUCKET_NAME!,
+			Key: key,
+			Body: JSON.stringify(body),
+			ContentType: 'application/json',
+		}));
+	} catch (err) {
+		console.warn('[auto-process] S3 status write failed:', (err as Error).message);
+	}
+}
+
 function makeAsyncLogger(prefix: string) {
 	return {
 		info: (fmt: string, ...args: unknown[]) => console.info(`[${prefix}] ${fmt}`, ...args),
@@ -153,6 +181,9 @@ const AgentInput = s.object({
 	// Render task fields
 	editPlan: s.any().optional(), // The AI-generated edit plan with clip info
 	renderId: s.string().optional(), // For render-status polling
+	jobId: s.string().optional(), // For auto-process-result polling
+	minScore: s.number().optional(), // auto-process: review score threshold
+	maxAttempts: s.number().optional(), // auto-process: render attempt cap
 	renderEngine: s.string().optional(), // 'shotstack' | 'remotion' — which render engine to use
 
 	// Catalog task fields
@@ -1121,15 +1152,24 @@ const agent = createAgent('video-editor', {
 						// Prior-render usage (loaded by the API layer) — keeps consecutive
 						// renders from re-picking the exact same cuts.
 						usageSummary: Array.isArray(input.usageSummary) ? input.usageSummary as any : undefined,
+						// Persist each stage to KV AND S3: the only visibility into
+						// where a detached run dies (cloud runtime logs unreachable;
+						// KV writes from detached context have proven unreliable).
+						onStage: (s: string) => {
+							void saveJobResult(`${jobId}.stage`, { stage: s, at: new Date().toISOString() });
+							void putS3Status(`heartbeats/${jobId}/${Date.now()}.json`, { stage: s });
+						},
 					},
 					asyncLogger as any,
 				).then(result => {
 					asyncLogger.info('Pipeline done: success=%s score=%s renderId=%s', String(result.success), String(result.score), String(result.renderId));
 					void saveJobResult(jobId, result);
+					void putS3Status(`heartbeats/${jobId}/RESULT.json`, result);
 				}).catch(err => {
 					const msg = err instanceof Error ? err.message : String(err);
 					asyncLogger.error('Pipeline error: %s', msg);
 					void saveJobResult(jobId, { success: false, error: msg });
+					void putS3Status(`heartbeats/${jobId}/RESULT.json`, { success: false, error: msg });
 				});
 
 				return {
@@ -1145,10 +1185,15 @@ const agent = createAgent('video-editor', {
 		}
 
 		if (task === 'auto-process-result') {
-			const jobId = (input as any).jobId as string | undefined;
+			// renderId accepted as a fallback carrier: it predates jobId in the
+			// input schema, and schema-stripped unknown fields fail silently.
+			const jobId = (input.jobId || input.renderId) as string | undefined;
 			if (!jobId) return { success: false, message: 'jobId required' };
 			const result = await getJobResult(jobId);
-			return { success: true, message: result ?? 'pending' };
+			if (result) return { success: true, message: result };
+			// No final result yet — surface the latest stage heartbeat instead.
+			const stageRec = await getJobResult(`${jobId}.stage`);
+			return { success: true, message: stageRec ? `pending — ${stageRec}` : 'pending' };
 		}
 
 		// --- Review rendered video ---

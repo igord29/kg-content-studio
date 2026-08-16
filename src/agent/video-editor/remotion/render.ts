@@ -257,6 +257,32 @@ async function submitRenderWithRetry(
 
 			const invokeStart = Date.now();
 			const payloadBytes = Buffer.from(JSON.stringify(renderPayload));
+
+			// Attempt 2+: plain async Event invoke. InvokeWithResponseStream hangs
+			// on Agentuity's egress (observed 2026-08-16: 'InvokeWithResponseStream
+			// attempt 3/3 timed out after 60000ms' — three full pipeline runs died
+			// there). The stream is only read for early error detail; completion
+			// detection is already stream-independent (webhook + S3 HeadObject on
+			// the deterministic outputS3Key), so a 202 here is all we need.
+			if (attempt >= 2) {
+				const { InvokeCommand } = await import('@aws-sdk/client-lambda');
+				const resp = await withTimeout(
+					lambda.send(new InvokeCommand({
+						FunctionName: opts.functionName,
+						Payload: payloadBytes,
+						InvocationType: 'Event',
+					})),
+					30_000,
+					`async Event invoke attempt ${attempt}/${maxAttempts}`,
+				);
+				if (resp.StatusCode !== 202) {
+					throw new Error(`Event invoke returned unexpected status ${resp.StatusCode}`);
+				}
+				logger?.info('[remotion-lambda] Async Event invoke accepted (202) in %dms — webhook/S3 polling takes it from here',
+					Date.now() - invokeStart);
+				return { correlationId, outputS3Key, bucketName };
+			}
+
 			logger?.info('[remotion-lambda] Streaming invoke: correlationId=%s, payload=%d bytes, function=%s, region=%s',
 				correlationId, payloadBytes.length, opts.functionName, opts.region);
 

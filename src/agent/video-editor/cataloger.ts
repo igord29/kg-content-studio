@@ -211,17 +211,19 @@ async function downloadVideoToTemp(video: VideoFile): Promise<string> {
 
 	const downloadUrl = `https://www.googleapis.com/drive/v3/files/${video.id}?alt=media`;
 
-	// Download with timeout (2 minutes for large files)
+	// Abort covers the ENTIRE download including the body stream. The old code
+	// cleared the timer once headers arrived, leaving the read loop unbounded —
+	// a stalled stream on throttled Drive then hung the whole catalog job
+	// forever behind its running-guard (observed 2026-08-16, flat at 255 for
+	// 90+ min). 25 min covers a ~330MB clip at ~300KB/s worst case.
 	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), 120000);
+	const timeoutId = setTimeout(() => controller.abort(), 25 * 60_000);
 
 	try {
 		const response = await fetch(downloadUrl, {
 			headers: { 'Authorization': `Bearer ${accessToken}` },
 			signal: controller.signal,
 		});
-
-		clearTimeout(timeoutId);
 
 		if (!response.ok) {
 			throw new Error(`Download failed: ${response.status} ${response.statusText}`);
@@ -247,6 +249,7 @@ async function downloadVideoToTemp(video: VideoFile): Promise<string> {
 			fileStream.on('error', reject);
 		});
 
+		clearTimeout(timeoutId);
 		return localPath;
 	} catch (err) {
 		clearTimeout(timeoutId);

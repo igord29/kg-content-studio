@@ -340,8 +340,9 @@ async function submitAndPollRender(
 		logger as any,
 	);
 
-	// Poll until done or failed (max ~10 minutes)
-	const maxPolls = 60;
+	// Poll until done or failed (max ~20 minutes — covers the local-relay
+	// submit path, which adds pickup latency before the Lambda even starts)
+	const maxPolls = 120;
 	const pollInterval = 10_000;
 
 	for (let i = 0; i < maxPolls; i++) {

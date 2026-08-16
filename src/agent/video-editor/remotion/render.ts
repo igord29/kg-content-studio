@@ -258,28 +258,46 @@ async function submitRenderWithRetry(
 			const invokeStart = Date.now();
 			const payloadBytes = Buffer.from(JSON.stringify(renderPayload));
 
-			// Attempt 2+: plain async Event invoke. InvokeWithResponseStream hangs
-			// on Agentuity's egress (observed 2026-08-16: 'InvokeWithResponseStream
-			// attempt 3/3 timed out after 60000ms' — three full pipeline runs died
-			// there). The stream is only read for early error detail; completion
-			// detection is already stream-independent (webhook + S3 HeadObject on
-			// the deterministic outputS3Key), so a 202 here is all we need.
+			// Attempt 2+: delegate the submit to the LOCAL RELAY. Every direct
+			// invocation mode fails from this platform (streaming hangs on egress;
+			// Event is accepted but the streamified handler runs nothing; buffered
+			// RequestResponse times out — all observed 2026-08-16). The relay
+			// daemon on the operator machine polls pending-submits/ and calls
+			// renderMediaOnLambda where streaming works; the deterministic
+			// outputS3Key + webhook feed the existing completion polling unchanged.
 			if (attempt >= 2) {
-				const { InvokeCommand } = await import('@aws-sdk/client-lambda');
-				const resp = await withTimeout(
-					lambda.send(new InvokeCommand({
-						FunctionName: opts.functionName,
-						Payload: payloadBytes,
-						InvocationType: 'Event',
+				const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+				const s3 = new S3Client({ region: opts.region as string, credentials });
+				const spec = {
+					submitOpts: {
+						region: opts.region,
+						functionName: opts.functionName,
+						serveUrl: opts.serveUrl,
+						composition: opts.composition,
+						codec: opts.codec,
+						inputProps: opts.inputProps,
+						privacy: opts.privacy,
+						framesPerLambda: opts.framesPerLambda,
+						timeoutInMilliseconds: opts.timeoutInMilliseconds,
+					},
+					outName: { key: outputS3Key, bucketName },
+					webhook: { url: webhookUrl, secret: webhookSecret, customData: { correlationId } },
+					correlationId,
+					outputS3Key,
+					bucketName,
+					createdAt: new Date().toISOString(),
+				};
+				await withTimeout(
+					s3.send(new PutObjectCommand({
+						Bucket: bucketName,
+						Key: `pending-submits/${correlationId}.json`,
+						Body: JSON.stringify(spec),
+						ContentType: 'application/json',
 					})),
 					30_000,
-					`async Event invoke attempt ${attempt}/${maxAttempts}`,
+					`relay publish attempt ${attempt}/${maxAttempts}`,
 				);
-				if (resp.StatusCode !== 202) {
-					throw new Error(`Event invoke returned unexpected status ${resp.StatusCode}`);
-				}
-				logger?.info('[remotion-lambda] Async Event invoke accepted (202) in %dms — webhook/S3 polling takes it from here',
-					Date.now() - invokeStart);
+				logger?.info('[remotion-lambda] Submit delegated to local relay (pending-submits/%s.json) — polling output key', correlationId);
 				return { correlationId, outputS3Key, bucketName };
 			}
 
@@ -1081,7 +1099,9 @@ export async function submitRemotionRenderPreprocessed(
 		inputProps: props as unknown as Record<string, unknown>,
 		privacy: 'public',
 		framesPerLambda,
-		timeoutInMilliseconds: 240_000,
+		// Matches the 900s Lambda: the old 240s function killed the coordinator
+		// at 97% rendered (1160/1200 frames, zero errors) before concatenation.
+		timeoutInMilliseconds: 840_000,
 		forceBucketName: infra.bucketName,
 	}, appUrl, logger);
 

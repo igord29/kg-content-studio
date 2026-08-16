@@ -27,6 +27,8 @@ import {
 	fetchCatalogFromSupabase,
 	fetchCatalogFromKV,
 	setCatalogKV,
+	saveJobResult,
+	getJobResult,
 	getVideoThumbnail,
 	getHighResThumbnailUrl,
 	downloadVideo,
@@ -1103,36 +1105,50 @@ const agent = createAgent('video-editor', {
 
 			try {
 				const { runAutoPipeline } = await import('./auto-pipeline');
-				const result = await runAutoPipeline(
+
+				// Fire-and-forget: the gateway kills held HTTP streams after a few
+				// minutes, and an awaited 20-minute pipeline dies with the stream
+				// (observed twice on 2026-08-16 — no Lambda render ever started).
+				// Same pattern as rescore-timestamps: detached run, teardown-safe
+				// logger, result persisted to KV for later retrieval.
+				const jobId = `autoproc_${Date.now()}_${crypto.randomUUID().slice(0, 13)}`;
+				const asyncLogger = makeAsyncLogger(`auto-process:${jobId}`);
+				ctx.logger.info('[auto-process] Starting detached pipeline (jobId=%s)', jobId);
+
+				runAutoPipeline(
 					{
 						videoIds, platform, editMode, topic, purpose, minScore, maxAttempts, appUrl,
 						// Prior-render usage (loaded by the API layer) — keeps consecutive
 						// renders from re-picking the exact same cuts.
 						usageSummary: Array.isArray(input.usageSummary) ? input.usageSummary as any : undefined,
 					},
-					ctx.logger,
-				);
+					asyncLogger as any,
+				).then(result => {
+					asyncLogger.info('Pipeline done: success=%s score=%s renderId=%s', String(result.success), String(result.score), String(result.renderId));
+					void saveJobResult(jobId, result);
+				}).catch(err => {
+					const msg = err instanceof Error ? err.message : String(err);
+					asyncLogger.error('Pipeline error: %s', msg);
+					void saveJobResult(jobId, { success: false, error: msg });
+				});
 
 				return {
-					success: result.success,
-					message: result.success
-						? `Pipeline complete: score ${result.score}/10 after ${result.attempts} attempt(s). Saved to library.`
-						: `Pipeline failed after ${result.attempts} attempt(s): ${result.error}`,
-					renderId: result.renderId,
-					downloadUrl: result.downloadUrl,
-					score: result.score,
-					attempts: result.attempts,
-					review: result.review,
-					supabaseId: result.supabaseId,
-					publicUrl: result.publicUrl,
-					// Forwarded so the API layer can record clip usage (freshness)
-					editPlanClips: result.editPlanClips,
+					success: true,
+					jobId,
+					message: `auto-process started (jobId=${jobId}). Poll with task=auto-process-result.`,
 				};
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				ctx.logger.error('[auto-process] Pipeline error: %s', msg);
 				return { success: false, error: 'Auto-process pipeline failed: ' + msg };
 			}
+		}
+
+		if (task === 'auto-process-result') {
+			const jobId = (input as any).jobId as string | undefined;
+			if (!jobId) return { success: false, message: 'jobId required' };
+			const result = await getJobResult(jobId);
+			return { success: true, message: result ?? 'pending' };
 		}
 
 		// --- Review rendered video ---

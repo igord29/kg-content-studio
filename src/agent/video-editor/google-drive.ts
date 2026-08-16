@@ -58,6 +58,30 @@ export async function saveCatalogToKV(catalogJson: string): Promise<boolean> {
 	}
 }
 
+/**
+ * Persist/fetch a background job's result via KV so long pipelines can run
+ * fire-and-forget (the gateway kills held HTTP streams after a few minutes)
+ * and the operator can still retrieve the outcome.
+ */
+export async function saveJobResult(jobId: string, result: unknown): Promise<void> {
+	if (!catalogKV) return;
+	try {
+		await catalogKV.set(KV_NAMESPACE, `job.${jobId}`, JSON.stringify(result));
+	} catch (err) {
+		console.warn('[google-drive] Job result save failed:', (err as Error).message);
+	}
+}
+
+export async function getJobResult(jobId: string): Promise<string | null> {
+	if (!catalogKV) return null;
+	try {
+		const r = await catalogKV.get<string>(KV_NAMESPACE, `job.${jobId}`);
+		return r.exists && typeof r.data === 'string' ? r.data : null;
+	} catch {
+		return null;
+	}
+}
+
 export async function fetchCatalogFromKV(): Promise<CatalogEntry[] | null> {
 	if (!catalogKV) return null;
 	try {

@@ -18,24 +18,8 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { formatSegmentTimelineForPrompt } from '../scene-analyzer';
 import type { PipelineInput, StoryArc, HookClip, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
-import { priorUsedRegions, isTimestampUsed, formatPriorUsage } from './usage-context';
-
-/**
- * Render the cataloger's emotional axes for one timestamp.
- *
- * emotion/valence/beat are newer than the catalog on disk — entries scored
- * before they existed simply don't have them. Emit ONLY what's present so a
- * stale catalog degrades to the old line instead of printing "undefined".
- * (Typed locally rather than off CatalogEntry so this compiles against both
- * the pre- and post-backfill catalog shape.)
- */
-function emotionTags(s: { timestamp: number; emotion?: number; valence?: string; beat?: string }): string {
-	const parts: string[] = [];
-	if (typeof s.emotion === 'number') parts.push(`emotion=${s.emotion}/10`);
-	if (s.valence) parts.push(`valence=${s.valence}`);
-	if (s.beat) parts.push(`beat=${s.beat}`);
-	return parts.length > 0 ? `, ${parts.join(', ')}` : '';
-}
+import { priorUsedRegions, isSpanUsed, formatPriorUsage } from './usage-context';
+import { buildShotList, formatShotListForPrompt } from './shot-list';
 
 const HOOK_SELECTOR_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -54,20 +38,14 @@ A hook MUST contain all three beats of a narrative micro-story, on screen:
 
 Minimum hook duration: 7 seconds. Typical: 8-10 seconds. NEVER less than 7.
 
-TRIM FORMULA:
-If scene analysis shows an interaction or action event at timestamp T:
-  trimStart = max(0, T - 3)
-  duration  = max(7, time_until_response_completes)
-NEVER set trimStart = T. That starts the clip ON the peak and loses the buildup.
-
 PEAK DATA SOURCES (in priority order):
-1. TIMESTAMP ACTION SCORES — if provided, these are GPT-4o-vision-confirmed peak moments with action quality 1-10. Pick the strongest timestamp that is NOT marked as already used in a past render as your T (peak), then apply trimStart = max(0, T - 3). A previously-published hook re-cut from the same timestamp reads as a repost to the audience — only reuse a marked timestamp if every strong peak is marked.
-2. SCENE TIMELINE — if provided, use segment boundaries to find the strongest action region.
+1. VETTED SEGMENTS — if provided, these are spans where EVERY sampled frame cleared quality and subject-visibility floors. Anchor the hook on the code-picked vetted span: trimStart >= the span's start and trimStart + duration <= the span's end (a span marked "part of continuous vetted run X-Y" may use the whole run X-Y). The span already includes ~1s of lead-in before the first verified moment, so do NOT subtract extra buildup time. If the chosen run is shorter than the ideal 7s, use the ENTIRE run — never extend past its edges into unvetted footage.
+2. SCENE TIMELINE fallback — if no vetted segments exist, use segment boundaries to find the strongest action region; for an event at timestamp T use trimStart = max(0, T - 3), duration = max(7, time_until_response_completes). NEVER set trimStart = T (that starts ON the peak and loses the buildup).
 3. NOTABLE MOMENTS — descriptive list; less precise but usable.
 
 EMOTION OUTRANKS ATHLETICS: when timestamps carry emotion (0-10), valence and beat, the strongest hook is the HIGHEST-emotion moment, not the highest actionQuality one — a kid's face, a reaction, a celebration beats a technically clean but emotionless rally every time. Prefer candidates tagged beat: "hook" or beat: "triumph" when any exist, and say in the editNote which emotion/beat you anchored on. Fall back to actionQuality only when no emotion data is present.
 
-If timestamp scores OR scene timeline OR notable moments exist for the setup source, you DO have peak data — do NOT mark the purpose as "estimated."
+If vetted segments OR scene timeline OR notable moments exist for the setup source, you DO have peak data — do NOT mark the purpose as "estimated." (A source explicitly marked UNVETTED or NO VETTED SEGMENTS with no other data is estimated.)
 
 WHEN ALL THREE SOURCES ARE MISSING (genuinely no peak data):
 - Honestly admit uncertainty in the purpose ("estimated")
@@ -153,22 +131,29 @@ export async function selectHook(
 	const usedRegions = priorUsedRegions(input, arc.setupSourceId);
 
 	let timestampSection = '';
+	let anchorRun: { runStart: number; runEnd: number } | null = null;
 	if (hasTimestampScores) {
-		const top10 = setupCatalog.timestampScores!.slice(0, 10);
-		const lines = top10
-			.map(s => {
-				const usedTag = isTimestampUsed(usedRegions, s.timestamp) ? ' [ALREADY USED in a past render]' : '';
-				return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people}${emotionTags(s)})${usedTag}`;
-			})
-			.join('\n');
-		// Best UNUSED peak — code-picked so variety doesn't rely on the model
-		// noticing the [ALREADY USED] tags. Falls back to overall best when
-		// every strong peak has been published already.
-		const bestUnused = top10.find(s => !isTimestampUsed(usedRegions, s.timestamp));
-		const bestT = (bestUnused ?? top10[0])?.timestamp ?? 0;
-		const bestLabel = bestUnused ? `best unused peak is ${bestT}s` : `all top peaks already used — best overall is ${bestT}s, vary your trim window around it`;
+		// Vetted segments, not raw frame peaks: the hook must live inside a run
+		// where every sample clears the quality/visibility floors (see shot-list.ts).
+		const setupDurSec = setupVideo?.duration ? Math.round(parseInt(setupVideo.duration) / 1000) : 0;
+		const shotList = buildShotList(setupCatalog, setupDurSec);
+		// Best UNUSED hook-capable run — code-picked so variety doesn't rely on
+		// the model noticing tags. Prefers runs long enough for a full 7s hook
+		// (span-overlap freshness check, not midpoint); falls back to the best
+		// unused run of any length, then to the overall best.
+		const hookCapable = shotList.segments.filter(seg => seg.runEnd - seg.runStart >= 7);
+		const bestUnused =
+			hookCapable.find(seg => !isSpanUsed(usedRegions, seg.runStart, seg.runEnd)) ??
+			shotList.segments.find(seg => !isSpanUsed(usedRegions, seg.runStart, seg.runEnd));
+		const best = bestUnused ?? shotList.segments[0];
+		if (best) anchorRun = { runStart: best.runStart, runEnd: best.runEnd };
+		const bestLabel = best
+			? (bestUnused
+				? `anchor on vetted run ${best.runStart}s-${best.runEnd}s${best.runEnd - best.runStart < 7 ? ' (shorter than 7s — use the ENTIRE run, do not extend past it)' : ''}`
+				: `all vetted runs already used — best overall is ${best.runStart}s-${best.runEnd}s, vary your trim inside it`)
+			: 'no vetted spans clear the floors — treat this source as estimate-only and use even-spread trim';
 		timestampSection =
-			`\n  ✅ TIMESTAMP ACTION SCORES (use the strongest UNUSED timestamp as T for trim formula — ${bestLabel}):\n${lines}`;
+			`\n${formatShotListForPrompt(shotList, { max: 8 })}\n    (hook anchor: ${bestLabel})`;
 	} else if (!hasSceneAnalysis) {
 		timestampSection =
 			'\n  ⚠️ No scene timeline AND no timestamp scores — use even-spread trim with honest estimate.';
@@ -225,15 +210,34 @@ Pick the hook clip. Apply the STORY HOOK ARC RULE. If timestamp scores are provi
 		throw new Error(`Hook selector returned invalid JSON: ${String(err)}`);
 	}
 
-	// Enforce the minimum duration rule at the code level. The prompt says
-	// "minimum 7 seconds" but models occasionally drift — make it impossible
-	// to produce a <7s hook regardless of what the model returned.
-	if (hook.duration < 7) {
+	// Enforce the minimum duration rule at the code level — but never by
+	// manufacturing out-of-span footage. Inside a vetted run, the floor is
+	// min(7, run length): a blind bump to 8s previously appended exactly the
+	// seconds the vetting floors had rejected (that's why the run ended there).
+	const anchorLen = anchorRun ? Math.round((anchorRun.runEnd - anchorRun.runStart) * 10) / 10 : null;
+	const minDur = anchorLen !== null ? Math.min(7, anchorLen) : 7;
+	if (hook.duration < minDur) {
+		const target = anchorLen !== null ? Math.min(8, anchorLen) : 8;
 		logger.warn(
-			'[hook-selector] Model picked duration=%ds (< 7s minimum). Extending to 8s.',
-			hook.duration,
+			'[hook-selector] Model picked duration=%ds (< %ds minimum). Extending to %ds.',
+			hook.duration, minDur, target,
 		);
-		hook.duration = 8;
+		hook.duration = target;
+	}
+
+	// Clamp the hook INTO the anchored vetted run. The span contract is
+	// meaningless if enforcement stops at the prompt.
+	if (anchorRun) {
+		const dur = Math.min(hook.duration, anchorLen!);
+		const start = Math.max(anchorRun.runStart, Math.min(hook.trimStart, anchorRun.runEnd - dur));
+		if (Math.abs(start - hook.trimStart) > 0.05 || Math.abs(dur - hook.duration) > 0.05) {
+			logger.warn(
+				'[hook-selector] Clamping hook into vetted run %d-%ds: trimStart %d→%d, duration %d→%d.',
+				anchorRun.runStart, anchorRun.runEnd, hook.trimStart, start, hook.duration, dur,
+			);
+			hook.trimStart = Math.round(start * 10) / 10;
+			hook.duration = Math.round(dur * 10) / 10;
+		}
 	}
 
 	// Enforce speed=1.0 for hooks (no slow-mo). Same reason as above.

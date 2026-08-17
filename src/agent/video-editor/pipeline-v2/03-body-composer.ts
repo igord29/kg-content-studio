@@ -21,24 +21,8 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { formatSegmentTimelineForPrompt } from '../scene-analyzer';
 import type { PipelineInput, StoryArc, HookClip, BodyClips, ClipPick, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
-import { priorUsedRegions, isTimestampUsed, formatPriorUsage } from './usage-context';
-
-/**
- * Render the cataloger's emotional axes for one timestamp.
- *
- * emotion/valence/beat are newer than the catalog on disk — entries scored
- * before they existed simply don't have them. Emit ONLY what's present so a
- * stale catalog degrades to the old line instead of printing "undefined".
- * (Typed locally rather than off CatalogEntry so this compiles against both
- * the pre- and post-backfill catalog shape.)
- */
-function emotionTags(s: { timestamp: number; emotion?: number; valence?: string; beat?: string }): string {
-	const parts: string[] = [];
-	if (typeof s.emotion === 'number') parts.push(`emotion=${s.emotion}/10`);
-	if (s.valence) parts.push(`valence=${s.valence}`);
-	if (s.beat) parts.push(`beat=${s.beat}`);
-	return parts.length > 0 ? `, ${parts.join(', ')}` : '';
-}
+import { priorUsedRegions, isSpanUsed, formatPriorUsage } from './usage-context';
+import { buildShotList, formatShotListForPrompt } from './shot-list';
 
 const BODY_COMPOSER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -54,14 +38,14 @@ BODY STRUCTURE:
 - 1-2 SHOWCASE clips: 4-5s each, gameplay or interaction
 - 1 CLIMAX clip: the peak moment — slow-mo if warranted
 
-PEAK ANCHORING RULE (non-negotiable):
-For each clip, your trimStart MUST sit within 2 seconds of a TIMESTAMP ACTION SCORE provided in the footage data — never pick a blind number. The timestamp scores tell you exactly where players are visible and active; picking trimStart values that miss those scores produces wall shots and empty-court frames.
+VETTED SEGMENT RULE (non-negotiable):
+For each clip, the ENTIRE range [trimStart, trimStart+duration] MUST lie inside ONE vetted segment (or its continuous vetted run) listed in the footage data — never pick a blind number. Vetted segments are spans where every sampled frame cleared quality and subject-visibility floors; cutting outside them produces wall shots, empty frames, and mid-cut camera jumps. Out-of-span clips are snapped back in code. A source marked "NO VETTED SEGMENTS" must not be cut at all; a source marked UNVETTED may use conservative even-spread trims.
 
 PEOPLE-PRESENCE FILTER (non-negotiable for showcase + climax):
-Showcase and climax clips MUST anchor on a timestamp where people>=4. Establish clips may use lower-people timestamps (wide venue shots are OK if intentional), but showcase/climax need a player visibly in frame doing the action. If no people>=4 timestamps exist for a beat's planned source, EITHER pick a different source OR demote the beat to establish.
+Showcase and climax clips MUST use a vetted segment with people<=N showing N>=4. Establish clips may use lower-people segments (wide venue shots are OK if intentional), but showcase/climax need a player visibly in frame doing the action. If no such segment exists for a beat's planned source, EITHER pick a different source OR demote the beat to establish.
 
-EMOTIONAL ESCALATION RULE (applies whenever timestamps carry emotion/valence/beat):
-The body must ESCALATE — each successive clip should anchor on a timestamp with equal or higher emotion than the one before it, with the climax landing on the highest available. Prefer candidates whose beat matches the role the story planner assigned to that slot (setup/struggle → establish, struggle/turn → showcase, turn/triumph → climax, community → community). HARD RULE: at least ONE body clip must anchor on a timestamp with emotion >= 6 if any candidate offers it.
+EMOTIONAL ESCALATION RULE (applies whenever segments carry emotion/beat):
+The body must ESCALATE — each successive clip should come from a segment with equal or higher emotion peak than the one before it, with the climax landing on the highest available. Prefer segments whose beat matches the role the story planner assigned to that slot (setup/struggle → establish, struggle/turn → showcase, turn/triumph → climax, community → community). HARD RULE: at least ONE body clip must come from a segment with emotion peak >= 6 if any source offers one.
 
 SLOW-MO WINDOWING RULE (non-negotiable):
 If you use slow-mo (speed < 1.0) on any clip:
@@ -76,7 +60,7 @@ SLOW-MO PRECONDITIONS:
 CLIP FRESHNESS & DEDUPING:
 - Avoid overlapping time ranges within the same source (≥3s separation between cuts from same fileId)
 - Do NOT use any time region from the hook clip (already chosen — will overlap)
-- PREVIOUSLY USED IN PAST RENDERS: some sources list time regions that already appeared in published videos, and timestamp scores may be tagged [ALREADY USED]. Treat those exactly like the hook range — keep ≥3s away. Re-cutting them makes every post look like the same video. Only reuse one if a beat has no viable unused timestamp.
+- PREVIOUSLY USED IN PAST RENDERS: some sources list previously-used time regions, and the vetted-segment section may note spans "already used in past renders — prefer fresh spans". Treat those exactly like the hook range — keep ≥3s away. Re-cutting them makes every post look like the same video. Only reuse one if a beat has no viable unused segment.
 - Vary trimStart across the FULL duration of each source
 - Never cluster all clips in the first 20 seconds
 
@@ -137,7 +121,7 @@ WHEN TO REACH FOR WHAT:
   - Climax:    dramatic filter, punchIn effect (especially if source is wide and the catalog timestamp is people<=3 — you compensate via aggressive zoom), extraZoom 1.4. THIS is the beat to spend a transition on — zoomPunch / cube / brandBurst into it. Earn the moment.
   - Community: warm filter, zoomOut effect, extraZoom 1.0, HARD CUT (or a soft fade). Pull back to the group.
 
-PUNCH-IN DECISION RULE: if the catalog timestamp's subjectFillRatio < 0.30 OR people=3 (wide-camera frame), prefer punchIn over zoomIn — the digital push compensates for the wide source by arriving closer by clip end. If subjectFillRatio >= 0.40, the source is already tight enough; use zoomIn or pushIn for subtlety.
+PUNCH-IN DECISION RULE: segments marked "WIDE — prefer punchIn" (mean fill < 0.40) want punchIn — the digital push compensates for the wide source by arriving closer by clip end. Segments with fill >= 0.40 are already tight enough; use zoomIn or pushIn for subtlety.
 
 FILTER CONSISTENCY (HARD RULE): Pick ONE filter for the entire body and use it across ALL body clips. The per-beat suggestions in WHEN TO REACH FOR WHAT above are STARTING POINTS, not a per-clip rotation — DEFAULT to the SHOWCASE filter (cinematic or boost, matched to the mode) for every body clip unless the story has a clear visual shift (past→present, dream→reality, then→now). Mixing 3+ filters in a single 30-60s video reads as inconsistent and amateur. ONE grade, one video.
 
@@ -191,25 +175,21 @@ export async function composeBody(
 				? '\n  SCENE TIMELINE:\n' + formatSegmentTimelineForPrompt(ce.sceneAnalysis as never)
 				: '\n  ⚠️ No scene analysis — avoid slow-mo on this source, use even-spread trims.';
 
-			// Surface timestampScores so the body composer picks moments where
-			// players are visible (people>=4) rather than blind timestamps.
-			// Fixes the wall-shot problem: previously the model picked trimStart
-			// values from the scene timeline alone, which couldn't tell empty
-			// court from active rally.
+			// Vetted shot list instead of raw frame scores: a frame snapshot says
+			// nothing about the 4 seconds around it (subject can leave, camera can
+			// whip, a hard cut can land mid-clip). buildShotList() turns the dense
+			// samples + scene boundaries into spans where EVERY sample clears the
+			// floors — the model chooses taste within verified material.
 			const usedRegions = priorUsedRegions(input, v.id);
-			let timestampSection = '';
-			if (ce.timestampScores && ce.timestampScores.length > 0) {
-				const top15 = ce.timestampScores.slice(0, 15);
-				const lines = top15
-					.map(s => {
-						const usedTag = isTimestampUsed(usedRegions, s.timestamp) ? ' [ALREADY USED in a past render]' : '';
-						return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy}${emotionTags(s)})${usedTag}`;
-					})
-					.join('\n');
-				timestampSection = `\n  ✅ TIMESTAMP ACTION SCORES (pick trim points NEAR these — never blind-pick a timestamp; prefer ones NOT marked [ALREADY USED]):\n${lines}`;
-			}
-
 			const durSec = v.duration ? Math.round(parseInt(v.duration) / 1000) : 0;
+			const shotList = buildShotList(ce, durSec);
+			const usedNote = shotList.segments
+				.filter(seg => isSpanUsed(usedRegions, seg.start, seg.end))
+				.map(seg => `${seg.start}s-${seg.end}s`);
+			let timestampSection = '\n' + formatShotListForPrompt(shotList, { max: 12 });
+			if (usedNote.length > 0) {
+				timestampSection += `\n    (already used in past renders — prefer fresh spans: ${usedNote.join(', ')})`;
+			}
 			return `${v.id}: ${v.name} (${durSec}s)
   - Activity: ${ce.activity}
   - Notable: ${ce.notableMoments || 'None'}${formatPriorUsage(input, v.id)}${sceneSection}${timestampSection}`;

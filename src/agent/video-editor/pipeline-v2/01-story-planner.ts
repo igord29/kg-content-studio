@@ -21,6 +21,7 @@ import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import type { PipelineInput, StoryArc, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
+import { buildShotList } from './shot-list';
 
 const STORY_PLANNER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -122,12 +123,20 @@ export async function planStoryArc(
 			? `\n  - Emotion: ${peak ? `peak ${peak.emotion}/10 @ ${peak.timestamp}s${peak.valence ? ` (${peak.valence})` : ''}` : 'unscored'}${beatSummary ? `; beats present: ${beatSummary}` : ''}`
 			: '';
 
+		// Vetted-material summary: the planner assigns ROLES to sources, so it
+		// must know how much floor-clearing footage each source actually has —
+		// a raw emotion peak in an otherwise-unusable video is a trap.
+		const shotList = buildShotList(ce, durSec);
+		const usableLine = shotList.sampled
+			? `\n  - Usable material: ${shotList.usableSec}s vetted of ${shotList.totalSec}s${shotList.segments[0] ? ` (best span ${shotList.segments[0].start}-${shotList.segments[0].end}s${shotList.segments[0].beat ? `, beat=${shotList.segments[0].beat}` : ''})` : ' — NONE clears the floors; do not assign hook/showcase/climax roles here'}`
+			: '';
+
 		return `[${i + 1}] ${v.id}: ${v.name} (${durSec}s, ${ce.contentType || 'unknown'})
   - Activity: ${ce.activity}
   - Location: ${ce.suspectedLocation || 'unknown'}
   - People: ${ce.peopleCount || '?'}
   - Notable moments: ${ce.notableMoments || 'None'}
-  - Scene analysis: ${hasScenes ? 'AVAILABLE' : 'MISSING'}${emotionLine}${beatsLine}`;
+  - Scene analysis: ${hasScenes ? 'AVAILABLE' : 'MISSING'}${emotionLine}${usableLine}${beatsLine}`;
 	}).join('\n\n');
 
 	const anyHasScenes = input.videoMetadata.some(v => {

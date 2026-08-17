@@ -16,23 +16,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import type { PipelineInput, StoryArc, HookClip, BodyClips, ClosePlan, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
 import { priorUsedRegions } from './usage-context';
-
-/**
- * Render the cataloger's emotional axes for one timestamp.
- *
- * emotion/valence/beat are newer than the catalog on disk — entries scored
- * before they existed simply don't have them. Emit ONLY what's present so a
- * stale catalog degrades to the old line instead of printing "undefined".
- * (Typed locally rather than off CatalogEntry so this compiles against both
- * the pre- and post-backfill catalog shape.)
- */
-function emotionTags(s: { timestamp: number; emotion?: number; valence?: string; beat?: string }): string {
-	const parts: string[] = [];
-	if (typeof s.emotion === 'number') parts.push(`emotion=${s.emotion}/10`);
-	if (s.valence) parts.push(`valence=${s.valence}`);
-	if (s.beat) parts.push(`beat=${s.beat}`);
-	return parts.length > 0 ? `, ${parts.join(', ')}` : '';
-}
+import { buildShotList, formatShotListForPrompt } from './shot-list';
 
 const CLOSE_COMPOSER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -138,18 +122,12 @@ export async function composeClose(
 		? Math.round(parseInt(closeSource.duration) / 1000)
 		: 0;
 
-	// Surface timestampScores so close clips anchor on real people-on-screen
-	// moments, not blind timestamps. Same fix pattern as body composer.
+	// Vetted shot list, not raw frame scores — same contract as the body
+	// composer: cut only inside spans where every sample clears the floors.
 	let closeTimestampSection = '';
 	if (closeCatalog?.timestampScores && closeCatalog.timestampScores.length > 0) {
-		const top10 = closeCatalog.timestampScores.slice(0, 10);
-		const lines = top10
-			.map(
-				s =>
-					`    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy}${emotionTags(s)})`,
-			)
-			.join('\n');
-		closeTimestampSection = `\n\nTIMESTAMP ACTION SCORES for close source (anchor close clips within 2s of one of these — never blind-pick):\n${lines}`;
+		const closeShotList = buildShotList(closeCatalog, closeDurSec);
+		closeTimestampSection = `\n\nVETTED SEGMENTS for close source:\n${formatShotListForPrompt(closeShotList, { max: 8 })}`;
 	}
 
 	// Surface the hook + body trim ranges per source so close composer can

@@ -13,6 +13,7 @@ import { loadExistingCatalog, hydrateCatalogFromDrive } from './cataloger';
 import { formatSegmentTimelineForPrompt } from './scene-analyzer';
 import { reviewRenderedVideo, generateRevisedEditPlan, type VideoReview } from './video-reviewer';
 import { validateEditPlanDedup, type VideoUsageSummary } from './usage-tracker';
+import { buildShotList, isInsideVettedSpan, snapIntoVettedSpan } from './pipeline-v2/shot-list';
 import { validateEditPlan, formatValidationResult } from './edit-plan-validator';
 import { selectTrack, shouldAddMusic } from './music';
 import { gateRender, formatGateResult, PUBLISH_THRESHOLDS, type GateResult } from './render-gate';
@@ -269,6 +270,35 @@ function validatePlanBeforeRender(
 		logger.warn('[auto-pipeline] Edit plan validation FAILED:\n%s', formatValidationResult(result));
 	} else if (result.warnings.length > 0) {
 		logger.info('[auto-pipeline] Edit plan validation passed with %d warnings', result.warnings.length);
+	}
+
+	// Vetted-span enforcement: the composers' prompts promise that out-of-span
+	// clips "are snapped back in code" — this is that code. Only applies to
+	// sources with timestamp scores; unscored sources keep their estimated
+	// path. A clip outside every vetted run is snapped into the nearest run
+	// that fits (shrinking to the run when needed), loudly.
+	const shotListCache = new Map<string, ReturnType<typeof buildShotList>>();
+	for (const clip of plan.clips as Array<{ fileId?: string; trimStart?: number; duration?: number; purpose?: string }>) {
+		if (!clip.fileId || typeof clip.trimStart !== 'number' || typeof clip.duration !== 'number') continue;
+		const entry = catalogMap.get(clip.fileId);
+		if (!entry?.timestampScores?.length) continue;
+		let list = shotListCache.get(clip.fileId);
+		if (!list) {
+			const durSec = entry.duration ? parseInt(entry.duration) || 0 : 0;
+			list = buildShotList(entry, durSec);
+			shotListCache.set(clip.fileId, list);
+		}
+		if (list.segments.length === 0) continue; // nothing to snap into — bounds checks above still apply
+		if (isInsideVettedSpan(list, clip.trimStart, clip.trimStart + clip.duration)) continue;
+		const snapped = snapIntoVettedSpan(list, clip.trimStart, clip.duration);
+		if (snapped) {
+			logger.warn(
+				'[auto-pipeline] Clip (%s "%s") %ds+%ds is OUTSIDE every vetted span — snapped to %ds+%ds',
+				clip.fileId.slice(0, 8), clip.purpose ?? '?', clip.trimStart, clip.duration, snapped.trimStart, snapped.duration,
+			);
+			clip.trimStart = snapped.trimStart;
+			clip.duration = snapped.duration;
+		}
 	}
 }
 

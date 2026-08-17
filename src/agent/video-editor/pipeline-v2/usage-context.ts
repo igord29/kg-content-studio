@@ -32,6 +32,15 @@ export function isTimestampUsed(regions: Array<[number, number]>, t: number): bo
 }
 
 /**
+ * True if the span [start, end] OVERLAPS any used region (with buffer).
+ * A span check, not a midpoint check — a 7s hook needs the whole span fresh,
+ * and a midpoint test misses half-overlapping reuse.
+ */
+export function isSpanUsed(regions: Array<[number, number]>, start: number, end: number): boolean {
+	return regions.some(([a, b]) => a - REUSE_BUFFER < end && b + REUSE_BUFFER > start);
+}
+
+/**
  * Format used regions for a prompt, or '' when there's no history.
  * Example output:
  *   PREVIOUSLY USED IN PAST RENDERS (avoid re-cutting, keep ≥3s away): 12s-21s, 47s-52s

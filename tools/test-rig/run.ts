@@ -19,7 +19,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import { S3Client, ListObjectsV2Command, GetObjectCommand } from '@aws-sdk/client-s3';
-import { buildDeterministicPlan, type RigPlan } from './plan';
+import { buildDeterministicPlan, buildAudiencePlan, type RigPlan } from './plan';
+import { detectAudioSpikes } from './audio-events';
+import type { Audience } from './audience-profiles';
 import { buildSmartCropFilter, buildAudioFilter } from '../../src/agent/video-editor/remotion/preprocessor-lambda';
 import { gateRender, formatGateResult, PUBLISH_THRESHOLDS } from '../../src/agent/video-editor/render-gate';
 import type { CatalogEntry } from '../../src/agent/video-editor/google-drive';
@@ -94,6 +96,9 @@ function probeDims(file: string): { w: number; h: number } {
 
 async function main() {
 	const runName = process.argv[2] || `rig_${new Date().toISOString().slice(5, 16).replace(/[-:T]/g, '')}`;
+	const audienceArg = (process.argv[3] || process.env.RIG_AUDIENCE || '').toLowerCase();
+	const audience: Audience | null =
+		audienceArg === 'parents' || audienceArg === 'donors' ? audienceArg : null;
 	const runDir = path.join(OUT_DIR, runName);
 	fs.mkdirSync(runDir, { recursive: true });
 
@@ -106,12 +111,37 @@ async function main() {
 		return { entry, durationSec: parseInt(entry.duration ?? '0') || 0 };
 	});
 
-	// 2. Deterministic plan
-	const plan: RigPlan = buildDeterministicPlan(pool);
+	// 2. Plan — audience mode scores each edit role (hook/body/cta) for who is
+	// watching and mines audio cheer spikes; bare mode keeps the old baseline.
+	let plan: RigPlan;
+	if (audience) {
+		// Audience mode needs every source locally (audio spike pass). A source
+		// with no S3 raw copy is dropped from the pool, not fatal.
+		const available: typeof pool = [];
+		const spikes: Record<string, number[]> = {};
+		for (const p of pool) {
+			try {
+				const src = await ensureSource(p.entry.fileId!);
+				spikes[p.entry.fileId!] = detectAudioSpikes(src);
+				available.push(p);
+			} catch (err) {
+				console.warn(`[rig] dropping ${p.entry.fileId} from pool: ${(err as Error).message}`);
+			}
+		}
+		console.log(`[rig] audio cheer spikes: ${available.map(p => `${p.entry.fileId!.slice(0, 6)}=${spikes[p.entry.fileId!]!.length}`).join(' ')}`);
+		plan = buildAudiencePlan(available, audience, spikes);
+		console.log(`[rig] audience: ${audience}`);
+	} else {
+		plan = buildDeterministicPlan(pool);
+	}
 	fs.writeFileSync(path.join(runDir, 'plan.json'), JSON.stringify(plan, null, 2));
 	console.log(`[rig] plan: ${plan.clips.length} clips, ${plan.clips.reduce((s, c) => s + c.duration, 0).toFixed(1)}s total`);
 	for (const c of plan.clips) {
-		console.log(`  ${c.purpose.padEnd(9)} ${c.fileId.slice(0, 8)} ${c.trimStart}s+${c.duration}s zoom=${c.extraZoom} "${c.why}"`);
+		console.log(`  ${c.purpose.padEnd(10)} ${c.fileId.slice(0, 8)} ${c.trimStart}s+${c.duration}s zoom=${c.extraZoom} "${c.why}"`);
+	}
+	if (process.env.RIG_PLAN_ONLY) {
+		console.log('[rig] RIG_PLAN_ONLY set — stopping after plan.');
+		return;
 	}
 
 	// 3. Preprocess each clip locally with the Lambda's own filters

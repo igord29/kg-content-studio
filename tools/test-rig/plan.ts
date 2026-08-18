@@ -16,6 +16,7 @@
 
 import { buildShotList, type ShotList, type VettedSegment } from '../../src/agent/video-editor/pipeline-v2/shot-list';
 import type { CatalogEntry } from '../../src/agent/video-editor/google-drive';
+import { contextFor, scoreForRole, CTA_TEXT, type Audience, type Role, type SegmentContext } from './audience-profiles';
 
 export interface RigClip {
 	fileId: string;
@@ -187,6 +188,151 @@ export function buildDeterministicPlan(
 		textOverlays: [
 			{ text: 'Community Literacy Club', start: 1, duration: 3, position: 'bottom', animation: 'slideUp' },
 			{ text: 'CLC — where kids find their focus', start: Math.max(4, total - 4.5), duration: 4, position: 'bottom', animation: 'scaleUp' },
+		],
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Audience-aware planner: every slot in the edit has a JOB (hook / establish /
+// skill / connection / climax / cta) and each job scores candidates with its
+// own function from audience-profiles.ts. Same determinism guarantee as the
+// baseline planner — same catalog + same spikes → same plan.
+// ---------------------------------------------------------------------------
+
+interface Candidate {
+	seg: VettedSegment;
+	fileId: string;
+	entry: CatalogEntry;
+	ctx: SegmentContext;
+}
+
+/** Coefficient of variation of clip lengths — the gate's cut-rhythm metric. */
+function rhythmCv(lengths: number[]): number {
+	const m = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+	const sd = Math.sqrt(lengths.reduce((s, v) => s + (v - m) ** 2, 0) / lengths.length);
+	return m > 0 ? sd / m : 0;
+}
+
+/**
+ * The gate requires cutLengthCv >= 0.30 (uniform cuts read as automated).
+ * Deterministically widen the spread: grow the longest clip into its vetted
+ * run's free tail (bounded, so same-source separation buffers survive), else
+ * shave the shortest toward 2.0s.
+ */
+function enforceRhythm(clips: RigClip[], runEnds: number[]): void {
+	const grown = new Map<number, number>();
+	let guard = 0;
+	while (rhythmCv(clips.map(c => c.duration)) < 0.33 && guard++ < 12) {
+		let iMax = 0, iMin = 0;
+		clips.forEach((c, i) => {
+			if (c.duration > clips[iMax]!.duration) iMax = i;
+			if (c.duration < clips[iMin]!.duration) iMin = i;
+		});
+		const c = clips[iMax]!;
+		const canGrow = (grown.get(iMax) ?? 0) < 2.5
+			&& c.duration + 0.5 <= 8
+			&& c.trimStart + c.duration + 0.5 <= runEnds[iMax]!;
+		if (canGrow) {
+			c.duration = Math.round((c.duration + 0.5) * 10) / 10;
+			grown.set(iMax, (grown.get(iMax) ?? 0) + 0.5);
+			continue;
+		}
+		if (clips[iMin]!.duration > 2.0) {
+			clips[iMin]!.duration = Math.round((clips[iMin]!.duration - 0.3) * 10) / 10;
+			continue;
+		}
+		break;
+	}
+}
+
+export function buildAudiencePlan(
+	pool: Array<{ entry: CatalogEntry; durationSec: number }>,
+	audience: Audience,
+	spikesByFile: Record<string, number[]> = {},
+): RigPlan {
+	const lists = pool
+		.map(p => ({ ...p, list: buildShotList(p.entry, p.durationSec) }))
+		.filter(p => p.list.segments.length > 0);
+	if (lists.length === 0) throw new Error('rig planner: no vetted segments in the pool');
+
+	const all: Candidate[] = lists.flatMap(p =>
+		p.list.segments.map(seg => ({
+			seg,
+			fileId: p.entry.fileId!,
+			entry: p.entry,
+			ctx: contextFor(p.entry, seg, spikesByFile[p.entry.fileId!] ?? []),
+		})),
+	);
+
+	const used = new Map<string, Array<[number, number]>>();
+	const fresh = () => all.filter(s => !overlapsUsed(used, s.fileId, s.seg.start, s.seg.end));
+	const best = (role: Role): Candidate | undefined => fresh()
+		.map(s => ({ s, v: scoreForRole(s.seg, s.ctx, role, audience) }))
+		.sort((a, b) => b.v - a.v)[0]?.s;
+
+	// Reserve in scarcity order (a great hook / climax / calm CTA shot is rare;
+	// establish material is everywhere), assemble in narrative order below.
+	const picks = new Map<Role, { c: Candidate; trimStart: number; duration: number }>();
+	const take = (role: Role, wantDur: number, place?: (c: Candidate, dur: number) => number) => {
+		const c = best(role);
+		if (!c) return;
+		// Clips may use the full vetted RUN, not just the ranking split.
+		const runLen = c.seg.runEnd - c.seg.start;
+		const dur = Math.round(Math.min(wantDur, runLen) * 10) / 10;
+		if (dur < 2) return;
+		const start = place ? place(c, dur) : c.seg.start;
+		picks.set(role, { c, trimStart: Math.round(start * 10) / 10, duration: dur });
+		commit(used, c.fileId, start, start + dur);
+	};
+
+	// Hook cold-opens ~1s before the span's emotional peak so the payoff lands
+	// inside the viewer's 2-second decision window.
+	take('hook', 2.5, (c, dur) => Math.max(c.seg.runStart, Math.min(c.ctx.peakEmotionTs - 1.0, c.seg.runEnd - dur)));
+	take('climax', 6);
+	take('cta', 4);
+	take('connection', 3);
+	take('skill', 3.5);
+	take('establish', 3);
+
+	const ORDER: Role[] = ['hook', 'establish', 'skill', 'connection', 'climax', 'cta'];
+	const clips: RigClip[] = [];
+	const runEnds: number[] = [];
+	for (const role of ORDER) {
+		const p = picks.get(role);
+		if (!p) continue;
+		const { c, trimStart, duration } = p;
+		const isWide = c.seg.meanFill < 0.40;
+		clips.push({
+			fileId: c.fileId,
+			trimStart,
+			duration,
+			speed: 1.0,
+			purpose: role,
+			filter: role === 'hook' ? 'documentary' : role === 'cta' ? 'warm' : 'cinematic',
+			effect:
+				role === 'hook' ? (isWide ? 'punchIn' : 'zoomIn')
+				: role === 'establish' || role === 'cta' ? 'zoomOut'
+				: role === 'climax' ? (c.seg.meanFill < 0.45 ? 'punchIn' : 'pushIn')
+				: 'pushIn',
+			extraZoom: role === 'establish' || role === 'cta' ? 1.0 : zoomFor(c.seg),
+			subjectPosition: subjectPositionNear(c.entry, trimStart + duration / 2),
+			meanFill: c.seg.meanFill,
+			why: `[${audience}] ${c.seg.why}${c.ctx.hasSpike ? ' +cheer' : ''}`,
+		});
+		runEnds.push(c.seg.runEnd);
+	}
+	if (clips.length < 4) throw new Error(`rig planner: only ${clips.length} role slots filled — pool too thin for an audience plan`);
+
+	enforceRhythm(clips, runEnds);
+
+	const total = clips.reduce((s, c) => s + c.duration, 0);
+	const ctaDur = clips.at(-1)!.purpose === 'cta' ? clips.at(-1)!.duration : 4;
+	return {
+		mode: 'our_story',
+		clips,
+		textOverlays: [
+			{ text: 'Community Literacy Club', start: 1, duration: 2.5, position: 'bottom', animation: 'slideUp' },
+			{ text: CTA_TEXT[audience], start: Math.max(4, total - ctaDur + 0.4), duration: Math.max(2.5, ctaDur - 0.6), position: 'bottom', animation: 'scaleUp' },
 		],
 	};
 }

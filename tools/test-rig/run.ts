@@ -206,7 +206,10 @@ async function main() {
 		// afade — pin stereo up front. (Lambda's newer build needs no pin.)
 		const afBase = buildAudioFilter(clip.speed, clip.duration);
 		const duck = audience ? `volume=${CLIP_AUDIO_DUCK},` : '';
-		const af = afBase ? `aformat=channel_layouts=stereo,${duck}${afBase}` : afBase;
+		// Some sources also need the stereo pin re-asserted AFTER aresample or
+		// the aresample->afade link fails to negotiate a layout (WSL ffmpeg 4.4).
+		const afPinned = afBase?.replace('aresample=48000', 'aresample=48000,aformat=channel_layouts=stereo');
+		const af = afPinned ? `aformat=channel_layouts=stereo,${duck}${afPinned}` : afPinned;
 		const outFile = path.join(runDir, `clip_${i}_${clip.purpose}.mp4`);
 		const vfArg = vf ? `-vf "${vf}"` : '';
 		const afArg = af ? `-af "${af}"` : '';

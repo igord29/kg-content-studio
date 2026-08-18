@@ -21,6 +21,7 @@ import { execSync } from 'node:child_process';
 import { S3Client, ListObjectsV2Command, GetObjectCommand } from '@aws-sdk/client-s3';
 import { buildDeterministicPlan, buildAudiencePlan, type RigPlan } from './plan';
 import { detectAudioSpikes } from './audio-events';
+import { measureShake, isTooShaky } from './shake-meter';
 import type { Audience } from './audience-profiles';
 import { buildSmartCropFilter, buildAudioFilter } from '../../src/agent/video-editor/remotion/preprocessor-lambda';
 import { gateRender, formatGateResult, PUBLISH_THRESHOLDS } from '../../src/agent/video-editor/render-gate';
@@ -31,6 +32,7 @@ const CACHE_DIR = path.join(REPO, '.temp-cataloger', 'rig-sources');
 const OUT_DIR = path.join(REPO, '.temp-cataloger', 'rig-out');
 const CATALOG_SNAPSHOT = process.env.RIG_CATALOG
 	|| '/mnt/c/Users/igord/AppData/Local/Temp/claude/c--Development-Folder-kg-content-studio/f72ad922-9381-4b7e-a380-b5238a92fd64/scratchpad/catalog-tail2.json';
+/** Original 5-clip chess pool — kept verbatim so baseline runs stay reproducible. */
 const DEFAULT_POOL = [
 	'1qeuWWIBC_2bDPRsI8cxfDJTw7t_IbGK8',
 	'14KeHRp8r3IdIU7u14l-1HCtAGVW53YlT',
@@ -38,6 +40,29 @@ const DEFAULT_POOL = [
 	'1eIhkOG3LotguNPluZUUp7G8KASAqJTaG',
 	'1cXV2gbBQ1zdcgKACdR01VnFQbmjv1Rpp',
 ];
+
+/**
+ * Audience-mode pool: tennis-forward program story (2026-08-18 S3×catalog
+ * scout — all scored, all with raw S3 copies). Tennis action + coaching +
+ * the hug close, with the strongest chess for the "learning" half.
+ */
+const STORY_POOL = [
+	'1drwT9RDitILPYVujPiOzKtFcB1epc0Xe', // kid striking ball, US Open courts (hook material)
+	'1uJrbdi2BcY8WU_27Xo8pU98cwxwzvbB7', // e7 kid enthusiastic w/ racket; girl pointing/coaching
+	'1eIhkOG3LotguNPluZUUp7G8KASAqJTaG', // e7 child with racket mid-action (cached)
+	'1WYmlWu7Xmzd2jzqeNEVKJzQWZbbbSARp', // coach instructing kids on court — THE teaching clip
+	'1l96zDhR3k6AbWJ0inFHEi5vHVQElQeGb', // e7 adult hugging child — emotional close
+	'15Vwnt5yFa9iuFRqywUJAQHth72-kasE9', // e7 kid looking upward with intent — determination
+	'1aEJa_3f9Oa3HF2lyYao_upIQYSAhUoQS', // tennis AND chess in one gym — program bridge
+	'1saznKyQotS-V9AZOfkd1FGjsyygncOi6', // tennis drills, kids interacting e6
+	'1qeuWWIBC_2bDPRsI8cxfDJTw7t_IbGK8', // chess: child celebrating move e8
+	'16LHPzOubmg_FTb-XHNQz-0MLXJ30X0vz', // chess: happy reaction e8 (measured calm)
+	'13AFVyZyktzgMMbX7m4jOeosfuVvWT-uw', // chess: kids celebrating a move, 61s
+];
+
+const MUSIC_FILE = path.join(REPO, '.temp-cataloger', 'rig-music-dreams.mp3'); // production's our_story track
+const MUSIC_VOLUME = 0.28;   // render.ts fallback — what production actually ships
+const CLIP_AUDIO_DUCK = 0.35; // raw gym ambience under the music bed (production leaves it at 1.0 — known flaw)
 
 const s3 = new S3Client({
 	region: process.env.REMOTION_AWS_REGION || 'us-east-1',
@@ -105,7 +130,8 @@ async function main() {
 	// 1. Catalog + pool
 	const snapshot = JSON.parse(fs.readFileSync(CATALOG_SNAPSHOT, 'utf8'));
 	const catalog: CatalogEntry[] = snapshot.catalog ?? snapshot;
-	const pool = DEFAULT_POOL.map(id => {
+	const poolIds = audience ? STORY_POOL : DEFAULT_POOL;
+	const pool = poolIds.map(id => {
 		const entry = catalog.find(e => e.fileId === id);
 		if (!entry) throw new Error(`pool video ${id} missing from catalog snapshot`);
 		return { entry, durationSec: parseInt(entry.duration ?? '0') || 0 };
@@ -129,8 +155,18 @@ async function main() {
 			}
 		}
 		console.log(`[rig] audio cheer spikes: ${available.map(p => `${p.entry.fileId!.slice(0, 6)}=${spikes[p.entry.fileId!]!.length}`).join(' ')}`);
-		plan = buildAudiencePlan(available, audience, spikes);
-		console.log(`[rig] audience: ${audience}`);
+		// Shake meter: measured lazily per candidate span at pick time, cached.
+		const shakeCache = new Map<string, ReturnType<typeof measureShake>>();
+		const shakeFn = (fileId: string, start: number, dur: number) => {
+			const key = `${fileId}:${Math.round(start)}:${Math.round(dur)}`;
+			if (!shakeCache.has(key)) {
+				shakeCache.set(key, measureShake(path.join(CACHE_DIR, `${fileId}.mp4`), start, dur));
+			}
+			const r = shakeCache.get(key);
+			return r ? { metric: r.metric, jitter: r.jitter, tooShaky: isTooShaky(r) } : null;
+		};
+		plan = buildAudiencePlan(available, audience, spikes, shakeFn);
+		console.log(`[rig] audience: ${audience} (${shakeCache.size} shake measurements)`);
 	} else {
 		plan = buildDeterministicPlan(pool);
 	}
@@ -144,17 +180,33 @@ async function main() {
 		return;
 	}
 
-	// 3. Preprocess each clip locally with the Lambda's own filters
+	// 3. Preprocess each clip locally with the Lambda's own filters.
+	// Audience mode adds: (a) two-pass vidstab stabilization ahead of the smart
+	// crop — handheld shake was the operator's top complaint, and the stills-
+	// scored catalog can't see it; (b) raw gym ambience ducked under the music
+	// bed (production plays it at 1.0 — a known flaw to port back).
 	const processed: Array<{ src: string; length: number }> = [];
 	for (let i = 0; i < plan.clips.length; i++) {
 		const clip = plan.clips[i]!;
 		const src = await ensureSource(clip.fileId);
 		const { w, h } = probeDims(src);
-		const vf = buildSmartCropFilter(w, h, '9:16', clip.subjectPosition, clip.extraZoom);
+		const crop = buildSmartCropFilter(w, h, '9:16', clip.subjectPosition, clip.extraZoom);
+		let vf = crop;
+		if (audience) {
+			const trf = path.join(runDir, `clip_${i}.trf`);
+			console.log(`[rig] stabilize pass (detect) clip ${i + 1}/${plan.clips.length}...`);
+			execSync(
+				`ffmpeg -nostdin -y -loglevel error -ss ${clip.trimStart} -t ${clip.duration} -i "${src}" -vf "vidstabdetect=shakiness=8:accuracy=15:result=${trf}" -an -f null -`,
+				{ stdio: 'pipe', timeout: 300_000 },
+			);
+			const stab = `vidstabtransform=input=${trf}:smoothing=30:optzoom=1:interpol=bicubic:crop=black,unsharp=5:5:0.8:3:3:0.4`;
+			vf = crop ? `${stab},${crop}` : stab;
+		}
 		// Older local ffmpeg can't negotiate channel layout between aresample and
 		// afade — pin stereo up front. (Lambda's newer build needs no pin.)
 		const afBase = buildAudioFilter(clip.speed, clip.duration);
-		const af = afBase ? `aformat=channel_layouts=stereo,${afBase}` : afBase;
+		const duck = audience ? `volume=${CLIP_AUDIO_DUCK},` : '';
+		const af = afBase ? `aformat=channel_layouts=stereo,${duck}${afBase}` : afBase;
 		const outFile = path.join(runDir, `clip_${i}_${clip.purpose}.mp4`);
 		const vfArg = vf ? `-vf "${vf}"` : '';
 		const afArg = af ? `-af "${af}"` : '';
@@ -192,8 +244,14 @@ async function main() {
 			isLast: idx === arr.length - 1,
 			animation: o.animation,
 		})),
-		musicSrc: undefined,
-		musicVolume: 0,
+		musicSrc: (() => {
+			// Audience mode renders with the same track production would pick for
+			// our_story, served over localhost like the clips.
+			if (!audience || !fs.existsSync(MUSIC_FILE)) return undefined;
+			fs.copyFileSync(MUSIC_FILE, path.join(runDir, 'rig-music.mp3'));
+			return `http://localhost:${PORT}/rig-music.mp3`;
+		})(),
+		musicVolume: audience ? MUSIC_VOLUME : 0,
 		bgColor: '#0a0a0a',
 		transitionDurationFrames: 30,
 	};

@@ -245,10 +245,18 @@ function enforceRhythm(clips: RigClip[], runEnds: number[]): void {
 	}
 }
 
+export interface ShakeCheck {
+	metric: number;
+	jitter: number;
+	tooShaky: boolean;
+}
+
 export function buildAudiencePlan(
 	pool: Array<{ entry: CatalogEntry; durationSec: number }>,
 	audience: Audience,
 	spikesByFile: Record<string, number[]> = {},
+	/** Measures camera shake over a candidate span; null = unmeasurable (skip check) */
+	shakeFn?: (fileId: string, start: number, dur: number) => ShakeCheck | null,
 ): RigPlan {
 	const lists = pool
 		.map(p => ({ ...p, list: buildShotList(p.entry, p.durationSec) }))
@@ -266,23 +274,43 @@ export function buildAudiencePlan(
 
 	const used = new Map<string, Array<[number, number]>>();
 	const fresh = () => all.filter(s => !overlapsUsed(used, s.fileId, s.seg.start, s.seg.end));
-	const best = (role: Role): Candidate | undefined => fresh()
+	const ranked = (role: Role): Candidate[] => fresh()
 		.map(s => ({ s, v: scoreForRole(s.seg, s.ctx, role, audience) }))
-		.sort((a, b) => b.v - a.v)[0]?.s;
+		.sort((a, b) => b.v - a.v)
+		.map(r => r.s);
 
 	// Reserve in scarcity order (a great hook / climax / calm CTA shot is rare;
 	// establish material is everywhere), assemble in narrative order below.
+	// Each role walks its ranking and takes the first candidate that passes the
+	// shake meter — the catalog is stills-scored and blind to shake, so this is
+	// the planner's only motion sense. If everything tried is shaky, take the
+	// least-shaky (it gets stabilized in preprocessing regardless).
+	const SHAKE_TRIES = 12;
 	const picks = new Map<Role, { c: Candidate; trimStart: number; duration: number }>();
 	const take = (role: Role, wantDur: number, place?: (c: Candidate, dur: number) => number) => {
-		const c = best(role);
-		if (!c) return;
-		// Clips may use the full vetted RUN, not just the ranking split.
-		const runLen = c.seg.runEnd - c.seg.start;
-		const dur = Math.round(Math.min(wantDur, runLen) * 10) / 10;
-		if (dur < 2) return;
-		const start = place ? place(c, dur) : c.seg.start;
-		picks.set(role, { c, trimStart: Math.round(start * 10) / 10, duration: dur });
-		commit(used, c.fileId, start, start + dur);
+		let fallback: { c: Candidate; start: number; dur: number; badness: number } | null = null;
+		for (const c of ranked(role).slice(0, SHAKE_TRIES)) {
+			// Clips may use the full vetted RUN, not just the ranking split.
+			const runLen = c.seg.runEnd - c.seg.start;
+			const dur = Math.round(Math.min(wantDur, runLen) * 10) / 10;
+			if (dur < 2) continue;
+			const start = place ? place(c, dur) : c.seg.start;
+			const shake = shakeFn ? shakeFn(c.fileId, start, dur) : null;
+			if (shake?.tooShaky) {
+				console.log(`  [shake] ${role}: rejected ${c.fileId.slice(0, 8)} ${start}s (metric ${shake.metric}, jitter ${shake.jitter}) — "${c.seg.why}"`);
+				const badness = shake.metric + shake.jitter;
+				if (!fallback || badness < fallback.badness) fallback = { c, start, dur, badness };
+				continue;
+			}
+			picks.set(role, { c, trimStart: Math.round(start * 10) / 10, duration: dur });
+			commit(used, c.fileId, start, start + dur);
+			return;
+		}
+		if (fallback) {
+			console.log(`  [shake] ${role}: all candidates shaky — keeping least-shaky ${fallback.c.fileId.slice(0, 8)} (stabilizer will carry it)`);
+			picks.set(role, { c: fallback.c, trimStart: Math.round(fallback.start * 10) / 10, duration: fallback.dur });
+			commit(used, fallback.c.fileId, fallback.start, fallback.start + fallback.dur);
+		}
 	};
 
 	// Hook cold-opens ~1s before the span's emotional peak so the payoff lands

@@ -102,7 +102,7 @@ function roundEven(n: number): number {
  * subjectPosition Y ordinate is ignored. Solving for "subject lands at output
  * center" requires K >= targetH / (2 * min(pos.y, 1-pos.y) * sourceH).
  */
-function buildSmartCropFilter(
+export function buildSmartCropFilter(
 	sourceW: number,
 	sourceH: number,
 	targetAspect: string,
@@ -217,7 +217,7 @@ function buildVideoFilter(config: {
  * @returns The filter chain, or '' if there is genuinely nothing to do
  *   (caller omits -af entirely in that case).
  */
-function buildAudioFilter(speed: number, outputDuration?: number): string {
+export function buildAudioFilter(speed: number, outputDuration?: number): string {
 	const filters: string[] = [];
 
 	// Speed compensation — unchanged; simply skipped at 1.0x instead of

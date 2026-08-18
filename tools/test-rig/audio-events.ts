@@ -10,7 +10,7 @@
  * File: tools/test-rig/audio-events.ts
  */
 
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 
 /**
  * Momentary-loudness spike timestamps via ebur128 (100ms resolution).
@@ -18,15 +18,14 @@ import { execSync } from 'node:child_process';
  * Spike = 6+ LU over the clip's own median; events within 2s merge.
  */
 export function detectAudioSpikes(file: string): number[] {
-	let out = '';
-	try {
-		out = execSync(
-			`ffmpeg -hide_banner -nostats -i "${file}" -vn -af "highpass=f=250,ebur128" -f null - 2>&1`,
-			{ encoding: 'utf8', maxBuffer: 64e6, timeout: 180_000 },
-		);
-	} catch {
-		return []; // no/broken audio track — planner just loses the bonus signal
-	}
+	// argv array (no shell) — ebur128 logs land on stderr.
+	const res = spawnSync(
+		'ffmpeg',
+		['-hide_banner', '-nostats', '-i', file, '-vn', '-af', 'highpass=f=250,ebur128', '-f', 'null', '-'],
+		{ encoding: 'utf8', maxBuffer: 64e6, timeout: 180_000 },
+	);
+	if (res.error) return []; // no ffmpeg / timeout — planner just loses the bonus signal
+	const out = (res.stdout ?? '') + (res.stderr ?? '');
 	const points: Array<{ t: number; m: number }> = [];
 	for (const match of out.matchAll(/t:\s*([\d.]+).*?M:\s*(-?[\d.]+)/g)) {
 		const t = parseFloat(match[1]!);

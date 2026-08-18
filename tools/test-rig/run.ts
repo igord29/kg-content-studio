@@ -71,13 +71,23 @@ async function ensureSource(fileId: string): Promise<string> {
 }
 
 function probeDims(file: string): { w: number; h: number } {
-	const out = execSync(
-		`ffprobe -v error -select_streams v:0 -show_entries stream=width,height:stream_side_data=rotation -of default=noprint_wrappers=1 "${file}"`,
-		{ encoding: 'utf8' },
-	);
+	// Older ffprobe builds (WSL) reject the stream_side_data section — fall
+	// back to plain width/height + the legacy rotate tag.
+	let out = '';
+	try {
+		out = execSync(
+			`ffprobe -v error -select_streams v:0 -show_entries stream=width,height:stream_side_data=rotation -of default=noprint_wrappers=1 "${file}"`,
+			{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+		);
+	} catch {
+		out = execSync(
+			`ffprobe -v error -select_streams v:0 -show_entries stream=width,height:stream_tags=rotate -of default=noprint_wrappers=1 "${file}"`,
+			{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+		);
+	}
 	let w = parseInt(out.match(/^width=(\d+)/m)?.[1] ?? '1920', 10);
 	let h = parseInt(out.match(/^height=(\d+)/m)?.[1] ?? '1080', 10);
-	const rot = Math.abs(parseInt(out.match(/rotation=(-?\d+)/)?.[1] ?? '0', 10)) % 180;
+	const rot = Math.abs(parseInt(out.match(/rotation=(-?\d+)|rotate=(-?\d+)/)?.slice(1).find(Boolean) ?? '0', 10)) % 180;
 	if (rot === 90) [w, h] = [h, w];
 	return { w, h };
 }
@@ -111,7 +121,10 @@ async function main() {
 		const src = await ensureSource(clip.fileId);
 		const { w, h } = probeDims(src);
 		const vf = buildSmartCropFilter(w, h, '9:16', clip.subjectPosition, clip.extraZoom);
-		const af = buildAudioFilter(clip.speed, clip.duration);
+		// Older local ffmpeg can't negotiate channel layout between aresample and
+		// afade — pin stereo up front. (Lambda's newer build needs no pin.)
+		const afBase = buildAudioFilter(clip.speed, clip.duration);
+		const af = afBase ? `aformat=channel_layouts=stereo,${afBase}` : afBase;
 		const outFile = path.join(runDir, `clip_${i}_${clip.purpose}.mp4`);
 		const vfArg = vf ? `-vf "${vf}"` : '';
 		const afArg = af ? `-af "${af}"` : '';
@@ -123,9 +136,19 @@ async function main() {
 		processed.push({ src: outFile, length: clip.duration });
 	}
 
-	// 4. Local Remotion render — same composition as the cloud
+	// 4. Local Remotion render — same composition as the cloud.
+	// The composition consumes URL sources (the cloud hands it S3 URLs), so
+	// serve the preprocessed clips over localhost for the render's duration.
+	const PORT = 8899;
+	const { spawn } = await import('node:child_process');
+	const server = spawn('python3', ['-m', 'http.server', String(PORT), '--directory', runDir], {
+		stdio: 'ignore',
+		detached: false,
+	});
+	await new Promise(r => setTimeout(r, 1500));
+
 	const props = {
-		clips: processed.map(p => ({ src: p.src, length: p.length, trimStart: 0 })),
+		clips: processed.map(p => ({ src: `http://localhost:${PORT}/${path.basename(p.src)}`, length: p.length, trimStart: 0 })),
 		mode: plan.mode,
 		width: 1080,
 		height: 1920,
@@ -149,10 +172,14 @@ async function main() {
 
 	const outVideo = path.join(runDir, `${runName}.mp4`);
 	console.log('[rig] rendering locally (bundle + render)...');
-	execSync(
-		`bunx remotion render "${path.join(REPO, 'src/agent/video-editor/remotion/entry.tsx')}" CLCVideo "${outVideo}" --props="${propsFile}" --codec=h264 --concurrency=4 --log=error`,
-		{ stdio: 'inherit', cwd: REPO, timeout: 1_800_000 },
-	);
+	try {
+		execSync(
+			`bunx remotion render "${path.join(REPO, 'src/agent/video-editor/remotion/entry.tsx')}" CLCVideo "${outVideo}" --props="${propsFile}" --codec=h264 --concurrency=4 --log=error`,
+			{ stdio: 'inherit', cwd: REPO, timeout: 1_800_000 },
+		);
+	} finally {
+		server.kill();
+	}
 
 	// 5. Measure with the production gate
 	console.log('[rig] measuring...');

@@ -251,45 +251,72 @@ export interface ShakeCheck {
 	tooShaky: boolean;
 }
 
-export function buildAudiencePlan(
-	pool: Array<{ entry: CatalogEntry; durationSec: number }>,
+type ShakeFn = (fileId: string, start: number, dur: number) => ShakeCheck | null;
+
+// Music beat grid — "Dreams" (production's our_story pick) is 85 BPM. Cutting
+// on whole beats is the cheapest large piece of "a human edited this": the
+// cuts land where the ear expects them.
+const BEAT_SEC = 60 / 85;
+const beats = (n: number) => Math.round(n * BEAT_SEC * 100) / 100;
+const MIN_BEATS = 3;
+
+type RoleDurs = Record<Role, number>;
+/** v2 free-running durations (kept for reproducibility of earlier runs) */
+const FREE_DURS: RoleDurs = { hook: 2.5, establish: 3, skill: 3.5, connection: 3, climax: 6, cta: 4 };
+/** v3 beat-locked durations: 4/4/5/4/9/6 beats at 85 BPM ≈ 22.6s */
+const BEAT_DURS: RoleDurs = {
+	hook: beats(4), establish: beats(4), skill: beats(5),
+	connection: beats(4), climax: beats(9), cta: beats(6),
+};
+
+interface RolePick {
+	clips: RigClip[];
+	runEnds: number[];
+	totalScore: number;
+	outOfClusterCta: boolean;
+}
+
+/**
+ * Fill the six roles from a candidate set. Reserve in scarcity order (a great
+ * hook / climax / calm CTA shot is rare; establish material is everywhere),
+ * assemble in narrative order. Each role walks its ranking and takes the first
+ * candidate that passes the shake meter — the catalog is stills-scored and
+ * blind to shake, so this is the planner's only motion sense; if everything
+ * tried is shaky, take the least-shaky (stabilizer carries it).
+ *
+ * Body roles get a same-source ANCHOR bonus: once one body clip is placed,
+ * other body roles prefer the same source — same kids, same light, same
+ * scene. Continuity is most of what reads as "a human chose this sequence".
+ */
+function pickRoles(
+	cands: Candidate[],
+	allCands: Candidate[],
 	audience: Audience,
-	spikesByFile: Record<string, number[]> = {},
-	/** Measures camera shake over a candidate span; null = unmeasurable (skip check) */
-	shakeFn?: (fileId: string, start: number, dur: number) => ShakeCheck | null,
-): RigPlan {
-	const lists = pool
-		.map(p => ({ ...p, list: buildShotList(p.entry, p.durationSec) }))
-		.filter(p => p.list.segments.length > 0);
-	if (lists.length === 0) throw new Error('rig planner: no vetted segments in the pool');
-
-	const all: Candidate[] = lists.flatMap(p =>
-		p.list.segments.map(seg => ({
-			seg,
-			fileId: p.entry.fileId!,
-			entry: p.entry,
-			ctx: contextFor(p.entry, seg, spikesByFile[p.entry.fileId!] ?? []),
-		})),
-	);
-
-	const used = new Map<string, Array<[number, number]>>();
-	const fresh = () => all.filter(s => !overlapsUsed(used, s.fileId, s.seg.start, s.seg.end));
-	const ranked = (role: Role): Candidate[] => fresh()
-		.map(s => ({ s, v: scoreForRole(s.seg, s.ctx, role, audience) }))
-		.sort((a, b) => b.v - a.v)
-		.map(r => r.s);
-
-	// Reserve in scarcity order (a great hook / climax / calm CTA shot is rare;
-	// establish material is everywhere), assemble in narrative order below.
-	// Each role walks its ranking and takes the first candidate that passes the
-	// shake meter — the catalog is stills-scored and blind to shake, so this is
-	// the planner's only motion sense. If everything tried is shaky, take the
-	// least-shaky (it gets stabilized in preprocessing regardless).
+	durs: RoleDurs,
+	shakeFn?: ShakeFn,
+): RolePick | null {
 	const SHAKE_TRIES = 12;
-	const picks = new Map<Role, { c: Candidate; trimStart: number; duration: number }>();
-	const take = (role: Role, wantDur: number, place?: (c: Candidate, dur: number) => number) => {
-		let fallback: { c: Candidate; start: number; dur: number; badness: number } | null = null;
-		for (const c of ranked(role).slice(0, SHAKE_TRIES)) {
+	const ANCHOR_BONUS = 1.15;
+	const BODY_ROLES: Role[] = ['establish', 'skill', 'connection'];
+	const used = new Map<string, Array<[number, number]>>();
+	const picks = new Map<Role, { c: Candidate; trimStart: number; duration: number; v: number }>();
+	let totalScore = 0;
+	let bodyAnchor: string | null = null;
+	let outOfClusterCta = false;
+
+	const ranked = (role: Role, from: Candidate[]) => from
+		.filter(s => !overlapsUsed(used, s.fileId, s.seg.start, s.seg.end))
+		.map(s => {
+			let v = scoreForRole(s.seg, s.ctx, role, audience);
+			if (bodyAnchor && BODY_ROLES.includes(role) && s.fileId === bodyAnchor) v *= ANCHOR_BONUS;
+			return { s, v };
+		})
+		.sort((a, b) => b.v - a.v);
+
+	const take = (role: Role, from: Candidate[], place?: (c: Candidate, dur: number) => number): boolean => {
+		const wantDur = durs[role];
+		let fallback: { c: Candidate; start: number; dur: number; v: number; badness: number } | null = null;
+		for (const { s: c, v } of ranked(role, from).slice(0, SHAKE_TRIES)) {
 			// Clips may use the full vetted RUN, not just the ranking split.
 			const runLen = c.seg.runEnd - c.seg.start;
 			const dur = Math.round(Math.min(wantDur, runLen) * 10) / 10;
@@ -299,28 +326,38 @@ export function buildAudiencePlan(
 			if (shake?.tooShaky) {
 				console.log(`  [shake] ${role}: rejected ${c.fileId.slice(0, 8)} ${start}s (metric ${shake.metric}, jitter ${shake.jitter}) — "${c.seg.why}"`);
 				const badness = shake.metric + shake.jitter;
-				if (!fallback || badness < fallback.badness) fallback = { c, start, dur, badness };
+				if (!fallback || badness < fallback.badness) fallback = { c, start, dur, v, badness };
 				continue;
 			}
-			picks.set(role, { c, trimStart: Math.round(start * 10) / 10, duration: dur });
+			picks.set(role, { c, trimStart: Math.round(start * 10) / 10, duration: dur, v });
 			commit(used, c.fileId, start, start + dur);
-			return;
+			totalScore += v;
+			if (BODY_ROLES.includes(role) && !bodyAnchor) bodyAnchor = c.fileId;
+			return true;
 		}
 		if (fallback) {
 			console.log(`  [shake] ${role}: all candidates shaky — keeping least-shaky ${fallback.c.fileId.slice(0, 8)} (stabilizer will carry it)`);
-			picks.set(role, { c: fallback.c, trimStart: Math.round(fallback.start * 10) / 10, duration: fallback.dur });
+			picks.set(role, { c: fallback.c, trimStart: Math.round(fallback.start * 10) / 10, duration: fallback.dur, v: fallback.v });
 			commit(used, fallback.c.fileId, fallback.start, fallback.start + fallback.dur);
+			totalScore += fallback.v;
+			if (BODY_ROLES.includes(role) && !bodyAnchor) bodyAnchor = fallback.c.fileId;
+			return true;
 		}
+		return false;
 	};
 
 	// Hook cold-opens ~1s before the span's emotional peak so the payoff lands
 	// inside the viewer's 2-second decision window.
-	take('hook', 2.5, (c, dur) => Math.max(c.seg.runStart, Math.min(c.ctx.peakEmotionTs - 1.0, c.seg.runEnd - dur)));
-	take('climax', 6);
-	take('cta', 4);
-	take('connection', 3);
-	take('skill', 3.5);
-	take('establish', 3);
+	take('hook', cands, (c, dur) => Math.max(c.seg.runStart, Math.min(c.ctx.peakEmotionTs - 1.0, c.seg.runEnd - dur)));
+	take('climax', cands);
+	// A CTA-worthy calm group shot may not exist in this cluster — the ask can
+	// jump venue (it reads as a closing card), the story itself must not.
+	if (!take('cta', cands) && allCands !== cands && take('cta', allCands)) {
+		outOfClusterCta = true;
+	}
+	take('connection', cands);
+	take('skill', cands);
+	take('establish', cands);
 
 	const ORDER: Role[] = ['hook', 'establish', 'skill', 'connection', 'climax', 'cta'];
 	const clips: RigClip[] = [];
@@ -349,10 +386,11 @@ export function buildAudiencePlan(
 		});
 		runEnds.push(c.seg.runEnd);
 	}
-	if (clips.length < 4) throw new Error(`rig planner: only ${clips.length} role slots filled — pool too thin for an audience plan`);
+	if (clips.length < 4) return null;
+	return { clips, runEnds, totalScore, outOfClusterCta };
+}
 
-	enforceRhythm(clips, runEnds);
-
+function assemblePlan(clips: RigClip[], audience: Audience): RigPlan {
 	const total = clips.reduce((s, c) => s + c.duration, 0);
 	const ctaDur = clips.at(-1)!.purpose === 'cta' ? clips.at(-1)!.duration : 4;
 	return {
@@ -363,4 +401,123 @@ export function buildAudiencePlan(
 			{ text: CTA_TEXT[audience], start: Math.max(4, total - ctaDur + 0.4), duration: Math.max(2.5, ctaDur - 0.6), position: 'bottom', animation: 'scaleUp' },
 		],
 	};
+}
+
+function buildCandidates(
+	pool: Array<{ entry: CatalogEntry; durationSec: number }>,
+	spikesByFile: Record<string, number[]>,
+): Candidate[] {
+	const lists = pool
+		.map(p => ({ ...p, list: buildShotList(p.entry, p.durationSec) }))
+		.filter(p => p.list.segments.length > 0);
+	if (lists.length === 0) throw new Error('rig planner: no vetted segments in the pool');
+	return lists.flatMap(p =>
+		p.list.segments.map(seg => ({
+			seg,
+			fileId: p.entry.fileId!,
+			entry: p.entry,
+			ctx: contextFor(p.entry, seg, spikesByFile[p.entry.fileId!] ?? []),
+		})),
+	);
+}
+
+/** v2 planner: best shots regardless of venue. Kept for A/B reproducibility. */
+export function buildAudiencePlan(
+	pool: Array<{ entry: CatalogEntry; durationSec: number }>,
+	audience: Audience,
+	spikesByFile: Record<string, number[]> = {},
+	shakeFn?: ShakeFn,
+): RigPlan {
+	const all = buildCandidates(pool, spikesByFile);
+	const picked = pickRoles(all, all, audience, FREE_DURS, shakeFn);
+	if (!picked) throw new Error('rig planner: pool too thin for an audience plan');
+	enforceRhythm(picked.clips, picked.runEnds);
+	return assemblePlan(picked.clips, audience);
+}
+
+/** Venue signature — the story must not jump between these mid-edit. */
+export function clusterKeyFor(entry: CatalogEntry): string {
+	const io = entry.indoorOutdoor ?? 'unknown';
+	const kind = entry.contentType === 'chess' ? 'chess' : 'tennis';
+	return `${kind}-${io}`;
+}
+
+/** Quantize durations onto the beat grid (floor — never exceeds the vetted run). */
+function snapToBeats(clips: RigClip[]): void {
+	for (const c of clips) {
+		const n = Math.max(MIN_BEATS, Math.floor(c.duration / BEAT_SEC));
+		c.duration = Math.min(c.duration, beats(n));
+	}
+}
+
+/** Rhythm spread in whole-beat steps so variety never breaks the grid. */
+function enforceRhythmBeats(clips: RigClip[], runEnds: number[]): void {
+	const grown = new Map<number, number>();
+	let guard = 0;
+	while (rhythmCv(clips.map(c => c.duration)) < 0.33 && guard++ < 12) {
+		let iMax = 0, iMin = 0;
+		clips.forEach((c, i) => {
+			if (c.duration > clips[iMax]!.duration) iMax = i;
+			if (c.duration < clips[iMin]!.duration) iMin = i;
+		});
+		const c = clips[iMax]!;
+		const canGrow = (grown.get(iMax) ?? 0) < 4
+			&& c.duration + BEAT_SEC <= 8
+			&& c.trimStart + c.duration + BEAT_SEC <= runEnds[iMax]!;
+		if (canGrow) {
+			c.duration = beats(Math.round(c.duration / BEAT_SEC) + 1);
+			grown.set(iMax, (grown.get(iMax) ?? 0) + 1);
+			continue;
+		}
+		if (clips[iMin]!.duration - BEAT_SEC >= MIN_BEATS * BEAT_SEC - 0.01) {
+			clips[iMin]!.duration = beats(Math.round(clips[iMin]!.duration / BEAT_SEC) - 1);
+			continue;
+		}
+		break;
+	}
+}
+
+/**
+ * v3 planner: STORY COHERENCE. Human editors' first rule is continuity — one
+ * venue, one session, ideally the same kids. Cluster sources by venue
+ * signature, fill all six roles inside each cluster, keep the cluster that
+ * fills the story best. Durations lock to the music's beat grid.
+ */
+export function buildCoherentPlan(
+	pool: Array<{ entry: CatalogEntry; durationSec: number }>,
+	audience: Audience,
+	spikesByFile: Record<string, number[]> = {},
+	shakeFn?: ShakeFn,
+	/** Restrict to one venue cluster (e.g. 'tennis-indoor') instead of best-of-all */
+	forceCluster?: string,
+): RigPlan {
+	const all = buildCandidates(pool, spikesByFile);
+	const clusters = new Map<string, Candidate[]>();
+	for (const c of all) {
+		const key = clusterKeyFor(c.entry);
+		if (forceCluster && key !== forceCluster) continue;
+		clusters.set(key, [...(clusters.get(key) ?? []), c]);
+	}
+	if (clusters.size === 0) throw new Error(`rig planner: no sources in cluster '${forceCluster}'`);
+
+	let best: { key: string; pick: RolePick } | null = null;
+	for (const [key, cands] of [...clusters.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+		const sources = new Set(cands.map(c => c.fileId)).size;
+		const pick = pickRoles(cands, all, audience, BEAT_DURS, shakeFn);
+		if (!pick) {
+			console.log(`  [cluster] ${key}: ${sources} sources — cannot fill the story, skipped`);
+			continue;
+		}
+		console.log(`  [cluster] ${key}: ${sources} sources, ${pick.clips.length} roles filled, score ${pick.totalScore.toFixed(1)}${pick.outOfClusterCta ? ' (CTA borrowed from another venue)' : ''}`);
+		const better = !best
+			|| pick.clips.length > best.pick.clips.length
+			|| (pick.clips.length === best.pick.clips.length && pick.totalScore > best.pick.totalScore);
+		if (better) best = { key, pick };
+	}
+	if (!best) throw new Error('rig planner: no venue cluster can fill a coherent story');
+	console.log(`  [cluster] CHOSEN: ${best.key} — the whole story stays in one venue`);
+
+	snapToBeats(best.pick.clips);
+	enforceRhythmBeats(best.pick.clips, best.pick.runEnds);
+	return assemblePlan(best.pick.clips, audience);
 }

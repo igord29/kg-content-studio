@@ -19,7 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import { S3Client, ListObjectsV2Command, GetObjectCommand } from '@aws-sdk/client-s3';
-import { buildDeterministicPlan, buildAudiencePlan, type RigPlan } from './plan';
+import { buildDeterministicPlan, buildCoherentPlan, type RigPlan } from './plan';
 import { detectAudioSpikes } from './audio-events';
 import { measureShake, isTooShaky } from './shake-meter';
 import type { Audience } from './audience-profiles';
@@ -165,7 +165,7 @@ async function main() {
 			const r = shakeCache.get(key);
 			return r ? { metric: r.metric, jitter: r.jitter, tooShaky: isTooShaky(r) } : null;
 		};
-		plan = buildAudiencePlan(available, audience, spikes, shakeFn);
+		plan = buildCoherentPlan(available, audience, spikes, shakeFn, process.env.RIG_CLUSTER || undefined);
 		console.log(`[rig] audience: ${audience} (${shakeCache.size} shake measurements)`);
 	} else {
 		plan = buildDeterministicPlan(pool);
@@ -256,7 +256,9 @@ async function main() {
 		})(),
 		musicVolume: audience ? MUSIC_VOLUME : 0,
 		bgColor: '#0a0a0a',
-		transitionDurationFrames: 30,
+		// 1s crossfades between every shot read as machine-made mush; humans in
+		// this genre hard-cut on the beat. 8 frames = a subtle 0.27s blend.
+		transitionDurationFrames: audience ? 8 : 30,
 	};
 	const propsFile = path.join(runDir, 'props.json');
 	fs.writeFileSync(propsFile, JSON.stringify(props));

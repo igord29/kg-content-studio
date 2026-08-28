@@ -39,10 +39,18 @@ another action beat.
 - The community clip wants people TOGETHER with faces visible — emotion >= 6
   and people >= 3 if such a timestamp exists.
 
-TEXT OVERLAY GUIDELINES:
+TEXT OVERLAY GUIDELINES (the house style is COPY-DRIVEN — text carries the story):
+- Hook text: center position, scaleUp, starts ~0.5s, 3-4s duration — the value
+  proposition in a few bold words (e.g. "SUMMER 2026 — TENNIS & LEARNING CAMP")
+- 1-2 SECTION TITLES: center position, fade, one word or one short line each
+  ("Community." / "A summer of learning, movement & memories."), placed at beat
+  changes mid-timeline, 2-3s duration
 - Location tag: bottom position, slideUp animation, starts at ~1s, 3s duration
-- Mid-video stat (optional): center position, typewriter animation, mid-timeline, 3-4s duration
-- CLC branding: bottom position, scaleUp animation, starts in last 5s, 4s duration
+- CLOSING INFO CARD: center position, scaleUp, last 4-5s — program name,
+  season + location, tagline on separate short lines (write it as one overlay
+  with line breaks). This lands ON the final group shot.
+(A persistent CommunityLiteracyClub.org watermark is added by the system —
+do NOT add one yourself.)
 
 OVERLAY TIMING:
 The current timeline length (hook + body) is provided in the prompt. Place overlays at absolute timeline seconds (NOT source timestamps). Use the "start" field for when each overlay appears on screen.

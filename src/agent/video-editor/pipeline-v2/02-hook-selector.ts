@@ -44,6 +44,12 @@ If scene analysis shows an interaction or action event at timestamp T:
 NEVER set trimStart = T. That starts the clip ON the peak and loses the buildup.
 
 WHAT ACTUALLY STOPS A SCROLL:
+THE HOUSE HOOK (highest priority when available): kids looking directly INTO
+the camera, close, filling the frame — a group of faces in direct address.
+Look for briefs mentioning kids facing/looking at the camera, posing, waving.
+When such a moment exists, it beats both action and candid emotion; pair it
+with a bold text overlay carrying the value proposition. Only when no
+direct-address moment exists do the rules below decide.
 A readable human face beats a technically good rally, every time. When the
 timestamp scores carry an emotion value, treat it as at least as important as
 actionQuality when choosing your T — the list you are given is already ranked

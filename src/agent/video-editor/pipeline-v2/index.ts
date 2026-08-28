@@ -90,7 +90,14 @@ export async function generateEditPlanV2(
 	// different site locations in a single video, which reads as randomly
 	// stitched no matter how good each individual cut is. Enforced in code
 	// because prompt guidance alone demonstrably did not stop it.
-	const partition = partitionByLocation(input.videoMetadata, input.catalog);
+	// Mode-aware: a game_day/quick_hit edit is a single-session recap and mixing
+	// venues reads as randomly stitched footage. A showcase edit is a PROGRAM
+	// promo — the founder's own benchmark edit deliberately spans outdoor courts
+	// and the indoor gym to convey breadth. Only recap modes get the hard filter.
+	const isRecapMode = input.editMode === 'game_day' || input.editMode === 'quick_hit' || input.editMode === 'auto';
+	const partition = isRecapMode
+		? partitionByLocation(input.videoMetadata, input.catalog)
+		: { kept: input.videoMetadata.map(v => v.id), excluded: [], dominantLocation: '', unknownIds: [], filtered: false };
 	if (partition.filtered) {
 		const keptSet = new Set(partition.kept);
 		logger.warn(
@@ -313,10 +320,25 @@ Avoid: ${brief.avoid.join('; ')}`;
 	// it just comes from the platform now, where that reasoning actually lives.
 	const musicTier = getDefaultMusicTier(input.platform, arc.mode);
 
+	// Persistent watermark — the house style keeps CommunityLiteracyClub.org
+	// on screen for the full runtime. Injected in code so it cannot be
+	// forgotten, mis-timed, or duplicated by the model.
+	const watermark = {
+		text: 'CommunityLiteracyClub.org',
+		start: 0,
+		duration: Math.ceil(totalDuration),
+		position: 'bottom' as const,
+		animation: 'fade' as const,
+	};
+	const overlaysWithWatermark = [
+		...close.textOverlays.filter(o => !/communityliteracyclub/i.test(o.text)),
+		watermark,
+	];
+
 	return {
 		mode: arc.mode,
 		clips: allClips,
-		textOverlays: close.textOverlays,
+		textOverlays: overlaysWithWatermark,
 		totalDuration: Math.round(totalDuration),
 		transitions,
 		musicTier,

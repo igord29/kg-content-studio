@@ -733,7 +733,11 @@ with those, you are doing it wrong.
   honestly rather than flattening everything to positive.
 
 - beat: which story role this frame could serve. One of:
-  - "hook": arresting on its own, works as an opening frame that stops a scroll
+  - "hook": arresting on its own, works as an opening frame that stops a scroll.
+    KIDS LOOKING DIRECTLY AT THE CAMERA — posing, waving, a group in direct
+    address — is ALWAYS beat "hook", even with zero athletic action. Say
+    "looking at camera" in the brief when you see it; it is the single most
+    valuable framing in this footage.
   - "setup": establishes place, context or who we are looking at
   - "struggle": effort, difficulty, missing, fatigue, frustration
   - "turn": the moment something changes — contact, a decision, a reaction

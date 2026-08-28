@@ -36,6 +36,13 @@ BODY STRUCTURE:
 - 2-3 ESTABLISH clips: 4-5s each, show location, energy, who's here
 - 1-2 SHOWCASE clips: 4-5s each, gameplay or interaction
 - 1 CLIMAX clip: the peak moment — slow-mo if warranted
+- MONTAGE BURST (after the climax, before the close): 4-6 rapid clips at
+  0.8-1.5s each, ALL hard cuts, each a different kid/moment/angle. This is the
+  house style's accelerando — the edit speeds up as it approaches the landing.
+  Anchor each burst clip on a real timestamp like every other clip; the burst
+  is where you spend timestamps too brief to carry a full beat. Purpose field:
+  "montage". Skip the burst ONLY if the sources genuinely lack enough distinct
+  moments.
 
 PEAK ANCHORING RULE (non-negotiable):
 For each clip, your trimStart MUST sit within 2 seconds of a TIMESTAMP ACTION SCORE provided in the footage data — never pick a blind number. The timestamp scores tell you exactly where players are visible and active; picking trimStart values that miss those scores produces wall shots and empty-court frames.

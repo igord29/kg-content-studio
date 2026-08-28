@@ -58,6 +58,16 @@ story. It is the single most common reason an edit looks amateur.
   highest-action timestamp is also the most emotional one; the data usually says
   otherwise.
 
+GAMEPLAY REQUIREMENT (non-negotiable in game_day and quick_hit modes):
+The audience is promised PLAY, not practice logistics. Each timestamp carries a
+tennis score: 4 = active drills/strokes, 5 = live rally or match play. In
+game_day/quick_hit, SHOWCASE and CLIMAX clips MUST anchor on the
+highest-tennis timestamps available (tennis>=4 when any exist across the
+selected sources). Coach conversations and huddles belong in establish or
+community beats — never as the showcase or climax of a game-day edit. If NO
+timestamp in any source reaches tennis>=4, say so in the climax's editNote and
+pick the closest thing to actual play, not the most emotional conversation.
+
 PEOPLE-PRESENCE FILTER (non-negotiable for showcase + climax):
 Showcase and climax clips MUST anchor on a timestamp where people>=4. Establish clips may use lower-people timestamps (wide venue shots are OK if intentional), but showcase/climax need a player visibly in frame doing the action. If no people>=4 timestamps exist for a beat's planned source, EITHER pick a different source OR demote the beat to establish.
 
@@ -204,7 +214,7 @@ export async function composeBody(
 						const emoTag = typeof s.emotion === 'number'
 							? `, emotion=${s.emotion}/10${s.valence ? `/${s.valence}` : ''}${s.beat && s.beat !== 'none' ? `, beat=${s.beat}` : ''}`
 							: '';
-						return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy}${emoTag})${usedTag}`;
+						return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (people=${s.people}, energy=${s.energy}, tennis=${s.tennis}${emoTag})${usedTag}`;
 					})
 					.join('\n');
 				timestampSection = `\n  ✅ TIMESTAMP ACTION SCORES (pick trim points NEAR these — never blind-pick a timestamp; prefer ones NOT marked [ALREADY USED]):\n${lines}`;

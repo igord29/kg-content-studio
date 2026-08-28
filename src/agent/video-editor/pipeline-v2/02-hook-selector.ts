@@ -154,13 +154,22 @@ export async function selectHook(
 		// Entries catalogued before the emotion axis existed have no emotion field.
 		// Those fall back to actionQuality alone, so the existing library ranks
 		// exactly as it did before and only re-catalogued footage benefits.
-		const hookScore = (s: { actionQuality: number; emotion?: number; beat?: string }): number => {
+		// Mode-aware weighting. A game_day hook is a promise of PLAY — action and
+		// gameplay carry it, with emotion as the tiebreak. A story/showcase hook
+		// is a promise of a HUMAN — emotion pulls equal weight. The first demo
+		// weighted 50/50 for everything, and a game_day edit opened on a
+		// conversation instead of tennis.
+		const actionForward = arc.mode === 'game_day' || arc.mode === 'quick_hit';
+		const hookScore = (s: { actionQuality: number; emotion?: number; beat?: string; tennis?: number }): number => {
 			if (typeof s.emotion !== 'number') return s.actionQuality;
 			const beatBonus =
 				s.beat === 'hook' ? 2 :
 				s.beat === 'triumph' ? 1.5 :
 				s.beat === 'turn' ? 1 : 0;
-			return s.actionQuality * 0.5 + s.emotion * 0.5 + beatBonus;
+			const gameplayBonus = actionForward && (s.tennis ?? 0) >= 4 ? 1.5 : 0;
+			return actionForward
+				? s.actionQuality * 0.7 + s.emotion * 0.3 + beatBonus + gameplayBonus
+				: s.actionQuality * 0.5 + s.emotion * 0.5 + beatBonus;
 		};
 
 		const top10 = [...setupCatalog.timestampScores!]
@@ -172,7 +181,7 @@ export async function selectHook(
 				const emoTag = typeof s.emotion === 'number'
 					? `, emotion=${s.emotion}/10${s.valence ? `/${s.valence}` : ''}${s.beat && s.beat !== 'none' ? `, beat=${s.beat}` : ''}`
 					: '';
-				return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people}${emoTag})${usedTag}`;
+				return `    ${s.timestamp}s: actionQuality=${s.actionQuality}/10 — "${s.brief}" (energy=${s.energy}, people=${s.people}, tennis=${s.tennis}${emoTag})${usedTag}`;
 			})
 			.join('\n');
 		// Best UNUSED peak — code-picked so variety doesn't rely on the model

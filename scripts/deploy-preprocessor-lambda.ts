@@ -452,9 +452,23 @@ function buildVideoFilter(config) {
     filters.push('scale=min(iw\\\\,1080):-2');
   }
 
-  // Stabilization — OPT IN. Default OFF: deshake on 2K @ 2048MB Lambda blows past 300s timeout.
+  // Stabilization. Two-pass vidstab when the caller ran the analysis pass and
+  // handed us its transforms file; single-pass deshake as the fallback.
+  //
+  // History: this was opt-in-and-never-opted-into because deshake on a FULL 2K
+  // source blew the 300s timeout. But -ss sits before -i, so FFmpeg only
+  // decodes the trimmed 3-9s window — stabilizing that costs seconds, not
+  // minutes. Meanwhile the footage is chest/hand-held POV, so an unstabilized
+  // render is visibly jumpy the whole way through. The stabilizer runs FIRST in
+  // the chain, so the crop window that follows is computed on steadied frames.
   if (config.stabilize === true) {
-    filters.push('deshake=x=-1:y=-1:w=-1:h=-1:rx=32:ry=32');
+    if (config.vidstabTransforms) {
+      filters.unshift(
+        'vidstabtransform=input=' + config.vidstabTransforms + ':zoom=2:smoothing=15:interpol=bilinear'
+      );
+    } else {
+      filters.unshift('deshake=x=-1:y=-1:w=-1:h=-1:rx=32:ry=32');
+    }
   }
 
   // Sharpening — moderate settings for phone footage.
@@ -586,10 +600,41 @@ exports.handler = async function(event) {
     const dlTime = ((Date.now() - dlStart) / 1000).toFixed(1);
     console.log('[preprocessor] Downloaded: ' + (inputSize / (1024 * 1024)).toFixed(1) + 'MB in ' + dlTime + 's');
 
+    // Step 1b: Stabilization analysis (vidstab pass 1 of 2). Runs on the SAME
+    // trimmed window as the main command, writing motion transforms that pass 2
+    // (vidstabtransform, inside the filter chain) consumes. Cheap: only the
+    // 3-9s window is decoded. If this pass fails for any reason we fall back
+    // to single-pass deshake rather than skipping stabilization entirely.
+    let vidstabTransforms = null;
+    if (event.stabilize === true) {
+      const trfPath = '/tmp/transforms.trf';
+      try {
+        const p1Start = Date.now();
+        execSync(
+          [ffmpegPath, '-y',
+           '-ss', String(event.trimStart), '-t', String(event.duration),
+           '-i', inputPath,
+           '-vf', "'vidstabdetect=shakiness=8:accuracy=15:result=" + trfPath + "'",
+           '-f', 'null', '-',
+          ].join(' '),
+          { stdio: 'pipe', timeout: 120000 },
+        );
+        if (existsSync(trfPath) && statSync(trfPath).size > 0) {
+          vidstabTransforms = trfPath;
+          console.log('[preprocessor] vidstab pass 1 done in ' + ((Date.now() - p1Start) / 1000).toFixed(1) + 's');
+        } else {
+          console.log('[preprocessor] vidstab pass 1 produced no transforms — falling back to deshake');
+        }
+      } catch (e) {
+        console.log('[preprocessor] vidstab pass 1 failed (' + (e.message || e) + ') — falling back to deshake');
+      }
+    }
+
     // Step 2: Build FFmpeg command
     const speed = event.speed ?? 1.0;
     const videoFilter = buildVideoFilter({
       stabilize: event.stabilize,
+      vidstabTransforms: vidstabTransforms,
       sharpen: event.sharpen,
       speed: speed,
       targetAspect: event.targetAspect,

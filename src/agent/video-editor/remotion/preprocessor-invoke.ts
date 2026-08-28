@@ -36,7 +36,7 @@ export interface PreprocessorClipConfig {
 	duration: number;            // Seconds of source to use
 	speed?: number;              // Playback speed multiplier (default 1.0)
 	sharpen?: boolean;           // Apply unsharp filter (default true)
-	stabilize?: boolean;         // Apply deshake filter (default false — CPU-heavy, causes Lambda timeouts)
+	stabilize?: boolean;         // Two-pass vidstab on the trim window (deshake fallback); default ON
 	// Smart-crop inputs (optional — when set, Lambda reframes to targetAspect using subjectPosition):
 	targetAspect?: '9:16' | '1:1' | '4:5' | '16:9';
 	subjectPosition?: string;    // e.g., 'bottom-center' — from GPT-4o cataloger
@@ -381,6 +381,7 @@ export function buildPreprocessorConfigs(
 		transitionDirection?: string;
 		speedKeyframes?: Array<{ at: number; speed: number }>;
 		extraZoom?: number;  // Per-clip override from director; falls back to mode default.
+		stabilize?: boolean; // Explicit false opts a clip out of stabilization (default on).
 	}>,
 	s3Clips: Map<string, S3UploadedClip>,
 	defaultDuration: number = 5,
@@ -402,7 +403,14 @@ export function buildPreprocessorConfigs(
 			duration: clip.duration || defaultDuration,
 			speed: clip.speed,
 			sharpen: true,       // Phone footage benefits from light sharpening.
-			stabilize: false,    // Disabled: deshake on 2K source @ 2048MB Lambda times out.
+			// ON by default: this is chest/hand-held POV footage and unstabilized
+			// renders are visibly jumpy end to end. The old "deshake on 2K times
+			// out" concern applied to stabilizing a FULL source; the Lambda seeks
+			// before decoding, so only the 3-9s trim window is processed — and it
+			// now runs two-pass vidstab on that window (seconds, not minutes),
+			// with deshake as the in-Lambda fallback. A clip can still opt out
+			// by setting stabilize: false explicitly.
+			stabilize: clip.stabilize !== false,
 			targetAspect,
 			subjectPosition: clip.subjectPosition,
 			sourceWidth: s3Info.width,

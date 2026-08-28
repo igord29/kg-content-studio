@@ -91,7 +91,7 @@ fi
 ok "build succeeded"
 
 say "Tests"
-for t in test-composition-timing.ts test-preprocessor-crop.ts test-emotion-wiring.ts; do
+for t in test-composition-timing.ts test-preprocessor-crop.ts test-emotion-wiring.ts test-location-coherence.ts; do
   if [[ -f "$t" ]]; then
     bun "$t" > /dev/null || die "$t failed — run 'bun $t' to see why"
     ok "$t"

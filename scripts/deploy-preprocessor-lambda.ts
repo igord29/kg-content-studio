@@ -32,7 +32,7 @@ import { config } from 'dotenv';
 import { resolve, join } from 'path';
 import {
 	existsSync, mkdirSync, writeFileSync, readFileSync,
-	unlinkSync, chmodSync, rmSync, statSync, copyFileSync,
+	unlinkSync, chmodSync, rmSync, statSync, copyFileSync, readdirSync,
 } from 'fs';
 import { execSync } from 'child_process';
 
@@ -216,29 +216,34 @@ async function getFFmpegBinary(): Promise<string> {
 			console.log('  Windows extraction failed: %s', err instanceof Error ? err.message : String(err));
 		}
 	} else {
-		// Linux/Mac: standard tar works fine
+		// Linux/Mac. ORDER MATTERS: -C must come BEFORE the member pattern.
+		// GNU tar processes -C positionally, so a member listed before -C is
+		// extracted into the CURRENT directory — the old command exited 0 while
+		// silently dropping a 76MB `ffmpeg` into the repo root, and because it
+		// "succeeded", the fallback below never ran either.
 		try {
 			execSync(
-				`tar -xf "${archivePath}" --wildcards "*/ffmpeg" --strip-components=1 -C "${FFMPEG_CACHE_DIR}"`,
+				`tar -xf "${archivePath}" -C "${FFMPEG_CACHE_DIR}" --strip-components=1 --wildcards "*/ffmpeg"`,
 				{ stdio: 'pipe', timeout: 120000 },
 			);
 			extracted = existsSync(cachedBinary);
-		} catch {
-			// Some tar versions don't support --wildcards
+		} catch { /* fall through to full extract */ }
+		// Full extract covers both a thrown tar AND a zero-exit tar that still
+		// failed to place the binary (e.g. a tar without --wildcards support).
+		if (!extracted) {
 			try {
 				execSync(
 					`tar -xf "${archivePath}" -C "${FFMPEG_CACHE_DIR}" --strip-components=1`,
 					{ stdio: 'pipe', timeout: 120000 },
 				);
 				extracted = existsSync(cachedBinary);
-			} catch { /* fall through */ }
+			} catch { /* fall through to recursive search */ }
 		}
 	}
 
 	// If extraction didn't place it at the expected location, search recursively
 	if (!extracted) {
 		// Scan cache directory for any file named 'ffmpeg'
-		const { readdirSync } = require('fs');
 		const walkSync = (dir: string): string | null => {
 			try {
 				const entries = readdirSync(dir, { withFileTypes: true });
@@ -274,7 +279,6 @@ async function getFFmpegBinary(): Promise<string> {
 	try { unlinkSync(archivePath); } catch { /* ok */ }
 	// Clean up any subdirectories left from extraction
 	try {
-		const { readdirSync } = require('fs');
 		for (const entry of readdirSync(FFMPEG_CACHE_DIR, { withFileTypes: true })) {
 			if (entry.isDirectory()) {
 				rmSync(join(FFMPEG_CACHE_DIR, entry.name), { recursive: true, force: true });

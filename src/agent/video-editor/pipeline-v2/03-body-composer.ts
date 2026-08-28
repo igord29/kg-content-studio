@@ -44,9 +44,9 @@ EMOTIONAL ESCALATION (non-negotiable when emotion data is present):
 A body that is four competent action clips in a row is a highlight reel, not a
 story. It is the single most common reason an edit looks amateur.
 
-- AT LEAST ONE body clip MUST come from a moment with emotion >= 6 — a face, a
+- AT LEAST ONE body clip MUST come from a moment with emotion >= 5 — a face, a
   reaction, a look between two people. Sources that have any are listed under
-  "EMOTIONAL PEAKS". If NO source in this edit offers emotion >= 6, say so
+  "EMOTIONAL PEAKS". If NO source in this edit offers emotion >= 5, say so
   explicitly in that clip's editNote rather than silently skipping the rule.
 - Order the body so emotional intensity RISES toward the climax. Establish
   clips may sit low; the climax should be at or near the strongest emotion
@@ -213,7 +213,7 @@ export async function composeBody(
 				// they get ignored; the body is where an edit either builds or stays
 				// a flat highlight reel.
 				const emotionalPeaks = top15
-					.filter(s => typeof s.emotion === 'number' && s.emotion >= 6)
+					.filter(s => typeof s.emotion === 'number' && s.emotion >= 5)
 					.sort((a, b) => (b.emotion ?? 0) - (a.emotion ?? 0))
 					.slice(0, 5);
 				if (emotionalPeaks.length > 0) {

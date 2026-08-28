@@ -76,7 +76,7 @@ check('close composer weights community/reflection beats',
 	/beat === 'community'[\s\S]{0,120}beat === 'reflection'/.test(close));
 const body = read(path.join(V2, '03-body-composer.ts'));
 check('body composer requires an emotional beat',
-	/emotion >= 6/.test(body) && /EMOTIONAL ESCALATION/.test(body));
+	/emotion >= 5/.test(body) && /EMOTIONAL ESCALATION/.test(body));
 
 console.log('\n5. Pre-existing catalogs still work (graceful degradation)');
 check('hook ranking falls back when emotion is absent',

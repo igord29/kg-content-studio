@@ -139,12 +139,21 @@ fi
 
 # --- 2. Remotion site bundle ----------------------------------------------
 
+# The two AWS deploy scripts run under node (via tsx), NOT bun. Bun's fetch
+# honours $HTTPS_PROXY automatically, and behind a TLS-intercepting egress
+# proxy (e.g. a sandboxed CI/agent environment) the AWS SDK's calls then die
+# with "The socket connection was closed unexpectedly". Node's AWS client
+# connects directly and works in both environments. Observed 2026-08-12:
+# identical IAM GetRole succeeded under node and failed under bun.
+TSX="./node_modules/.bin/tsx"
+[[ -x "$TSX" ]] || die "tsx not installed — run: bun add -d tsx"
+
 if [[ $REMOTION_STALE == 1 ]]; then
   say "Remotion site bundle"
   # Build and sanity-check before spending an upload: a bundle that fetches
   # fonts at render time is a hard failure on a Lambda with no outbound route.
   bun scripts/verify-remotion-bundle.ts
-  bun scripts/setup-remotion-lambda.ts
+  "$TSX" scripts/setup-remotion-lambda.ts
   echo "$REMOTION_FP" > "$STAMP_DIR/remotion"
   ok "deployed"
   warn "If setup printed a new REMOTION_SERVE_URL, set it on Railway:"
@@ -157,7 +166,7 @@ fi
 
 if [[ $LAMBDA_STALE == 1 ]]; then
   say "Preprocessor Lambda"
-  bun scripts/deploy-preprocessor-lambda.ts
+  "$TSX" scripts/deploy-preprocessor-lambda.ts
   echo "$LAMBDA_FP" > "$STAMP_DIR/lambda"
   ok "deployed"
 else

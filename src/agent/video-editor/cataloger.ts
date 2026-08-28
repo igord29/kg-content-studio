@@ -680,6 +680,7 @@ const TIMESTAMP_SCORING_PROMPT = `You are scoring frames from a youth tennis/che
   - 0.35-0.60: subject is the visual focal point (medium shot, half-body)
   - 0.60-1.00: subject fills the frame (close-up, action shot)
   Score this HONESTLY. A frame with a J.P. Morgan banner taking 70% of the image and a kid in the corner = subjectFillRatio 0.10, NOT higher. A tequila wall with no people = 0.0.
+  FOREGROUND OCCLUSION RULE: this is POV footage, and an adult's back/shoulder in the near foreground often covers most of the frame while kids play in the background. If a foreground body or object covers more than ~40% of the frame, the frame is OCCLUDED: cap subjectFillRatio at 0.15, cap people at 2, and start the brief with "OCCLUDED —". Describing the background kid while ignoring a back that fills the frame is the failure mode: a zoom-in on this frame lands on the back, not the kid. Score what dominates the pixels, not what the shot is "about".
 - tennis: How directly does this show tennis/chess GAMEPLAY? (1=irrelevant/empty space, 2=court visible but no play, 3=people near court/equipment, 4=active drills/practice, 5=rally/match/direct gameplay)
   IMPORTANT: An empty court or people standing around = 1-2. Actual ball-hitting, serving, rallying = 4-5.
 - energy: How visually compelling is this for a social media clip? (1=boring/static/empty, 2=mildly interesting, 3=decent content, 4=engaging action, 5=viral-worthy moment)

@@ -66,6 +66,7 @@ import { selectHook } from './02-hook-selector';
 import { composeBody } from './03-body-composer';
 import { composeClose } from './04-close-composer';
 import { getDefaultMusicTier } from '../music';
+import { partitionByLocation } from './location-coherence';
 
 export type { PipelineInput, EditPlanV2, StepLogger } from './types';
 
@@ -83,6 +84,24 @@ export async function generateEditPlanV2(
 ): Promise<EditPlanV2> {
 	const startTime = Date.now();
 	const stepDurationsMs: Record<string, number> = {};
+
+	// ── Location coherence (before ANY step chooses anything) ──────────
+	// One edit = one venue. Without this the planner freely mixed footage from
+	// different site locations in a single video, which reads as randomly
+	// stitched no matter how good each individual cut is. Enforced in code
+	// because prompt guidance alone demonstrably did not stop it.
+	const partition = partitionByLocation(input.videoMetadata, input.catalog);
+	if (partition.filtered) {
+		const keptSet = new Set(partition.kept);
+		logger.warn(
+			'[pipeline-v2] LOCATION COHERENCE: selected videos span multiple venues. Using "%s" (%d videos%s). Excluded: %s',
+			partition.dominantLocation,
+			partition.kept.length,
+			partition.unknownIds.length > 0 ? `, ${partition.unknownIds.length} unknown-location kept` : '',
+			partition.excluded.map(e => `${e.name} (${e.location})`).join('; '),
+		);
+		input.videoMetadata = input.videoMetadata.filter(v => keptSet.has(v.id));
+	}
 
 	// ── Step 0: Brief Refiner ──────────────────────────────────────────
 	// Take the user's casual topic/purpose and produce a structured Sasha
@@ -306,6 +325,14 @@ Avoid: ${brief.avoid.join('; ')}`;
 			storyArc: arc,
 			generatedAt: new Date().toISOString(),
 			stepDurationsMs,
+			...(partition.filtered
+				? {
+					locationCoherence: {
+						dominantLocation: partition.dominantLocation,
+						excluded: partition.excluded,
+					},
+				}
+				: {}),
 		},
 	};
 }

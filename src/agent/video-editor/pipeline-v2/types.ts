@@ -164,6 +164,11 @@ export interface EditPlanV2 {
 		storyArc: StoryArc;
 		generatedAt: string;
 		stepDurationsMs: Record<string, number>;
+		/** Present when selected videos spanned multiple venues and were filtered. */
+		locationCoherence?: {
+			dominantLocation: string;
+			excluded: Array<{ id: string; name: string; location: string }>;
+		};
 	};
 }
 

@@ -54,6 +54,7 @@ STRICT RULES:
 - If no clear narrative exists, pick the best available micro-story and mention it in emotionalCenter
 - When a video has NARRATIVE BEATS (brief-aware tags from Step 0.5), PREFER those as your primary evidence of what the video contains. The beats are tuned to THIS brief; the other catalog data is generic. Specifically: pick the source with the strongest "resolution" beat as responseSourceId (where the payoff lands); reference specific beat timestamps in your bodyBeats intents so the composers can find them; let the brief's "emphasize" items steer which beats matter most.
 - Never pick an ID not in the input list
+- ONE EDIT = ONE VENUE (non-negotiable). Every source you pick must be from the same location. The audience knows these venues; footage from a stadium cut against footage from a local court reads as randomly stitched clips, not a story — it is the single fastest way to make an edit look amateur. Sources with an unknown location may be used ONLY if their footage is visually consistent with the dominant venue (same surface, same lighting, same signage); if in doubt, leave them out and say so in the relevant beat's intent.
 
 Output VALID JSON matching this exact schema — no markdown fences, no prose, JSON only:
 {

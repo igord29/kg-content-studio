@@ -110,6 +110,28 @@ function makeAsyncLogger(prefix: string) {
 	};
 }
 
+// ── Async edit-plan jobs ────────────────────────────────────────────────
+// Plan generation (task 'edit') runs 6 sequential model calls and, for
+// showcase/template plans, exceeds the platform edge proxy's timeout — the
+// client gets "upstream error" with the finished plan thrown away. These jobs
+// run the SAME edit task via a loopback HTTP call to this server (127.0.0.1,
+// no edge proxy on the path) and park the result here for polling. In-memory
+// on purpose: a plan is requested and consumed within minutes, and the map is
+// pruned so an abandoned job cannot leak.
+const editJobs = new Map<string, {
+	status: 'running' | 'done' | 'failed';
+	startedAt: number;
+	result?: Record<string, unknown>;
+	error?: string;
+}>();
+const EDIT_JOB_TTL_MS = 60 * 60 * 1000;
+function pruneEditJobs(): void {
+	const now = Date.now();
+	for (const [id, job] of editJobs) {
+		if (now - job.startedAt > EDIT_JOB_TTL_MS) editJobs.delete(id);
+	}
+}
+
 const AgentInput = s.object({
 	// Task type: determines which workflow to run
 	task: s.string().optional(), // 'list-videos' | 'folder-summary' | 'catalog' | 'edit' | 'render' | 'render-status' | 'save-render-to-drive' | 'instant-edit' | 'auto-process' | 'render-local' | 'download-render' | 'test-connection' | 'test-shotstack' | 'legacy'
@@ -147,6 +169,7 @@ const AgentInput = s.object({
 	// Render task fields
 	editPlan: s.any().optional(), // The AI-generated edit plan with clip info
 	renderId: s.string().optional(), // For render-status polling
+	jobId: s.string().optional(), // For edit-job polling (async plan generation)
 	renderEngine: s.string().optional(), // 'shotstack' | 'remotion' — which render engine to use
 
 	// Catalog task fields
@@ -229,6 +252,10 @@ const AgentOutput = s.object({
 	mimeType: s.string().optional(),
 	base64Data: s.string().optional(),
 	fileSize: s.number().optional(),
+
+	// Async job fields (edit-async / edit-job / rescore-timestamps)
+	jobId: s.string().optional(),
+	jobStatus: s.string().optional(),
 
 	// Review output fields
 	review: s.any().optional(),
@@ -1850,6 +1877,57 @@ const agent = createAgent('video-editor', {
 				success: true,
 				status,
 			};
+		}
+
+		// --- Async edit-plan generation ---
+		// Fire-and-forget wrapper around task 'edit'. The heavy lifting happens in
+		// a loopback HTTP call to this same server, so the platform edge proxy's
+		// timeout never sits between the model calls and the result.
+		if (task === 'edit-async') {
+			pruneEditJobs();
+			const jobId = `editjob_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+			editJobs.set(jobId, { status: 'running', startedAt: Date.now() });
+
+			const port = process.env.PORT || '3500';
+			const body = JSON.stringify({ ...(input as Record<string, unknown>), task: 'edit' });
+			const asyncLogger = makeAsyncLogger(`edit:${jobId}`);
+			ctx.logger.info('[video-editor] Starting async edit-plan job %s', jobId);
+
+			fetch(`http://127.0.0.1:${port}/api/video-editor`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body,
+				signal: AbortSignal.timeout(25 * 60_000),
+			})
+				.then(async res => {
+					const result = await res.json() as Record<string, unknown>;
+					const job = editJobs.get(jobId);
+					if (!job) return;
+					if (res.ok && result && result.success !== false) {
+						editJobs.set(jobId, { ...job, status: 'done', result });
+						asyncLogger.info('Edit-plan job done');
+					} else {
+						editJobs.set(jobId, { ...job, status: 'failed', error: String(result?.error ?? `HTTP ${res.status}`) });
+						asyncLogger.error('Edit-plan job failed: %s', String(result?.error ?? res.status));
+					}
+				})
+				.catch(err => {
+					const job = editJobs.get(jobId);
+					if (job) editJobs.set(jobId, { ...job, status: 'failed', error: err instanceof Error ? err.message : String(err) });
+					asyncLogger.error('Edit-plan job error: %s', err instanceof Error ? err.message : String(err));
+				});
+
+			return { success: true, jobId, jobStatus: 'running', message: 'Edit-plan generation started. Poll with task "edit-job".' };
+		}
+
+		if (task === 'edit-job') {
+			const jobId = (input as { jobId?: string }).jobId;
+			if (!jobId) return { success: false, error: 'jobId is required for edit-job' };
+			const job = editJobs.get(jobId);
+			if (!job) return { success: false, error: `Unknown or expired edit job: ${jobId}` };
+			if (job.status === 'running') return { success: true, jobId, jobStatus: 'running' };
+			if (job.status === 'failed') return { success: false, jobId, jobStatus: 'failed', error: job.error };
+			return { success: true, jobId, jobStatus: 'done', ...(job.result ?? {}) };
 		}
 
 		if (task === 'rescore-timestamps') {

@@ -223,8 +223,8 @@ Return JSON only.`;
 		model: anthropic('claude-sonnet-4-6'),
 		system: CLOSE_COMPOSER_SYSTEM_PROMPT,
 		prompt,
-		maxOutputTokens: 1500,
-		abortSignal: AbortSignal.timeout(60_000),
+		maxOutputTokens: 2500,
+		abortSignal: AbortSignal.timeout(90_000),
 	});
 
 	const raw = result.text.trim();

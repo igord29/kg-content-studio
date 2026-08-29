@@ -269,8 +269,8 @@ Compose the body clips. Return JSON only.`;
 		model: anthropic('claude-sonnet-4-6'),
 		system: BODY_COMPOSER_SYSTEM_PROMPT,
 		prompt,
-		maxOutputTokens: 2500,
-		abortSignal: AbortSignal.timeout(90_000),
+		maxOutputTokens: 4000,
+		abortSignal: AbortSignal.timeout(120_000),
 	});
 
 	const raw = result.text.trim();

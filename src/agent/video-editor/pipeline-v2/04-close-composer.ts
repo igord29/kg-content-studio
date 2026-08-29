@@ -45,7 +45,9 @@ TEXT OVERLAY GUIDELINES (the house style is COPY-DRIVEN — text carries the sto
 - 1-2 SECTION TITLES: center position, fade, one word or one short line each
   ("Community." / "A summer of learning, movement & memories."), placed at beat
   changes mid-timeline, 2-3s duration
-- Location tag: bottom position, slideUp animation, starts at ~1s, 3s duration
+- Location tag: TOP position, slideUp animation, starts at ~1s, 3s duration.
+  NEVER use "bottom" for any overlay — the bottom slot is reserved for the
+  system watermark and anything else there collides with it.
 - CLOSING INFO CARD: center position, scaleUp, last 4-5s — program name,
   season + location, tagline on separate short lines (write it as one overlay
   with line breaks). This lands ON the final group shot.

@@ -230,6 +230,9 @@ function getTextStyle(mode: string, isFirst: boolean, isLast: boolean): React.CS
 		fontFamily: "'Montserrat', sans-serif",
 		color: '#FFFFFF',
 		textAlign: 'center' as const,
+		// The closing info card writes program/season/tagline as one overlay with
+		// \n line breaks; without pre-line they collapsed into a run-on paragraph.
+		whiteSpace: 'pre-line' as const,
 		margin: 0,
 		maxWidth: '85%',
 	};

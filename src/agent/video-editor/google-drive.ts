@@ -357,8 +357,11 @@ export async function downloadVideo(fileId: string, outputPath: string): Promise
 
   return new Promise((resolve, reject) => {
     dest.on('error', (err: Error) => reject(err));
+    // Resolve when the FILE is flushed, not when the download stream ends. The
+    // source ending while the tail was still buffered handed ffprobe a truncated
+    // MP4 ("moov atom not found") on a large share of downloads.
+    dest.on('finish', () => resolve(destPath));
     (response.data as NodeJS.ReadableStream)
-      .on('end', () => resolve(destPath))
       .on('error', (err: Error) => reject(err))
       .pipe(dest);
   });

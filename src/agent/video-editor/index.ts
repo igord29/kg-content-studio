@@ -41,6 +41,7 @@ import {
 	catalogSingleVideo,
 	getCatalogSummary,
 	loadExistingCatalog,
+	saveSceneAnalyses,
 	hydrateCatalogFromDrive,
 	updateCatalogEntry,
 	startBackgroundCatalog,
@@ -108,6 +109,7 @@ function makeAsyncLogger(prefix: string) {
 		info: (fmt: string, ...args: unknown[]) => console.info(`[${prefix}] ${fmt}`, ...args),
 		warn: (fmt: string, ...args: unknown[]) => console.warn(`[${prefix}] ${fmt}`, ...args),
 		error: (fmt: string, ...args: unknown[]) => console.error(`[${prefix}] ${fmt}`, ...args),
+		debug: (fmt: string, ...args: unknown[]) => console.debug(`[${prefix}] ${fmt}`, ...args),
 	};
 }
 
@@ -115,8 +117,8 @@ function makeAsyncLogger(prefix: string) {
 // Plan generation (task 'edit') runs 6 sequential model calls and, for
 // showcase/template plans, exceeds the platform edge proxy's timeout — the
 // client gets "upstream error" with the finished plan thrown away. These jobs
-// run the SAME edit task via a loopback HTTP call to this server (127.0.0.1,
-// no edge proxy on the path) and park the result here for polling. In-memory
+// run the SAME edit task in-process, detached from the request, and park the
+// result here for polling. In-memory
 // on purpose: a plan is requested and consumed within minutes, and the map is
 // pruned so an abandoned job cannot leak.
 const editJobs = new Map<string, {
@@ -305,7 +307,7 @@ const agent = createAgent('video-editor', {
 		input: AgentInput,
 		output: AgentOutput,
 	},
-	handler: async (ctx, input) => {
+	handler: async function runVideoEditor(ctx, input) {
 		const task = input.task || 'legacy';
 		ctx.logger.info('[video-editor] Task: %s', task);
 
@@ -1889,30 +1891,33 @@ const agent = createAgent('video-editor', {
 			const jobId = `editjob_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 			editJobs.set(jobId, { status: 'running', startedAt: Date.now() });
 
-			const port = process.env.PORT || '3500';
-			const body = JSON.stringify({ ...(input as Record<string, unknown>), task: 'edit' });
 			const asyncLogger = makeAsyncLogger(`edit:${jobId}`);
 			ctx.logger.info('[video-editor] Starting async edit-plan job %s', jobId);
 
-			fetch(`http://127.0.0.1:${port}/api/video-editor`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body,
-				signal: AbortSignal.timeout(25 * 60_000),
-			})
-				.then(async res => {
-					const result = await res.json() as Record<string, unknown>;
+			// Run the edit task IN-PROCESS, detached from this request. It used to be
+			// a loopback HTTP call, but the server drops a connection that is idle
+			// for ~255s, and a plan that has to analyse fresh footage first takes
+			// longer than that — the job died with "The operation timed out".
+			// The edit task only uses ctx.logger, so give it a logger that outlives
+			// this request.
+			const detachedCtx = Object.create(ctx) as typeof ctx;
+			Object.defineProperty(detachedCtx, 'logger', { value: asyncLogger });
+			const usageSummary = Array.isArray(input.usageSummary) ? input.usageSummary : undefined;
+
+			runVideoEditor(detachedCtx, { ...input, task: 'edit', usageSummary })
+				.then(result => {
 					const job = editJobs.get(jobId);
 					if (!job) return;
-					if (res.ok && result && result.success !== false) {
-						editJobs.set(jobId, { ...job, status: 'done', result });
+					const r = result as Record<string, unknown>;
+					if (r && r.success !== false) {
+						editJobs.set(jobId, { ...job, status: 'done', result: r });
 						asyncLogger.info('Edit-plan job done');
 					} else {
-						editJobs.set(jobId, { ...job, status: 'failed', error: String(result?.error ?? `HTTP ${res.status}`) });
-						asyncLogger.error('Edit-plan job failed: %s', String(result?.error ?? res.status));
+						editJobs.set(jobId, { ...job, status: 'failed', error: String(r?.error ?? r?.message ?? 'Edit plan failed') });
+						asyncLogger.error('Edit-plan job failed: %s', String(r?.error ?? r?.message));
 					}
 				})
-				.catch(err => {
+				.catch((err: unknown) => {
 					const job = editJobs.get(jobId);
 					if (job) editJobs.set(jobId, { ...job, status: 'failed', error: err instanceof Error ? err.message : String(err) });
 					asyncLogger.error('Edit-plan job error: %s', err instanceof Error ? err.message : String(err));
@@ -2268,6 +2273,14 @@ const agent = createAgent('video-editor', {
 						// Continue without scene data — director will use timestamp spreading
 					}
 				}
+
+				const fresh = new Map<string, CatalogEntry['sceneAnalysis']>();
+				for (const fileId of videosNeedingAnalysis) {
+					const done = catalogMap.get(fileId)?.sceneAnalysis;
+					if (done) fresh.set(fileId, done);
+				}
+				const saved = saveSceneAnalyses(fresh);
+				ctx.logger.info('[video-editor] Saved scene analysis for %d videos (next plan skips the download)', saved);
 			}
 
 			// Build footage context from catalog data

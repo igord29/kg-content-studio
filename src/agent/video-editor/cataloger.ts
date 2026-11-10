@@ -1673,3 +1673,28 @@ async function analyzeVideoScenesFromPath(
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * Persist scene analyses computed during edit planning.
+ *
+ * Planning analysed any video missing scene data and kept the result only in
+ * memory, so every plan re-downloaded the same sources (about 30s each) before
+ * a single model call ran. Re-reads the catalog first so a cataloguing job
+ * writing at the same time is not overwritten with a stale copy.
+ */
+export function saveSceneAnalyses(analyses: Map<string, CatalogEntry['sceneAnalysis']>): number {
+	if (analyses.size === 0) return 0;
+	try {
+		const catalog = loadExistingCatalog();
+		let saved = 0;
+		for (const entry of catalog) {
+			const analysis = analyses.get(entry.fileId);
+			if (analysis && !entry.sceneAnalysis) { entry.sceneAnalysis = analysis; saved++; }
+		}
+		if (saved > 0) fs.writeFileSync(CATALOG_RESULTS_PATH, JSON.stringify(catalog, null, 2), 'utf-8');
+		return saved;
+	} catch (err) {
+		console.error('[cataloger] Failed to persist scene analyses:', err);
+		return 0;
+	}
+}

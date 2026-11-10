@@ -177,8 +177,10 @@ Tag the narrative beats in THIS video that serve THIS BRIEF. Return JSON only.`;
 		model: anthropic('claude-sonnet-4-6'),
 		system: BEAT_FINDER_SYSTEM_PROMPT,
 		prompt: userPrompt,
-		maxOutputTokens: 1500,
-		abortSignal: AbortSignal.timeout(45_000),
+		// 1500 tokens truncated the JSON mid-string on most videos, so the parse
+		// failed and the planner got zero beats.
+		maxOutputTokens: 4000,
+		abortSignal: AbortSignal.timeout(90_000),
 	});
 
 	const raw = result.text.trim();

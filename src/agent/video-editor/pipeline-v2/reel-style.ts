@@ -133,10 +133,14 @@ export function anchorReelClips<T extends AnchorableClip>(
 
 		const usable = all.filter(m => m.people >= MIN_PEOPLE && isFree(clip.fileId, m.timestamp));
 		const aim = clip.trimStart + LEAD_IN_S;
-		const near = usable
+		const nearest = (pool: ScoredMoment[]): ScoredMoment | undefined => pool
 			.filter(m => Math.abs(m.timestamp - aim) <= SNAP_WINDOW_S)
 			.sort((a, b) => Math.abs(a.timestamp - aim) - Math.abs(b.timestamp - aim))[0];
-		const pick = near ?? [...usable].sort((a, b) => b.actionQuality - a.actionQuality)[0];
+		// Prefer a moment where people clearly fill the frame (people >= 4) over
+		// one where they are merely present, even if it is a little further away.
+		const pick = nearest(usable.filter(m => m.people >= MIN_PEOPLE + 1))
+			?? nearest(usable)
+			?? [...usable].sort((a, b) => (b.people - a.people) || (b.actionQuality - a.actionQuality))[0];
 
 		if (!pick) {
 			log(`shot ${i} (${clip.fileId.slice(0, 8)} @ ${clip.trimStart}s) dropped: no unused moment with people in frame on that source`);

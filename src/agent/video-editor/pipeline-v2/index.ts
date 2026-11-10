@@ -342,7 +342,7 @@ Avoid: ${brief.avoid.join('; ')}`;
 	// closing card on the final shots instead of past the end.
 	const timedOverlays = isReelMode(arc.mode)
 		? close.textOverlays.map(o => (o.start > 4
-			? { ...o, start: Math.max(0, Math.round((totalDuration - 2.5) * 10) / 10), duration: 2.5 }
+			? { ...o, start: Math.max(0, Math.round((totalDuration - 1.5) * 10) / 10), duration: 1.5 }
 			: o))
 		: close.textOverlays;
 	const overlaysWithWatermark = [

@@ -30,6 +30,7 @@ export const REEL_HOOK_MIN_S = 2;
 export const REEL_HOOK_MAX_S = 3;
 export const REEL_SHOT_MIN_S = 1;
 export const REEL_SHOT_MAX_S = 3;
+export const REEL_FINAL_SHOT_MAX_S = 3.5;
 
 export const REEL_HOOK_OVERRIDE = `
 RECAP REEL OVERRIDE (this edit is an event recap — these rules REPLACE the
@@ -68,16 +69,22 @@ BODY STRUCTURE above and ignore the planned beat count):
 export const REEL_CLOSE_OVERRIDE = `
 RECAP REEL OVERRIDE (this edit is an event recap — these rules REPLACE the clip
 lengths and the text overlay guidelines above):
-- Community clip: 2-2.5 seconds. Close clip: 2.5-3 seconds, ending on the group
+- Community clip: 2-2.5 seconds. Close clip: 2.5-3.5 seconds, ending on the group
   together or a kid smiling at the camera. Normal speed, hard cuts, no
   transitionType.
+- THE LAST SHOT MUST PAY OFF. If it shows an action being set up (a coach
+  feeding a ball, a kid winding up, a serve toss), it must run until the action
+  COMPLETES — the ball is hit. Never end the video on the preparation. Pick the
+  timestamp of the contact, not the one before it, and say in the editNote
+  which moment the shot ends on.
 - TEXT OVERLAYS — exactly these and no others:
   1. EVENT TITLE: position "top", animation "scaleUp", start 0.3, duration 3.
      The event and place in a few words, optionally a second short line for
      the season or year (e.g. "Red Ball Team Tennis\\nUS Open 2025").
      Plain and factual, like a caption on a photo.
-  2. CLOSING CARD: position "center", animation "fade", over the final 2.5
-     seconds: "Community Literacy Club" and nothing else.
+  2. CLOSING CARD: position "center", animation "fade", over the final 1.5
+     seconds only, so it lands AFTER the last shot's action and never covers
+     it: "Community Literacy Club" and nothing else.
 - NO mid-video section titles, slogans, taglines or quotes. The footage and
   the music carry the middle of the reel.`;
 
@@ -152,7 +159,9 @@ export function anchorReelClips<T extends AnchorableClip>(
 			log(`shot ${i} (${clip.fileId.slice(0, 8)}) re-pointed ${clip.trimStart}s -> ${trimStart}s (confirmed moment at ${pick.timestamp}s)`);
 		}
 		taken.set(clip.fileId, [...(taken.get(clip.fileId) ?? []), pick.timestamp]);
-		out.push({ ...clip, trimStart, duration: Math.min(clip.duration, 2.5) });
+		// The final shot may run longer so an action can complete (the ball gets hit).
+		const cap = i === clips.length - 1 ? REEL_FINAL_SHOT_MAX_S : 2.5;
+		out.push({ ...clip, trimStart, duration: Math.min(clip.duration, cap) });
 	});
 	return out;
 }

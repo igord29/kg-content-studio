@@ -16,7 +16,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import type { PipelineInput, StoryArc, HookClip, BodyClips, ClosePlan, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
 import { priorUsedRegions } from './usage-context';
-import { isReelMode, clampReelShot, REEL_CLOSE_OVERRIDE } from './reel-style';
+import { isReelMode, clampReelShot, REEL_CLOSE_OVERRIDE, REEL_FINAL_SHOT_MAX_S } from './reel-style';
 
 const CLOSE_COMPOSER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -250,9 +250,13 @@ Return JSON only.${reel ? '\n' + REEL_CLOSE_OVERRIDE : ''}`;
 	// timestampScore with actionQuality >= 7 INSIDE the clip's trim range.
 	// Otherwise force speed=1.0.
 	if (reel) {
-		close.closeClips = close.closeClips.map(c => {
+		close.closeClips = close.closeClips.map((c, i, arr) => {
 			const { transitionType: _drop, ...rest } = c as typeof c & { transitionType?: string };
-			return { ...rest, speed: 1.0, duration: clampReelShot(c.duration) } as typeof c;
+			// The very last shot may run to 3.5s so its action can complete.
+			const duration = i === arr.length - 1
+				? Math.min(REEL_FINAL_SHOT_MAX_S, Math.max(1, c.duration))
+				: clampReelShot(c.duration);
+			return { ...rest, speed: 1.0, duration } as typeof c;
 		});
 	}
 	close.closeClips = close.closeClips.map((c, i) => {

@@ -26,7 +26,7 @@ check('rejected shots are removed', out.clips.length === 6 && !out.clips.some(c 
 check('the strongest opener leads', out.clips[0]!.fileId === 'f2');
 check('the rest keep their order', out.clips.slice(1).map(c => c.fileId).join() === 'f1,f3,f5,f6,f7');
 check('watermark covers the new length', out.textOverlays!.find(o => o.position === 'bottom')!.duration === 12);
-check('closing card sits on the final shots', out.textOverlays!.find(o => o.position === 'center')!.start === 9.5);
+check('closing card sits on the final shots', out.textOverlays!.find(o => o.position === 'center')!.start === 10.5);
 check('opening title is untouched', out.textOverlays!.find(o => o.position === 'top')!.start === 0.3);
 check('too few survivors returns null', cullPlan(plan, verdicts.map((x, i) => ({ ...x, keep: i < 3 }))) === null);
 

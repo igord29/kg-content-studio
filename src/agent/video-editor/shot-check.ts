@@ -156,7 +156,7 @@ export function cullPlan(plan: CheckablePlan, verdicts: ShotVerdict[]): Checkabl
 	const total = clips.reduce((s, c) => s + c.duration / (c.speed || 1), 0);
 	const textOverlays = (plan.textOverlays ?? []).map(o => {
 		if (o.start <= 0.01 && o.duration >= (plan.totalDuration ?? total) - 1.5) return { ...o, duration: Math.ceil(total) }; // watermark
-		if (o.start > 4) return { ...o, start: Math.max(0, Math.round((total - 2.5) * 10) / 10), duration: 2.5 };     // closing card
+		if (o.start > 4) return { ...o, start: Math.max(0, Math.round((total - 1.5) * 10) / 10), duration: 1.5 };     // closing card
 		return o;                                                                                                       // opening title
 	});
 

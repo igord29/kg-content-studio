@@ -19,6 +19,7 @@ import { formatSegmentTimelineForPrompt } from '../scene-analyzer';
 import type { PipelineInput, StoryArc, HookClip, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
 import { priorUsedRegions, isTimestampUsed, formatPriorUsage } from './usage-context';
+import { isReelMode, clampReelHook, REEL_HOOK_OVERRIDE } from './reel-style';
 
 const HOOK_SELECTOR_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -148,6 +149,7 @@ export async function selectHook(
 	// Prior-render usage for the setup source. Without this, the hook anchors
 	// on the same top-scored timestamp every render — the audience sees the
 	// same opening shot on every post cut from this footage.
+	const reel = isReelMode(arc.mode);
 	const usedRegions = priorUsedRegions(input, arc.setupSourceId);
 
 	let timestampSection = '';
@@ -232,7 +234,7 @@ Catalog data for the setup source:
 - Notable moments: ${setupCatalog.notableMoments || 'None'}${formatPriorUsage(input, arc.setupSourceId)}
 ${sceneSection}${timestampSection}
 
-Pick the hook clip. Apply the STORY HOOK ARC RULE. If timestamp scores are provided, use the highest-scoring UNUSED timestamp as T (peak) — do NOT mark the hook as "estimated" when peak data exists. Return JSON only.`;
+Pick the hook clip. ${reel ? 'Apply the RECAP REEL OVERRIDE below.' : 'Apply the STORY HOOK ARC RULE.'} If timestamp scores are provided, use the highest-scoring UNUSED timestamp as T (peak) — do NOT mark the hook as "estimated" when peak data exists. Return JSON only.${reel ? '\n' + REEL_HOOK_OVERRIDE : ''}`;
 
 	const result = await generateText({
 		model: anthropic('claude-sonnet-4-6'),
@@ -257,7 +259,10 @@ Pick the hook clip. Apply the STORY HOOK ARC RULE. If timestamp scores are provi
 	// Enforce the minimum duration rule at the code level. The prompt says
 	// "minimum 7 seconds" but models occasionally drift — make it impossible
 	// to produce a <7s hook regardless of what the model returned.
-	if (hook.duration < 7) {
+	if (reel) {
+		// Recap reels open on a 2-3s shot, not a story hook.
+		hook.duration = clampReelHook(hook.duration);
+	} else if (hook.duration < 7) {
 		logger.warn(
 			'[hook-selector] Model picked duration=%ds (< 7s minimum). Extending to 8s.',
 			hook.duration,

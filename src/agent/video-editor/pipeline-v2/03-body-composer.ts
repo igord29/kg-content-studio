@@ -22,6 +22,7 @@ import { formatSegmentTimelineForPrompt } from '../scene-analyzer';
 import type { PipelineInput, StoryArc, HookClip, BodyClips, ClipPick, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
 import { priorUsedRegions, isTimestampUsed, formatPriorUsage } from './usage-context';
+import { isReelMode, clampReelShot, reelBodyOverride } from './reel-style';
 
 const BODY_COMPOSER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -251,6 +252,7 @@ export async function composeBody(
 		`${i + 1}. ${b.role.toUpperCase()} from ${b.sourceId}: ${b.intent}`
 	).join('\n');
 
+	const reel = isReelMode(arc.mode);
 	const prompt = `Story arc:
 - Mode: ${arc.mode}
 - Emotional center: ${arc.emotionalCenter}
@@ -263,14 +265,15 @@ Hook already chosen (DO NOT OVERLAP): ${hook.fileId} @ ${hook.trimStart}s for ${
 Footage for body:
 ${footageSummary}
 
-Compose the body clips. Return JSON only.`;
+Compose the body clips. Return JSON only.${reel ? '\n' + reelBodyOverride(input.videoMetadata.length) : ''}`;
 
 	const result = await generateText({
 		model: anthropic('claude-sonnet-4-6'),
 		system: BODY_COMPOSER_SYSTEM_PROMPT,
 		prompt,
-		maxOutputTokens: 4000,
-		abortSignal: AbortSignal.timeout(120_000),
+		// A recap reel is 14-18 shots; 4000 tokens truncates the JSON.
+		maxOutputTokens: reel ? 8000 : 4000,
+		abortSignal: AbortSignal.timeout(reel ? 180_000 : 120_000),
 	});
 
 	const raw = result.text.trim();
@@ -286,6 +289,14 @@ Compose the body clips. Return JSON only.`;
 	}
 
 	// ── Code-level enforcement of rules the prompt can't guarantee ─────────
+
+	// 0. Recap reels: every shot short, normal speed, hard cut.
+	if (reel) {
+		body.clips = body.clips.map(c => {
+			const { transitionType: _drop, ...rest } = c as ClipPick & { transitionType?: string };
+			return { ...rest, speed: 1.0, duration: clampReelShot(c.duration) } as ClipPick;
+		});
+	}
 
 	// 1. Slow-mo on sources without scene analysis → force speed=1.0
 	body.clips = body.clips.map((c, i) => {

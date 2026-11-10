@@ -16,6 +16,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import type { PipelineInput, StoryArc, HookClip, BodyClips, ClosePlan, StepLogger } from './types';
 import { EDITOR_PERSONA } from './editor-persona';
 import { priorUsedRegions } from './usage-context';
+import { isReelMode, clampReelShot, REEL_CLOSE_OVERRIDE } from './reel-style';
 
 const CLOSE_COMPOSER_SYSTEM_PROMPT = `
 ${EDITOR_PERSONA}
@@ -198,13 +199,14 @@ export async function composeClose(
 		})
 		.join('\n');
 
+	const reel = isReelMode(arc.mode);
 	const prompt = `Story arc:
 - Mode: ${arc.mode}
 - Emotional center: ${arc.emotionalCenter}
 - Close intent: ${arc.closeIntent}
 
 Current timeline so far: ${Math.round(currentDuration)}s (hook + body)
-Final video target: ~${Math.round(currentDuration + 6)}s (add 6s for close + community)
+Final video target: ~${Math.round(currentDuration + (reel ? 5 : 6))}s (close + community)
 
 Close source: ${closeSourceId} (${closeSource?.name ?? 'unknown'}, ${closeDurSec}s duration)
 - Activity: ${closeCatalog?.activity ?? 'unknown'}
@@ -219,7 +221,7 @@ Platform: ${input.platform}
 
 Write the closing clips (community + close) and all text overlays for the full timeline.
 Anchor every close clip's trimStart within 2 seconds of a timestamp score above AND outside the already-used ranges. Community beat should pick a timestamp with people>=3.
-Return JSON only.`;
+Return JSON only.${reel ? '\n' + REEL_CLOSE_OVERRIDE : ''}`;
 
 	const result = await generateText({
 		model: anthropic('claude-sonnet-4-6'),
@@ -247,6 +249,12 @@ Return JSON only.`;
 	// a confirmed action peak. Rule: close-clip speed < 1.0 requires a
 	// timestampScore with actionQuality >= 7 INSIDE the clip's trim range.
 	// Otherwise force speed=1.0.
+	if (reel) {
+		close.closeClips = close.closeClips.map(c => {
+			const { transitionType: _drop, ...rest } = c as typeof c & { transitionType?: string };
+			return { ...rest, speed: 1.0, duration: clampReelShot(c.duration) } as typeof c;
+		});
+	}
 	close.closeClips = close.closeClips.map((c, i) => {
 		if (!c.speed || c.speed >= 1.0) return c;
 		const ce = input.catalog.get(c.fileId);

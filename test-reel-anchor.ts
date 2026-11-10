@@ -24,9 +24,10 @@ const logs: string[] = [];
 const run = (clips: Array<{ fileId: string; trimStart: number; duration: number }>) =>
 	anchorReelClips(clips, id => moments[id], m => logs.push(m));
 
-const [early] = run([{ fileId: 'a', trimStart: 7, duration: 4.5 }]);
+const [early, last] = run([{ fileId: 'a', trimStart: 7, duration: 4.5 }, { fileId: 'a', trimStart: 38, duration: 4.5 }]);
 check('a shot starting 3s early is pulled onto its moment', early?.trimStart === 9.5, String(early?.trimStart));
 check('and is held short', (early?.duration ?? 9) <= 2.5);
+check('the final shot may run to 3.5s so its action completes', last?.duration === 3.5, String(last?.duration));
 
 const [empty] = run([{ fileId: 'a', trimStart: 69, duration: 2 }]);
 check('a moment with nobody in frame is never used', empty?.trimStart === 39.5, String(empty?.trimStart));

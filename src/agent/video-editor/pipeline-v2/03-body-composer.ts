@@ -197,9 +197,13 @@ export async function composeBody(
 	// │ focused on planned beats). If cuts feel cramped, try expanding.  │
 	// └─────────────────────────────────────────────────────────────────┘
 
+	const reel = isReelMode(arc.mode);
 	const bodySourceIds = new Set(arc.bodyBeats.map(b => b.sourceId));
+	// A recap reel draws on the whole day, so it sees every selected source; a
+	// narrative edit sees only the sources its planned beats name. Restricting
+	// the reel to planned-beat sources cut a 20-shot reel from just two files.
 	const footageSummary = input.videoMetadata
-		.filter(v => bodySourceIds.has(v.id))
+		.filter(v => reel || bodySourceIds.has(v.id))
 		.map(v => {
 			const ce = input.catalog.get(v.id);
 			if (!ce) return `${v.id}: ${v.name} (no catalog data)`;
@@ -252,7 +256,6 @@ export async function composeBody(
 		`${i + 1}. ${b.role.toUpperCase()} from ${b.sourceId}: ${b.intent}`
 	).join('\n');
 
-	const reel = isReelMode(arc.mode);
 	const prompt = `Story arc:
 - Mode: ${arc.mode}
 - Emotional center: ${arc.emotionalCenter}

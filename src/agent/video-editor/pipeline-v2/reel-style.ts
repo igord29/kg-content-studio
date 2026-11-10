@@ -46,11 +46,12 @@ export function reelBodyOverride(sourceCount: number): string {
 	return `
 RECAP REEL OVERRIDE (this edit is an event recap — these rules REPLACE the
 BODY STRUCTURE above and ignore the planned beat count):
-- Compose 14-18 shots. Each shot ${REEL_SHOT_MIN_S}.2-2.5 seconds; a group moment or a full
+- Compose 18-22 shots (a later check removes any shot where the camera had
+  swung off the subject, so over-supply). Each shot ${REEL_SHOT_MIN_S}.2-2.5 seconds; a group moment or a full
   rally exchange may run up to ${REEL_SHOT_MAX_S} seconds. Nothing longer.
 - ALL shots speed 1.0. No slow motion anywhere. Hard cuts only: OMIT
   transitionType on every clip. Keep effect null unless a shot is static.
-- Use at least ${minSources} DIFFERENT source videos and no more than 4 shots from any
+- Use at least ${minSources} DIFFERENT source videos and no more than 3 shots from any
   one source. Variety across the day is the point of a recap.
 - Tell the day in order: arriving / warming up -> drills and play -> rallies
   and points -> reactions, high-fives, kids together.

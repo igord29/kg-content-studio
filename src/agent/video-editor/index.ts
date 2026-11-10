@@ -171,6 +171,7 @@ const AgentInput = s.object({
 
 	// Render task fields
 	editPlan: s.any().optional(), // The AI-generated edit plan with clip info
+	renderUrl: s.string().optional(), // finished render to inspect (cull-shots)
 	renderId: s.string().optional(), // For render-status polling
 	jobId: s.string().optional(), // For edit-job polling (async plan generation)
 	renderEngine: s.string().optional(), // 'shotstack' | 'remotion' — which render engine to use
@@ -235,6 +236,7 @@ const AgentOutput = s.object({
 	folders: s.any().optional(),
 	editPlan: s.string().optional(),
 	editPlanData: s.any().optional(),
+	shotVerdicts: s.any().optional(),
 	videoCount: s.number().optional(),
 	progress: s.any().optional(),
 	catalogSummary: s.any().optional(),
@@ -887,6 +889,34 @@ const agent = createAgent('video-editor', {
 					success: false,
 					error: 'Cloud render submission failed: ' + msg,
 				};
+			}
+		}
+
+		// --- Shot check: look at a finished render and cull empty shots ---
+		// Returns the same plan minus every shot without a clearly visible person,
+		// ready to render again. See shot-check.ts.
+		if (task === 'cull-shots') {
+			const renderUrl = (input as { renderUrl?: string }).renderUrl;
+			const plan = input.editPlan as unknown as import('./shot-check').CheckablePlan | undefined;
+			if (!renderUrl || !plan || !Array.isArray(plan.clips) || plan.clips.length === 0) {
+				return { success: false, error: 'cull-shots needs renderUrl and the editPlan that produced it' };
+			}
+			try {
+				const { checkShots, cullPlan } = await import('./shot-check');
+				const verdicts = await checkShots(renderUrl, plan, msg => ctx.logger.info('[shot-check] %s', msg));
+				const rejected = verdicts.filter(v => !v.keep);
+				const culled = cullPlan(plan, verdicts);
+				ctx.logger.info('[shot-check] %d/%d shots rejected%s', rejected.length, verdicts.length, culled ? '' : ' — too few left to render');
+				return {
+					success: true,
+					message: culled
+						? `${rejected.length} of ${verdicts.length} shots removed`
+						: `${rejected.length} of ${verdicts.length} shots failed — too few remain; pick different footage`,
+					shotVerdicts: verdicts,
+					editPlanData: culled ?? undefined,
+				};
+			} catch (err) {
+				return { success: false, error: 'Shot check failed: ' + (err instanceof Error ? err.message : String(err)) };
 			}
 		}
 

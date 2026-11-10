@@ -89,3 +89,65 @@ export function clampReelHook(duration: number): number {
 export function clampReelShot(duration: number): number {
 	return Math.min(REEL_SHOT_MAX_S, Math.max(REEL_SHOT_MIN_S, duration));
 }
+
+// ── Anchoring ────────────────────────────────────────────────────────────
+
+interface ScoredMoment { timestamp: number; actionQuality: number; people: number }
+interface AnchorableClip { fileId: string; trimStart: number; duration: number }
+
+/** Minimum `people` score (1-5) for a moment to count as "someone is in frame". */
+const MIN_PEOPLE = 3;
+/** How far a clip may be from a confirmed moment before it is re-pointed. */
+const SNAP_WINDOW_S = 4;
+/** Lead-in before the confirmed frame. */
+const LEAD_IN_S = 0.5;
+
+/**
+ * Pin every shot of a recap reel onto a frame the cataloguer actually saw.
+ *
+ * Much of the library is body-worn camera footage: the frame swings off the
+ * kids and onto a wall or the court surface within a second or two. A score at
+ * T says "people were in frame at T" and nothing about T+3. The first recap
+ * render started shots seconds before their scored moment and let dedup
+ * shifting move others onto unscored timestamps; roughly half its shots showed
+ * sponsor boards and empty court.
+ *
+ * So: each shot is re-pointed to start LEAD_IN_S before the nearest confirmed
+ * moment with people in frame, and held short. Each moment is used once. A shot
+ * with no confirmed moment left on its source is dropped — a shorter reel beats
+ * one with a wall in it.
+ */
+export function anchorReelClips<T extends AnchorableClip>(
+	clips: T[],
+	momentsFor: (fileId: string) => ScoredMoment[] | undefined,
+	log: (msg: string) => void,
+): T[] {
+	const taken = new Map<string, number[]>();
+	const isFree = (fileId: string, t: number): boolean =>
+		!(taken.get(fileId) ?? []).some(u => Math.abs(u - t) < 2.5);
+
+	const out: T[] = [];
+	clips.forEach((clip, i) => {
+		const all = momentsFor(clip.fileId);
+		if (!all || all.length === 0) { out.push(clip); return; } // unscored source: nothing to anchor to
+
+		const usable = all.filter(m => m.people >= MIN_PEOPLE && isFree(clip.fileId, m.timestamp));
+		const aim = clip.trimStart + LEAD_IN_S;
+		const near = usable
+			.filter(m => Math.abs(m.timestamp - aim) <= SNAP_WINDOW_S)
+			.sort((a, b) => Math.abs(a.timestamp - aim) - Math.abs(b.timestamp - aim))[0];
+		const pick = near ?? [...usable].sort((a, b) => b.actionQuality - a.actionQuality)[0];
+
+		if (!pick) {
+			log(`shot ${i} (${clip.fileId.slice(0, 8)} @ ${clip.trimStart}s) dropped: no unused moment with people in frame on that source`);
+			return;
+		}
+		const trimStart = Math.max(0, pick.timestamp - LEAD_IN_S);
+		if (Math.abs(trimStart - clip.trimStart) > 0.75) {
+			log(`shot ${i} (${clip.fileId.slice(0, 8)}) re-pointed ${clip.trimStart}s -> ${trimStart}s (confirmed moment at ${pick.timestamp}s)`);
+		}
+		taken.set(clip.fileId, [...(taken.get(clip.fileId) ?? []), pick.timestamp]);
+		out.push({ ...clip, trimStart, duration: Math.min(clip.duration, 2.5) });
+	});
+	return out;
+}

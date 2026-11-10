@@ -67,3 +67,4 @@ src/agent/translate.js
 .ffmpeg-cache/
 
 .deploy-stamps/
+demo-output/

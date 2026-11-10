@@ -58,6 +58,7 @@
  * File: src/agent/video-editor/pipeline-v2/index.ts
  */
 
+import { isReelMode, anchorReelClips } from './reel-style';
 import type { PipelineInput, EditPlanV2, StepLogger } from './types';
 import { refineBrief } from './00-brief-refiner';
 import { findBeatsForAll } from './00.5-beat-finder';
@@ -287,7 +288,14 @@ Avoid: ${brief.avoid.join('; ')}`;
 	});
 
 	// ── Assemble the final edit plan ───────────────────────────────────
-	const allClips = [hook, ...body.clips, ...fixedClose];
+	let allClips = [hook, ...body.clips, ...fixedClose];
+	if (isReelMode(arc.mode)) {
+		allClips = anchorReelClips(
+			allClips,
+			fileId => input.catalog.get(fileId)?.timestampScores,
+			msg => logger.info('[pipeline-v2] reel anchor: %s', msg),
+		);
+	}
 	const totalDuration = allClips.reduce((sum, c) => {
 		const effective = c.duration / (c.speed || 1);
 		return sum + effective;
@@ -330,8 +338,15 @@ Avoid: ${brief.avoid.join('; ')}`;
 		position: 'bottom' as const,
 		animation: 'fade' as const,
 	};
+	// Anchoring can shorten a reel after the overlays were timed; keep the
+	// closing card on the final shots instead of past the end.
+	const timedOverlays = isReelMode(arc.mode)
+		? close.textOverlays.map(o => (o.start > 4
+			? { ...o, start: Math.max(0, Math.round((totalDuration - 2.5) * 10) / 10), duration: 2.5 }
+			: o))
+		: close.textOverlays;
 	const overlaysWithWatermark = [
-		...close.textOverlays.filter(o => !/communityliteracyclub/i.test(o.text)),
+		...timedOverlays.filter(o => !/communityliteracyclub/i.test(o.text)),
 		watermark,
 	];
 

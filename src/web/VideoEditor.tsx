@@ -985,24 +985,38 @@ export function VideoEditor({ onBack }: VideoEditorProps) {
 		setEditPlanData(null);
 
 		try {
-			const response = await fetch('/api/video-editor', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					task: 'edit',
-					videoIds: Array.from(selectedIds),
-					topic: topic.trim(),
-					purpose,
-					editMode: selectedMode,
-					platforms: Array.from(enabledPlatforms),
-				}),
+			// Plan generation takes several model calls and routinely outlasts the
+			// hosting proxy's request timeout, so start it as a background job and
+			// poll for the result instead of holding one long request open.
+			const post = async (payload: Record<string, unknown>) => {
+				const res = await fetch('/api/video-editor', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(payload),
+				});
+				if (!res.ok) throw new Error('Failed to generate edit plan');
+				return res.json();
+			};
+
+			const started = await post({
+				task: 'edit-async',
+				videoIds: Array.from(selectedIds),
+				topic: topic.trim(),
+				purpose,
+				editMode: selectedMode,
+				platforms: Array.from(enabledPlatforms),
 			});
+			if (!started.jobId) throw new Error(started.error || started.message || 'Could not start edit plan');
 
-			if (!response.ok) {
-				throw new Error('Failed to generate edit plan');
+			let data: EditPlanResult & { jobStatus?: string; error?: string } = started;
+			const deadline = Date.now() + 25 * 60_000;
+			for (;;) {
+				await new Promise(r => setTimeout(r, 4000));
+				data = await post({ task: 'edit-job', jobId: started.jobId });
+				if (data.jobStatus !== 'running') break;
+				if (Date.now() > deadline) throw new Error('Edit plan timed out');
 			}
-
-			const data: EditPlanResult = await response.json();
+			if (data.jobStatus === 'failed') throw new Error(data.error || 'Edit plan failed');
 
 			if (data.success && data.editPlan) {
 				setEditPlan(data.editPlan);

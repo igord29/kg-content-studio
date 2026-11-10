@@ -22,6 +22,7 @@ import {
 	createClipUsageRecord,
 	buildUsageSummaryMap,
 } from '../agent/video-editor/usage-tracker';
+import { loadUsageRecords, loadUsageSummaries, appendUsageRecords } from '../agent/video-editor/usage-store';
 
 const api = createRouter();
 
@@ -133,7 +134,7 @@ api.post('/video-editor', videoEditor.validator(), async (c) => {
 	let usageSummary: VideoUsageSummary[] = [];
 	if (data.task === 'edit' || data.task === 'auto-process') {
 		try {
-			usageSummary = (await c.var.thread.state.get<VideoUsageSummary[]>('video-usage-summary')) ?? [];
+			usageSummary = loadUsageSummaries();
 		} catch { /* best-effort */ }
 	}
 	const result = await videoEditor.run({ ...data, appUrl: origin, usageSummary });
@@ -153,12 +154,7 @@ api.post('/video-editor', videoEditor.validator(), async (c) => {
 					platform: (data as { platform?: string }).platform || 'unknown',
 				}),
 			);
-			for (const record of records) {
-				await c.var.thread.state.push('clip-usage', record, 500);
-			}
-			const allUsage = (await c.var.thread.state.get<ClipUsageRecord[]>('clip-usage')) ?? [];
-			const summaryMap = buildUsageSummaryMap(allUsage);
-			await c.var.thread.state.set('video-usage-summary', Array.from(summaryMap.values()));
+			appendUsageRecords(records);
 		} catch { /* best-effort — never fail the response over usage bookkeeping */ }
 	}
 
@@ -967,17 +963,16 @@ api.post('/upload-video-supabase', async (c) => {
 
 // Get all video usage summaries (for frontend freshness display)
 api.get('/clip-usage', async (c) => {
-	const summary = (await c.var.thread.state.get<VideoUsageSummary[]>('video-usage-summary')) ?? [];
+	const summary = loadUsageSummaries();
 	return c.json({ entries: summary, count: summary.length });
 });
 
 // Get detailed usage for a specific video
 api.get('/clip-usage/:fileId', async (c) => {
 	const fileId = c.req.param('fileId');
-	const allUsage = (await c.var.thread.state.get<ClipUsageRecord[]>('clip-usage')) ?? [];
+	const allUsage = loadUsageRecords();
 	const videoUsage = allUsage.filter((r) => r.fileId === fileId);
-	const summary = (await c.var.thread.state.get<VideoUsageSummary[]>('video-usage-summary')) ?? [];
-	const videoSummary = summary.find((s) => s.fileId === fileId);
+	const videoSummary = buildUsageSummaryMap(videoUsage).get(fileId);
 	return c.json({ fileId, records: videoUsage, summary: videoSummary || null });
 });
 
@@ -999,15 +994,8 @@ api.post('/clip-usage', async (c) => {
 		}),
 	);
 
-	// Push each record to clip-usage (capped at 500)
-	for (const record of records) {
-		await c.var.thread.state.push('clip-usage', record, 500);
-	}
-
-	// Rebuild video-usage-summary from all records
-	const allUsage = (await c.var.thread.state.get<ClipUsageRecord[]>('clip-usage')) ?? [];
-	const summaryMap = buildUsageSummaryMap(allUsage);
-	await c.var.thread.state.set('video-usage-summary', Array.from(summaryMap.values()));
+	// Global, durable history (persistent volume) — not per-browser thread state.
+	appendUsageRecords(records);
 
 	return c.json({ success: true, recorded: records.length });
 });

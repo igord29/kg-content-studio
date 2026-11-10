@@ -86,6 +86,7 @@ import {
 	scoreSearchMatch,
 	buildUsageSummaryMap,
 } from './usage-tracker';
+import { loadUsageSummaries } from './usage-store';
 
 /**
  * Build a detached logger safe to pass into fire-and-forget async pipelines.
@@ -2122,6 +2123,20 @@ const agent = createAgent('video-editor', {
 			const catalog = loadExistingCatalog();
 			const catalogMap = new Map(catalog.map(entry => [entry.fileId, entry]));
 
+			// Usage history, loaded BEFORE auto-selection so source choice can rotate.
+			// The caller may pass it; otherwise read the global durable store, so the
+			// async path, the web UI and headless runs all share one history.
+			const usageSummaryMap = new Map<string, VideoUsageSummary>();
+			try {
+				const supplied = Array.isArray(input.usageSummary) && input.usageSummary.length > 0
+					? input.usageSummary as VideoUsageSummary[]
+					: loadUsageSummaries();
+				for (const u of supplied) usageSummaryMap.set(u.fileId, u);
+				ctx.logger.info('[video-editor] Loaded usage data for %d videos', usageSummaryMap.size);
+			} catch (err) {
+				ctx.logger.warn('[video-editor] Could not load usage data: %s', err);
+			}
+
 			// Auto-select: when no videos are explicitly selected, search the catalog
 			// using the topic as a query and pick the best matches
 			if (videoIds.length === 0 && catalog.length > 0) {
@@ -2168,8 +2183,20 @@ const agent = createAgent('video-editor', {
 					.filter(r => r.score > 0)
 					.sort((a, b) => b.score - a.score);
 
-				// Take top matches (up to 10 clips to give the AI enough footage to work with)
-				const autoSelected = scored.slice(0, 10).map(r => r.fileId);
+				// Rotate sources instead of always taking the same top 10. Relevance
+				// alone is deterministic: the same topic returned the same ten files
+				// forever, so every edit was cut from identical footage. Take a wider
+				// pool of relevant matches, then discount each by how recently and how
+				// heavily it has been used (freshness 1.0 = never used) and add a
+				// little jitter to break ties between equally good unused files.
+				const pool = scored.slice(0, 30);
+				const diversified = pool
+					.map(r => {
+						const freshness = usageSummaryMap.get(r.fileId)?.freshnessScore ?? 1;
+						return { ...r, pick: r.score * (0.35 + 0.65 * freshness) + Math.random() * 1.5 };
+					})
+					.sort((a, b) => b.pick - a.pick);
+				const autoSelected = diversified.slice(0, 10).map(r => r.fileId);
 				if (autoSelected.length > 0) {
 					videoIds = autoSelected;
 					ctx.logger.info('[video-editor] Auto-selected %d clips from catalog (top scores: %s)',
@@ -2182,20 +2209,6 @@ const agent = createAgent('video-editor', {
 			}
 
 			ctx.logger.info('[video-editor] Generating edit plan for %d videos, topic: %s', videoIds.length, topic);
-
-			// Load usage data for freshness context (best-effort — won't block if unavailable)
-			let usageSummaryMap = new Map<string, VideoUsageSummary>();
-			try {
-				// Usage data is passed from the API layer via input, or we build from scratch
-				if (input.usageSummary && Array.isArray(input.usageSummary)) {
-					for (const s of input.usageSummary as VideoUsageSummary[]) {
-						usageSummaryMap.set(s.fileId, s);
-					}
-				}
-				ctx.logger.info('[video-editor] Loaded usage data for %d videos', usageSummaryMap.size);
-			} catch (err) {
-				ctx.logger.warn('[video-editor] Could not load usage data: %s', err);
-			}
 
 			// Gather metadata for selected videos
 			const videoDetails = [];

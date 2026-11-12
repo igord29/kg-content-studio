@@ -149,5 +149,13 @@ const vf = buildVideoFilter({
 console.log('        ' + vf);
 assert('extraZoom survives the full chain', vf.startsWith('scale=4438:2496'));
 
+// --- 7. Variable-frame-rate phone footage --------------------------------
+console.log('\n7. Stabilization locks the frame rate first');
+const stab = buildVideoFilter({ targetAspect: '16:9', sourceWidth: 2128, sourceHeight: 2848, subjectPosition: 'center', stabilize: true, vidstabTransforms: '/tmp/t.trf' });
+assert('fps=30 leads the vidstab chain', stab.startsWith('fps=30,vidstabtransform='));
+const shake = buildVideoFilter({ targetAspect: '16:9', sourceWidth: 1920, sourceHeight: 1080, subjectPosition: 'center', stabilize: true });
+assert('fps=30 leads the deshake fallback', shake.startsWith('fps=30,deshake='));
+assert('the detect pass also runs at fps=30', fs.readFileSync(DEPLOY_SCRIPT, 'utf-8').includes("'fps=30,vidstabdetect="));
+
 console.log(failures === 0 ? '\nAll preprocessor assertions passed.' : '\n' + failures + ' FAILURES');
 process.exit(failures === 0 ? 0 : 1);

@@ -462,12 +462,18 @@ function buildVideoFilter(config) {
   // render is visibly jumpy the whole way through. The stabilizer runs FIRST in
   // the chain, so the crop window that follows is computed on steadied frames.
   if (config.stabilize === true) {
+    // fps=30 first: phone footage is variable frame rate (timebase 1/120), and
+    // vidstab fed VFR frames smears blocks of earlier frames across the picture
+    // (seen on every phone clip from a school gym). Locking to a constant 30fps
+    // before both passes gives clean output. The same fps=30 must lead the
+    // detect pass so the transform list lines up frame for frame.
     if (config.vidstabTransforms) {
       filters.unshift(
+        'fps=30',
         'vidstabtransform=input=' + config.vidstabTransforms + ':zoom=2:smoothing=15:interpol=bilinear'
       );
     } else {
-      filters.unshift('deshake=x=-1:y=-1:w=-1:h=-1:rx=32:ry=32');
+      filters.unshift('fps=30', 'deshake=x=-1:y=-1:w=-1:h=-1:rx=32:ry=32');
     }
   }
 
@@ -614,7 +620,7 @@ exports.handler = async function(event) {
           [ffmpegPath, '-y',
            '-ss', String(event.trimStart), '-t', String(event.duration),
            '-i', inputPath,
-           '-vf', "'vidstabdetect=shakiness=8:accuracy=15:result=" + trfPath + "'",
+           '-vf', "'fps=30,vidstabdetect=shakiness=8:accuracy=15:result=" + trfPath + "'",
            '-f', 'null', '-',
           ].join(' '),
           { stdio: 'pipe', timeout: 120000 },

@@ -84,6 +84,8 @@ RUN apt-get update && apt-get install -y ffmpeg curl && \
 COPY --from=builder /app/.agentuity .agentuity/
 COPY --from=builder /app/node_modules node_modules/
 COPY --from=builder /app/package.json ./
+# Story Studio fonts, emoji, sound effects and logo (read at render time)
+COPY --from=builder /app/assets assets/
 
 # Patch: Agentuity binds to 127.0.0.1 by default, but Railway's reverse proxy
 # needs the server on 0.0.0.0. Replace the hardcoded hostname with an env-var lookup.

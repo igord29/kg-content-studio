@@ -6,16 +6,18 @@
 import { useState } from 'react';
 import { App } from './App';
 import { VideoEditor } from './VideoEditor';
+import { StoryStudio } from './StoryStudio';
 import { GrantWriter } from './GrantWriter';
 import { DonorResearcher } from './DonorResearcher';
 import { VenueProspector } from './VenueProspector';
 import { ContentLibrary } from './ContentLibrary';
 import { useIsMobile } from './useMediaQuery';
 
-type ActiveTool = 'home' | 'content' | 'video' | 'grants' | 'donors' | 'venues' | 'library';
+type ActiveTool = 'home' | 'content' | 'story' | 'video' | 'grants' | 'donors' | 'venues' | 'library';
 
 const TOOLS = [
 	{ id: 'content' as const, label: 'Content Creator', icon: '✍️', description: 'Social media posts with AI images', color: '#2D6A4F' },
+	{ id: 'story' as const, label: 'Story Studio', icon: '🎙️', description: 'Narrated story videos: script, voice-over, captions, emoji, end card', color: '#F5D547' },
 	{ id: 'video' as const, label: 'Video Editor', icon: '🎬', description: 'Video scripts & FFmpeg commands', color: '#E67E22' },
 	{ id: 'library' as const, label: 'Media Library', icon: '📚', description: 'All content, videos & images', color: '#1ABC9C' },
 	{ id: 'grants' as const, label: 'Grant Writer', icon: '📋', description: 'Proposals & funding narratives', color: '#9B59B6' },
@@ -32,6 +34,10 @@ export function ContentStudio() {
 	// Render the active tool
 	if (activeTool === 'content') {
 		return <App onBack={handleBackToHome} />;
+	}
+
+	if (activeTool === 'story') {
+		return <StoryStudio onBack={handleBackToHome} />;
 	}
 
 	if (activeTool === 'video') {

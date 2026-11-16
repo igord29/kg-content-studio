@@ -23,8 +23,12 @@ import {
 	buildUsageSummaryMap,
 } from '../agent/video-editor/usage-tracker';
 import { loadUsageRecords, loadUsageSummaries, appendUsageRecords } from '../agent/video-editor/usage-store';
+import { registerStoryRoutes } from './story';
 
 const api = createRouter();
+
+// Story Studio: narrated story videos (script → voice → storyboard → render)
+registerStoryRoutes(api);
 
 // State subset for history endpoints (derived from AgentOutput)
 export const StateSchema = AgentOutput.pick(['history', 'threadId', 'translationCount']);

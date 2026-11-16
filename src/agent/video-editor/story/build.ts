@@ -89,7 +89,7 @@ async function buildShot(s: Shot, i: number, work: string): Promise<void> {
 		const zoom = Math.max(1, s.zoom || 1);
 		cw = Math.floor(cw / zoom / 2) * 2; ch = Math.floor(ch / zoom / 2) * 2;
 		const x = Math.round(Math.max(0, Math.min(info.w - cw, (s.x ?? 0.5) * info.w - cw / 2)));
-		const y = Math.round((info.h - ch) * 0.45);
+		const y = Math.round(Math.max(0, Math.min(info.h - ch, (s.y ?? 0.6) * info.h - ch / 2)));
 		const look = `${GRADE},${s.lift ? LIFT : 'null'},unsharp=5:5:0.6:5:5:0.3`;
 		const head = `[0:v]vidstabtransform=input=${trf}:zoom=3:smoothing=12:interpol=bicubic,crop=${cw}:${ch}:${x}:${y}`;
 		const tailF = `trim=start=${lead.toFixed(3)}:duration=${len.toFixed(3)},setpts=PTS-STARTPTS,format=yuv420p[vo]`;

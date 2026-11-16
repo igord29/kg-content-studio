@@ -36,6 +36,7 @@ For EVERY frame return one object:
 - quality: 0 unusable (lens blocked by a hand/sleeve/racket, mostly floor/ceiling/wall, motion blur), 1 weak, 2 fine, 3 great shot
 - action: one of ${ACTIONS.join(', ')}
 - x: horizontal position of the main subject from 0 (left edge) to 1 (right edge); 0.5 if centred or nobody
+- y: vertical position of the subject's face or the action (hands, board, ball) from 0 (top) to 1 (bottom); 0.6 if nobody
 - desc: at most 8 words, concrete (e.g. "girl swings forehand at coach's toss")
 
 Return ONLY a JSON array.`;
@@ -59,6 +60,7 @@ async function tagSheet(img: Buffer, labels: number[]): Promise<FootageMoment[]>
 			quality: Math.max(0, Math.min(3, Math.round(Number(m.quality) || 0))),
 			action: (ACTIONS as readonly string[]).includes(String(m.action)) ? String(m.action) : 'none',
 			x: Math.max(0, Math.min(1, Number(m.x ?? 0.5) || 0.5)),
+			y: Math.max(0, Math.min(1, Number(m.y ?? 0.6) || 0.6)),
 			desc: String(m.desc ?? '').slice(0, 80),
 		};
 	});

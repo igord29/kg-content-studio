@@ -116,6 +116,10 @@ export async function buildStoryboard(p: StoryProject, moments: FootageMoment[])
 		const xs = (momentsByFile.get(fileId) ?? []).filter(m => m.people >= 1 && m.t >= Math.floor(t) && m.t <= t + dur).map(m => m.x).sort((a, b) => a - b);
 		return xs.length ? +xs[Math.floor(xs.length / 2)]!.toFixed(2) : fallback;
 	};
+	const yAt = (fileId: string, t: number, dur: number): number => {
+		const ys = (momentsByFile.get(fileId) ?? []).filter(m => m.people >= 1 && m.y !== undefined && m.t >= Math.floor(t) && m.t <= t + dur).map(m => m.y!).sort((a, b) => a - b);
+		return ys.length ? +ys[Math.floor(ys.length / 2)]!.toFixed(2) : 0.6;
+	};
 	const used: Array<{ fileId: string; a: number; b: number }> = [];
 	const free = (fileId: string, a: number, b: number) => !used.some(u => u.fileId === fileId && a < u.b + 1 && b > u.a - 1);
 
@@ -156,7 +160,7 @@ export async function buildStoryboard(p: StoryProject, moments: FootageMoment[])
 			.map(r => { const t = +Math.max(r.start, Math.min(r.end - s.dur, r.best.t - s.dur * 0.4)).toFixed(2); return { fileId: r.fileId, t, x: xAt(r.fileId, t, s.dur, r.best.x), desc: r.best.desc }; });
 		shots.push({
 			start: s.start, dur: s.dur, line: s.line, fileId: chosen.r.fileId, t: chosen.t,
-			x: xAt(chosen.r.fileId, chosen.t, s.dur, chosen.r.best.x), zoom: 1, note: chosen.r.best.desc, trans: 'cut', alternatives,
+			x: xAt(chosen.r.fileId, chosen.t, s.dur, chosen.r.best.x), y: yAt(chosen.r.fileId, chosen.t, s.dur), zoom: 1.12, note: chosen.r.best.desc, trans: 'cut', alternatives,
 		});
 	});
 	assignTransitions(p, shots);

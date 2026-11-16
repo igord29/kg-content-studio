@@ -48,6 +48,8 @@ export interface FootageMoment {
 	action: string;
 	/** Horizontal position of the main subject, 0 left … 1 right. */
 	x: number;
+	/** Vertical position of the subject's face / the action, 0 top … 1 bottom (newer indexes only). */
+	y?: number;
 	desc: string;
 }
 
@@ -70,6 +72,8 @@ export interface Shot {
 	t: number;
 	/** Subject position 0..1 used to centre the vertical crop. */
 	x: number;
+	/** Vertical framing 0 top … 1 bottom (default 0.6: body cameras tilt up at ceilings). */
+	y?: number;
 	zoom: number;
 	/** Brighten dark footage. */
 	lift?: boolean;

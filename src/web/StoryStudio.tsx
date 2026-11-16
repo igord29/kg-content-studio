@@ -13,7 +13,7 @@ import { useIsMobile } from './useMediaQuery';
 // --- types (mirror src/agent/video-editor/story/types.ts) -------------------------
 interface StoryLine { text: string; pauseAfter?: number; emoji?: string; emojiWord?: string; highlight?: string[]; sfx?: string; title?: string; visual?: string }
 interface Shot {
-	start: number; dur: number; line: number; fileId: string; t: number; x: number; zoom: number; lift?: boolean;
+	start: number; dur: number; line: number; fileId: string; t: number; x: number; y?: number; zoom: number; lift?: boolean;
 	trans?: string; note?: string; alternatives?: Array<{ fileId: string; t: number; x: number; desc: string }>;
 }
 interface Job { step: string; state: 'running' | 'done' | 'failed'; progress: string; error?: string; startedAt: string }
@@ -467,10 +467,12 @@ function StoryboardStep({ p, opts, locked, onBuild, onSave, onNext }: { p: Proje
 								</div>
 								<label style={label}>Crop position (vertical video): {Math.round(s.x * 100)}%</label>
 								<input type="range" min={0} max={1} step={0.02} value={s.x} onChange={e => upd(open, { x: Number(e.target.value) })} style={{ width: '100%' }} />
+								<label style={label}>Crop height (when zoomed): {Math.round((s.y ?? 0.6) * 100)}% down</label>
+								<input type="range" min={0} max={1} step={0.02} value={s.y ?? 0.6} onChange={e => upd(open, { y: Number(e.target.value) })} style={{ width: '100%' }} />
 								<div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
 									<label style={{ fontSize: 14 }}><input type="checkbox" checked={!!s.lift} onChange={e => upd(open, { lift: e.target.checked })} /> Brighten</label>
 									<label style={{ fontSize: 14 }}>Zoom <select style={{ ...input, width: 'auto', padding: '4px 8px' }} value={s.zoom || 1} onChange={e => upd(open, { zoom: Number(e.target.value) })}>
-										{[1, 1.1, 1.2, 1.35, 1.5].map(z => <option key={z} value={z}>{z}x</option>)}
+										{[1, 1.12, 1.2, 1.35, 1.5].map(z => <option key={z} value={z}>{z}x</option>)}
 									</select></label>
 									<label style={{ fontSize: 14 }}>Transition to next <select style={{ ...input, width: 'auto', padding: '4px 8px' }} value={s.trans ?? 'cut'} onChange={e => upd(open, { trans: e.target.value })}>
 										{(opts?.transitions ?? ['cut']).map(t => <option key={t} value={t}>{t}</option>)}
@@ -486,7 +488,7 @@ function StoryboardStep({ p, opts, locked, onBuild, onSave, onNext }: { p: Proje
 										<div key={k} style={{ width: 150, flexShrink: 0, cursor: 'pointer' }} onClick={() => {
 											const rest = [...(s.alternatives ?? [])];
 											rest.splice(k, 1, { fileId: s.fileId, t: s.t, x: s.x, desc: s.note ?? '' });
-											upd(open, { fileId: a.fileId, t: a.t, x: a.x, note: a.desc, alternatives: rest });
+											upd(open, { fileId: a.fileId, t: a.t, x: a.x, y: undefined, note: a.desc, alternatives: rest });
 										}}>
 											<img src={frameUrl(a.fileId, a.t + s.dur / 2)} loading="lazy" style={{ width: 150, height: 100, objectFit: 'cover', borderRadius: 6 }} />
 											<div style={{ fontSize: 11, color: C.dim }}>{a.desc}</div>

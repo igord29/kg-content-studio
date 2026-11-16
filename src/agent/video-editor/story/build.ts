@@ -218,7 +218,7 @@ function plan(p: StoryProject, shots: Shot[], W: number, H: number) {
 	const slam = (t0: number, t1: number, text: string) => {
 		const ms = Math.round((t1 - t0) * 1000);
 		events.push(`Dialogue: 2,${ts(t0)},${ts(t1)},Slam,,0,0,0,,{\\an5\\pos(${W / 2},${Math.round(H * 0.36)})\\fscx260\\fscy260\\alpha&HFF&` +
-			`\\t(0,140,\\fscx100\\fscy100\\alpha&H00&)\\t(${ms - 180},${ms},\\alpha&HFF&)}${assText(twoRows(text.toUpperCase()))}`);
+			`\\t(0,140,\\fscx100\\fscy100\\alpha&H00&)\\t(${ms - 180},${ms},\\alpha&HFF&)}${twoRows(assText(text.toUpperCase()))}`);
 	};
 	const opening = p.script?.openingTitle?.trim();
 	if (opening && !lines[0]?.title && segs[0]) slam(0.15, Math.min(segs[0].start + 2.2, segs[1]?.start ?? BASE), opening);

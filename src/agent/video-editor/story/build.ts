@@ -86,7 +86,9 @@ async function buildShot(s: Shot, i: number, work: string): Promise<void> {
 		const target = pillar ? srcAspect : OW / OH;
 		let cw = srcAspect < target ? info.w : info.h * target;
 		let ch = srcAspect < target ? info.w / target : info.h;
-		const zoom = Math.max(1, s.zoom || 1);
+		// Body cameras tilt up: vertical cuts of landscape footage get an extra push-in so the
+		// crop can drop below the ceiling (1440p sources still upscale less than 1.7x).
+		const zoom = Math.max(1, s.zoom || 1) * (a === 'v' && srcAspect > 1.2 ? 1.12 : 1);
 		cw = Math.floor(cw / zoom / 2) * 2; ch = Math.floor(ch / zoom / 2) * 2;
 		const x = Math.round(Math.max(0, Math.min(info.w - cw, (s.x ?? 0.5) * info.w - cw / 2)));
 		const y = Math.round(Math.max(0, Math.min(info.h - ch, (s.y ?? 0.6) * info.h - ch / 2)));

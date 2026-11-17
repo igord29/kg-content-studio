@@ -3,7 +3,7 @@
  *
  *   GET    /story/footage[?folder=<Drive folder id or link>]  footage to pick from
  *   GET    /story/probe?fileId=                               size and length of a source
- *   GET    /story/clip?fileId=&t=&d=                          up to 20s of a source at full resolution
+ *   GET    /story/clip?fileId=&t=&d=                          up to 20s of a source, original quality
  *   GET    /story/options                                      voices, emoji, sound effects, transitions
  *   GET    /story/projects                                     list
  *   POST   /story/projects                                     create
@@ -283,7 +283,7 @@ export function registerStoryRoutes(api: Router): void {
 		try { return c.json(await probe(fileId)); } catch (e) { return c.text('Probe failed: ' + (e as Error).message.slice(0, 200), 500); }
 	});
 
-	/** A few seconds of a Drive video at full resolution (H.264, near-lossless) for hand editing. */
+	/** A few seconds of a Drive video at full resolution (original stream, no re-encode) for hand editing. */
 	api.get('/story/clip', async (c: Context) => {
 		const fileId = c.req.query('fileId') || '';
 		if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) return c.text('Bad file id', 400);
@@ -293,8 +293,10 @@ export function registerStoryRoutes(api: Router): void {
 		try {
 			if (!fs.existsSync(out)) {
 				const tmp = out + '.part.mp4';
+				// Stream copy: no re-encode (4K HEVC encodes are too slow and memory-hungry for a request).
+				// The cut snaps back to the keyframe before t, so callers should ask for a second of lead.
 				await ffmpeg([...(await inputArgs(fileId, t)), '-t', d.toFixed(3), '-map', '0:v:0', '-map', '0:a:0?',
-					'-c:v', 'libx264', '-preset', 'fast', '-crf', '12', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', tmp], 300_000);
+					'-c', 'copy', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', tmp], 240_000);
 				fs.renameSync(tmp, out);
 			}
 			return new Response(new Uint8Array(fs.readFileSync(out)), { headers: { 'Content-Type': 'video/mp4' } });

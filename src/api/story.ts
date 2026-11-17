@@ -310,7 +310,7 @@ export function registerStoryRoutes(api: Router): void {
 		const fileId = c.req.query('fileId') || '';
 		if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) return c.text('Bad file id', 400);
 		const t = Math.max(0, Number(c.req.query('t')) || 0);
-		const w = Math.max(120, Math.min(640, Number(c.req.query('w')) || 320));
+		const w = Math.max(120, Math.min(2400, Number(c.req.query('w')) || 320));
 		try {
 			const jpg = await frameJpeg(fileId, t, w);
 			return new Response(new Uint8Array(jpg), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' } });

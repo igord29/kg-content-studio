@@ -2,6 +2,8 @@
  * Story Studio API: narrated social videos, step by step.
  *
  *   GET    /story/footage[?folder=<Drive folder id or link>]  footage to pick from
+ *   GET    /story/probe?fileId=                               size and length of a source
+ *   GET    /story/clip?fileId=&t=&d=                          up to 20s of a source at full resolution
  *   GET    /story/options                                      voices, emoji, sound effects, transitions
  *   GET    /story/projects                                     list
  *   POST   /story/projects                                     create
@@ -28,6 +30,8 @@ import { availableEmoji, deleteProject, listProjects, loadIndex, loadProject, ne
 import { EMOJI_NAMES, SFX_NAMES, writeScript } from '../agent/video-editor/story/script';
 import { voiceOptions, voiceScript } from '../agent/video-editor/story/voice';
 import { frameJpeg, indexSource } from '../agent/video-editor/story/footage';
+import { ffmpeg, inputArgs, probe } from '../agent/video-editor/story/media';
+import * as os from 'os';
 import { buildStoryboard } from '../agent/video-editor/story/storyboard';
 import { renderStory } from '../agent/video-editor/story/build';
 import type { FootageMoment, SourceInfo, StoryLine, StoryProject } from '../agent/video-editor/story/types';
@@ -270,6 +274,33 @@ export function registerStoryRoutes(api: Router): void {
 		const name = c.req.param('name')!;
 		if (!safeName(name)) return c.text('Bad name', 400);
 		return serveFile(c, path.join(projectDir(c.req.param('id')!), 'voice', name), 'audio/wav');
+	});
+
+	/** Size and length of a Drive video, so an editor can plan crops before cutting. */
+	api.get('/story/probe', async (c: Context) => {
+		const fileId = c.req.query('fileId') || '';
+		if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) return c.text('Bad file id', 400);
+		try { return c.json(await probe(fileId)); } catch (e) { return c.text('Probe failed: ' + (e as Error).message.slice(0, 200), 500); }
+	});
+
+	/** A few seconds of a Drive video at full resolution (H.264, near-lossless) for hand editing. */
+	api.get('/story/clip', async (c: Context) => {
+		const fileId = c.req.query('fileId') || '';
+		if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) return c.text('Bad file id', 400);
+		const t = Math.max(0, Number(c.req.query('t')) || 0);
+		const d = Math.max(0.5, Math.min(20, Number(c.req.query('d')) || 5));
+		const out = path.join(os.tmpdir(), `clip-${fileId.slice(0, 12)}-${Math.round(t * 100)}-${Math.round(d * 100)}.mp4`);
+		try {
+			if (!fs.existsSync(out)) {
+				const tmp = out + '.part.mp4';
+				await ffmpeg([...(await inputArgs(fileId, t)), '-t', d.toFixed(3), '-map', '0:v:0', '-map', '0:a:0?',
+					'-c:v', 'libx264', '-preset', 'fast', '-crf', '12', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', tmp], 300_000);
+				fs.renameSync(tmp, out);
+			}
+			return new Response(new Uint8Array(fs.readFileSync(out)), { headers: { 'Content-Type': 'video/mp4' } });
+		} catch (e) {
+			return c.text('Clip failed: ' + (e as Error).message.slice(0, 300), 500);
+		}
 	});
 
 	api.get('/story/frame', async (c: Context) => {

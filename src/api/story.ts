@@ -289,13 +289,14 @@ export function registerStoryRoutes(api: Router): void {
 		if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) return c.text('Bad file id', 400);
 		const t = Math.max(0, Number(c.req.query('t')) || 0);
 		const d = Math.max(0.5, Math.min(20, Number(c.req.query('d')) || 5));
-		const out = path.join(os.tmpdir(), `clip-${fileId.slice(0, 12)}-${Math.round(t * 100)}-${Math.round(d * 100)}.mp4`);
+		const out = path.join(os.tmpdir(), `clip-${fileId.slice(0, 12)}-${Math.round(t * 100)}-${Math.round(d * 100)}${c.req.query('audio') === '1' ? '-a' : ''}.mp4`);
 		try {
 			if (!fs.existsSync(out)) {
 				const tmp = out + '.part.mp4';
 				// Stream copy: no re-encode (4K HEVC encodes are too slow and memory-hungry for a request).
 				// The cut snaps back to the keyframe before t, so callers should ask for a second of lead.
-				await ffmpeg([...(await inputArgs(fileId, t)), '-t', d.toFixed(3), '-map', '0:v:0', '-map', '0:a:0?',
+				// Video only unless ?audio=1: interleaved audio makes ffmpeg hop around the remote file and crawl.
+				await ffmpeg([...(await inputArgs(fileId, t)), '-t', d.toFixed(3), '-map', '0:v:0', ...(c.req.query('audio') === '1' ? ['-map', '0:a:0?'] : ['-an']),
 					'-c', 'copy', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', tmp], 240_000);
 				fs.renameSync(tmp, out);
 			}

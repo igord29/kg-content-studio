@@ -24,6 +24,12 @@ Reference build: `tools/ad-builder/build_ad.py`. Quality gate: `tools/video-qc/q
 - Nothing static for more than 0.8 s. Push in on clips, stills and cards (cards get a slow push-in plus a breathing vignette).
 - At least 3 transition types. Hard cuts on the beat; whip/slide on topic changes; a white flash into photo stacks and payoffs.
 
+**Venue (events on clay, like UnitedSets at Oak Lane)**
+- Every shot that reads as a place (hook, venue, wide rally, handshake) is on the event's surface: Oak Lane green clay.
+- Hard-court footage may appear only as **inserts that hide the floor**: waist-up or tighter crops, contact close-ups, faces and reactions; cut-outs on brand backgrounds; teal-duotone flash cuts; split screens. Insert length 0.5–1.2 s, always cut between clay shots. Crop out sponsor banners and venue signage too.
+- Footage shots set `kind: 'clip'`; graphic treatments set `kind: 'graphic'`. The QC gate fails any `clip` shot showing more than 6% hard-court blue when the sidecar has `surface: 'clay'`.
+- Use inserts to give every ad different players and angles, so a campaign never repeats the same few clips.
+
 **Text**
 - Montserrat ExtraBold, slanted, white with one lime keyword per line (`#D4F03C`). Teal is `#014A62`.
 - Slam text is ≥ 90 px on 9:16, pops in at 135% → 100%, and never sits over a face.

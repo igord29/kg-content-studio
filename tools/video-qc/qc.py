@@ -49,6 +49,19 @@ def speech_band(path):
     w = wave.open(tmp); n = w.getnframes(); data = struct.unpack('<%dh' % n, w.readframes(n)); w.close(); os.remove(tmp)
     return data, 16000
 
+def blue_court_share(video, t):
+    """Share of the lower 60% of a frame that is hard-court blue (Chelsea Piers style paint).
+    Calibrated Nov 2026: hard-court frames 0.28-0.69, Oak Lane clay frames 0.00-0.02 (navy curtains sit higher and darker)."""
+    import colorsys
+    raw = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-ss', f'{t:.2f}', '-i', video, '-frames:v', '1',
+                          '-vf', 'scale=96:-2,format=rgb24', '-f', 'rawvideo', '-'], capture_output=True).stdout
+    w = 96; h = len(raw) // (3 * w); n = hit = 0
+    for i in range(0, len(raw), 3):
+        if (i // 3) // w < h * 0.4: continue
+        H, S, V = colorsys.rgb_to_hsv(raw[i] / 255, raw[i + 1] / 255, raw[i + 2] / 255); n += 1
+        if 0.52 <= H <= 0.66 and S >= 0.25 and V >= 0.28: hit += 1
+    return hit / max(1, n)
+
 class Card:
     def __init__(self): self.rows = []; self.score = 0; self.max = 0
     def hard(self, name, ok, detail):
@@ -163,6 +176,15 @@ def check(video, meta=None):
            f'outside: {out_of_zone}' if out_of_zone else f'{len(ev)} captions checked')
     big = [e for e in ev if int(e[5]) >= (90 if m['height'] > m['width'] else 80)]
     c.soft('Big, readable key text', 4, 4 if len(big) >= 5 else 2, f'{len(big)} captions at slam size')
+
+    # --- venue: footage must never show the hard courts when the event is on clay -------------
+    if m.get('surface') == 'clay':
+        shown = []
+        for k, s in enumerate(m['shots']):
+            if s['kind'] != 'clip': continue  # photos, stock b-roll, cards and graphic treatments are exempt
+            worst = max(blue_court_share(video, s['t0'] + s['d'] * f) for f in (0.1, 0.5, 0.9))
+            if worst > 0.06: shown.append(f'shot {k+1} ({worst:.0%})')
+        c.hard('No hard-court surface in footage (clay event)', not shown, ', '.join(shown) if shown else 'all footage shots clean')
 
     # --- brand ---------------------------------------------------------------------------
     c.soft('Logo on screen until the end card', 4, 4 if m.get('logo_until', 0) >= e0 - 0.1 else 0, f"logo through {m.get('logo_until', 0):.1f}s")

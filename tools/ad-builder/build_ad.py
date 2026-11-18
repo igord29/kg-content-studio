@@ -406,5 +406,6 @@ json.dump({
     'ass': os.path.abspath(f'ad_{ASPECT}_{VAR}.ass'),
     'safe_zone': {'top': 280, 'bottom': 1500, 'side': 60} if V else {'top': 60, 'bottom': 1020, 'side': 60},
     'logo_until': e0,
+    'surface': 'clay',
 }, open(out.replace('.mp4', '.qc.json'), 'w'), indent=1)
 print('wrote', out)

@@ -1,9 +1,9 @@
 /**
  * Footage access and ffmpeg helpers for Story Studio.
  *
- * Sources are read straight from Google Drive over HTTP range requests, so a
- * 500MB phone clip never has to be downloaded to the 5GB volume: ffmpeg seeks
- * to the few seconds it needs. For local testing, STORY_LOCAL_SOURCES can point
+ * Sources are read from Google Drive through a local chunk cache (drive-cache.ts):
+ * ffmpeg seeks to the few seconds it needs and each 8 MB piece is fetched from
+ * Drive once, so a 500MB phone clip is never downloaded whole or twice. For local testing, STORY_LOCAL_SOURCES can point
  * at a folder of <fileId>.mp4 files (a prefix of the id is enough).
  *
  * File: src/agent/video-editor/story/media.ts
@@ -13,6 +13,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getAuth } from '../google-drive';
+import { cachedDriveUrl } from './drive-cache';
 
 let cachedToken: { value: string; expires: number } | null = null;
 
@@ -38,10 +39,9 @@ export async function inputArgs(fileId: string, seek?: number): Promise<string[]
 	const seekArgs = seek !== undefined ? ['-ss', seek.toFixed(3)] : [];
 	const local = localSource(fileId);
 	if (local) return [...seekArgs, '-i', local];
-	const token = await driveToken();
-	const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`;
-	return ['-headers', `Authorization: Bearer ${token}\r\n`, '-reconnect', '1', '-reconnect_streamed', '1',
-		'-reconnect_delay_max', '5', ...seekArgs, '-i', url];
+	// Through the local chunk cache: Drive counts open-ended reads toward a download quota (see drive-cache.ts).
+	const url = await cachedDriveUrl(fileId, driveToken);
+	return [...seekArgs, '-i', url];
 }
 
 export function run(bin: string, args: string[], opts: { timeoutMs?: number } = {}): Promise<{ stdout: string; stderr: string }> {

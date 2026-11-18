@@ -30,7 +30,7 @@ import { availableEmoji, deleteProject, listProjects, loadIndex, loadProject, ne
 import { EMOJI_NAMES, SFX_NAMES, writeScript } from '../agent/video-editor/story/script';
 import { voiceOptions, voiceScript } from '../agent/video-editor/story/voice';
 import { frameJpeg, indexSource } from '../agent/video-editor/story/footage';
-import { ffmpeg, inputArgs, probe } from '../agent/video-editor/story/media';
+import { driveToken, ffmpeg, inputArgs, probe } from '../agent/video-editor/story/media';
 import * as os from 'os';
 import { buildStoryboard } from '../agent/video-editor/story/storyboard';
 import { renderStory } from '../agent/video-editor/story/build';
@@ -274,6 +274,17 @@ export function registerStoryRoutes(api: Router): void {
 		const name = c.req.param('name')!;
 		if (!safeName(name)) return c.text('Bad name', 400);
 		return serveFile(c, path.join(projectDir(c.req.param('id')!), 'voice', name), 'audio/wav');
+	});
+
+	/** Can the service account download this file right now? Returns Drive's own status and error reason. */
+	api.get('/story/drive-check', async (c: Context) => {
+		const fileId = c.req.query('fileId') || '';
+		if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) return c.text('Bad file id', 400);
+		const token = await driveToken();
+		const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+			{ headers: { Authorization: `Bearer ${token}`, Range: 'bytes=0-15' } });
+		const body = r.ok ? '' : (await r.text()).slice(0, 600);
+		return c.json({ status: r.status, ok: r.ok, body });
 	});
 
 	/** Size and length of a Drive video, so an editor can plan crops before cutting. */

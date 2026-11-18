@@ -16,7 +16,7 @@ import { getAuth } from '../google-drive';
 
 let cachedToken: { value: string; expires: number } | null = null;
 
-async function driveToken(): Promise<string> {
+export async function driveToken(): Promise<string> {
 	if (cachedToken && cachedToken.expires > Date.now() + 60_000) return cachedToken.value;
 	const auth = getAuth();
 	const res = await auth.authorize();

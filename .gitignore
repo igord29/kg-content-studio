@@ -68,3 +68,4 @@ src/agent/translate.js
 
 .deploy-stamps/
 demo-output/
+__pycache__/

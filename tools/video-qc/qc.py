@@ -170,6 +170,11 @@ def check(video, meta=None):
         if style == 'Bug':  # corner label: left-anchored next to the logo, checked against the top only
             if y - fs / 2 < sz['top'] - 20: out_of_zone.append(clean[:24])
             continue
+        an = re.search(r'\\an(\d)', next((l for l in ass.splitlines() if l.startswith('Dialogue:') and l.endswith(text) and f'\\pos({x},{y})' in l), ''))
+        if an and an.group(1) in '123':  # bottom-anchored captions wrap inside the side margins
+            lines = max(1, math.ceil(2 * half_w / (W - 2 * sz['side'] - 60)))
+            if y > sz['bottom'] or y - lines * fs * 1.2 < sz['top']: out_of_zone.append(clean[:24])
+            continue
         if y - fs * 0.6 < sz['top'] or y + fs * 0.6 > sz['bottom'] or x - half_w < sz['side'] - 20 or x + half_w > W - sz['side'] + 20:
             out_of_zone.append(clean[:24])
     c.soft('Text inside the safe zone', 8, 8 if not out_of_zone else max(0, 8 - 2 * len(out_of_zone)),
@@ -201,7 +206,7 @@ def frames(video, meta, out):
             f"scale=-2:{480 if m['height'] > m['width'] else 270},drawtext=text='{k+1}':x=8:y=8:fontsize=28:fontcolor=yellow:box=1:boxcolor=black@0.6",
             f'{tmpd}/{k:02d}.png'])
     sh(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-framerate', '1', '-i', f'{tmpd}/%02d.png', '-vf',
-        f"tile={7 if m['height'] > m['width'] else 4}x{2 if m['height'] > m['width'] else 4}:padding=4", '-frames:v', '1', out])
+        f"tile={7 if m['height'] > m['width'] else 4}x{-(-len(m['shots']) // (7 if m['height'] > m['width'] else 4))}:padding=4", '-frames:v', '1', out])
 
 def main():
     args = sys.argv[1:]

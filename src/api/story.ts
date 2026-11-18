@@ -282,7 +282,8 @@ export function registerStoryRoutes(api: Router): void {
 		if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) return c.text('Bad file id', 400);
 		const token = await driveToken();
 		const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
-			{ headers: { Authorization: `Bearer ${token}`, Range: 'bytes=0-15' } });
+			{ headers: { Authorization: `Bearer ${token}`, Range: c.req.query('range') || 'bytes=0-15', ...(c.req.query('ua') ? { 'User-Agent': c.req.query('ua')! } : {}) } });
+		if (r.ok && r.body) await r.body.cancel();
 		const body = r.ok ? '' : (await r.text()).slice(0, 600);
 		return c.json({ status: r.status, ok: r.ok, body });
 	});

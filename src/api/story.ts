@@ -312,7 +312,11 @@ export function registerStoryRoutes(api: Router): void {
 					'-c', 'copy', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', tmp], 240_000);
 				fs.renameSync(tmp, out);
 			}
-			return new Response(new Uint8Array(fs.readFileSync(out)), { headers: { 'Content-Type': 'video/mp4' } });
+			// Not kept: a 20 s 4K cut is ~150 MB and the container's temp space counts against its memory,
+			// so cached cuts pile up until the service stalls.
+			const body = fs.readFileSync(out);
+			fs.rmSync(out, { force: true });
+			return new Response(new Uint8Array(body), { headers: { 'Content-Type': 'video/mp4' } });
 		} catch (e) {
 			return c.text('Clip failed: ' + (e as Error).message.slice(0, 300), 500);
 		}

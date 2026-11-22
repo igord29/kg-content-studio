@@ -142,7 +142,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 		for (let idx = Math.floor(start / CHUNK); idx <= Math.floor(end / CHUNK) && !closed; idx++) {
 			const buf = await chunk(fileId, idx, total);
 			const a = Math.max(start - idx * CHUNK, 0), b = Math.min(end - idx * CHUNK + 1, buf.length);
-			if (!res.write(buf.subarray(a, b))) await new Promise<void>(ok => res.once('drain', () => ok()));
+			// Wait for drain, or for the socket to close: ffmpeg killed by its timeout never drains,
+			// and waiting on drain alone would hold this handler and its chunk buffers forever.
+			if (!res.write(buf.subarray(a, b))) await new Promise<void>(ok => { res.once('drain', () => ok()); res.once('close', () => ok()); });
 		}
 		res.end();
 	} catch (e) {

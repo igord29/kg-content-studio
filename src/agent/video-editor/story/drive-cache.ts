@@ -36,10 +36,15 @@ function cacheDir(): string {
 	return d;
 }
 
-async function driveFetch(fileId: string, a: number, b: number): Promise<Response> {
+/** Drive sometimes sends headers and then stalls the body indefinitely. Without a deadline that read never
+ * settles, and because concurrent readers share the in-flight promise, every later request touching the same
+ * chunk (often the moov atom) hangs until the process restarts. Each fetch therefore carries a deadline. */
+const FETCH_TIMEOUT_MS = Number(process.env.STORY_DRIVE_TIMEOUT_MS || 60_000);
+
+async function driveFetch(fileId: string, a: number, b: number, signal?: AbortSignal): Promise<Response> {
 	const token = await tokenFn!();
 	const res = await fetch(`${process.env.STORY_DRIVE_BASE || 'https://www.googleapis.com/drive/v3/files'}/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
-		{ headers: { Authorization: `Bearer ${token}`, Range: `bytes=${a}-${b}` } });
+		{ headers: { Authorization: `Bearer ${token}`, Range: `bytes=${a}-${b}` }, signal: signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 	if (!res.ok) {
 		const body = (await res.text()).slice(0, 300);
 		throw new Error(`Drive ${res.status} for ${fileId} bytes ${a}-${b}: ${body.replace(/\s+/g, ' ')}`);
@@ -94,8 +99,18 @@ async function chunk(fileId: string, idx: number, total: number): Promise<Buffer
 	if (running) return running;
 	const p = (async () => {
 		const a = idx * CHUNK, b = Math.min(total, a + CHUNK) - 1;
-		const res = await driveFetch(fileId, a, b);
-		const buf = Buffer.from(await res.arrayBuffer());
+		let buf: Buffer | null = null;
+		for (let attempt = 1; !buf; attempt++) {
+			try {
+				// One signal covers headers and body, so a stalled body read is aborted too.
+				const res = await driveFetch(fileId, a, b, AbortSignal.timeout(FETCH_TIMEOUT_MS));
+				buf = Buffer.from(await res.arrayBuffer());
+			} catch (e) {
+				if (attempt >= 3) throw e;
+				console.error('[drive-cache] retry', attempt, fileId, idx, (e as Error).message.slice(0, 120));
+				await new Promise(ok => setTimeout(ok, 2000 * attempt));
+			}
+		}
 		fs.mkdirSync(path.dirname(f), { recursive: true });
 		fs.writeFileSync(f + '.part', buf);
 		fs.renameSync(f + '.part', f);

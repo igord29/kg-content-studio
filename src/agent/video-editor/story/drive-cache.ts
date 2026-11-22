@@ -67,13 +67,15 @@ async function sizeOf(fileId: string): Promise<number> {
 	return total;
 }
 
-function trim(): void {
+function trim(limit = LIMIT): void {
 	const root = cacheDir();
 	const files: Array<{ p: string; size: number; t: number }> = [];
 	for (const id of fs.readdirSync(root)) {
 		const d = path.join(root, id);
 		if (!fs.statSync(d).isDirectory()) continue;
 		for (const f of fs.readdirSync(d)) {
+			// Half-written chunks from a failed write are never read again.
+			if (f.endsWith('.part')) { try { fs.unlinkSync(path.join(d, f)); } catch { /* gone */ } continue; }
 			if (!f.endsWith('.bin')) continue;
 			const st = fs.statSync(path.join(d, f));
 			files.push({ p: path.join(d, f), size: st.size, t: st.atimeMs });
@@ -82,7 +84,7 @@ function trim(): void {
 	let total = files.reduce((s, f) => s + f.size, 0);
 	files.sort((a, b) => a.t - b.t);
 	for (const f of files) {
-		if (total <= LIMIT) break;
+		if (total <= limit) break;
 		try { fs.unlinkSync(f.p); total -= f.size; } catch { /* already gone */ }
 	}
 }
@@ -111,9 +113,21 @@ async function chunk(fileId: string, idx: number, total: number): Promise<Buffer
 				await new Promise(ok => setTimeout(ok, 2000 * attempt));
 			}
 		}
-		fs.mkdirSync(path.dirname(f), { recursive: true });
-		fs.writeFileSync(f + '.part', buf);
-		fs.renameSync(f + '.part', f);
+		// Caching is an optimisation: if the volume is full, free space and try once more, and if that
+		// fails too, still serve the bytes. (Trimming only after successful writes meant a full volume
+		// was never trimmed, and every request touching an uncached chunk failed with ENOSPC.)
+		const save = () => {
+			fs.mkdirSync(path.dirname(f), { recursive: true });
+			fs.writeFileSync(f + '.part', buf!);
+			fs.renameSync(f + '.part', f);
+		};
+		try { save(); }
+		catch (e) {
+			try { fs.unlinkSync(f + '.part'); } catch { /* not written */ }
+			console.error('[drive-cache] cache write failed, trimming:', (e as Error).message.slice(0, 120));
+			try { trim(LIMIT / 2); save(); }
+			catch { try { fs.unlinkSync(f + '.part'); } catch { /* not written */ } }
+		}
 		if (Math.random() < 0.05) trim();
 		return buf;
 	})();

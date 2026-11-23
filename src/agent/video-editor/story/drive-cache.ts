@@ -16,6 +16,7 @@
  */
 
 import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import * as http from 'http';
 import * as path from 'path';
 import type { AddressInfo } from 'net';
@@ -30,10 +31,30 @@ const sizes = new Map<string, number>();
 const inflight = new Map<string, Promise<Buffer>>();
 
 function cacheDir(): string {
+	if (process.env.STORY_CACHE_DIR) return process.env.STORY_CACHE_DIR;
 	const base = process.env.RAILWAY_VOLUME_MOUNT_PATH || (fs.existsSync('/data') ? '/data' : process.cwd());
-	const d = path.join(base, 'story', 'drive-cache');
-	fs.mkdirSync(d, { recursive: true });
-	return d;
+	return path.join(base, 'story', 'drive-cache');
+}
+
+/** Every cache read and write is async and has a deadline. With synchronous fs calls a stuck volume froze the
+ * whole server (even /options stopped answering, at 0% CPU) until it was restarted. If the volume does not
+ * answer in time, the cache is switched off for a while and chunks are served straight from Drive. */
+const IO_TIMEOUT_MS = Number(process.env.STORY_CACHE_IO_TIMEOUT_MS || 15_000);
+const CACHE_OFF_MS = 10 * 60_000;
+let cacheOffUntil = 0;
+const cacheOn = () => Date.now() >= cacheOffUntil;
+
+class IoTimeout extends Error {}
+function io<T>(p: Promise<T>, what: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout>;
+	const deadline = new Promise<never>((_, no) => {
+		timer = setTimeout(() => {
+			cacheOffUntil = Date.now() + CACHE_OFF_MS;
+			console.error(`[drive-cache] ${what} took over ${IO_TIMEOUT_MS} ms; serving from Drive without the cache for ${CACHE_OFF_MS / 60_000} min`);
+			no(new IoTimeout(what));
+		}, IO_TIMEOUT_MS);
+	});
+	return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
 }
 
 /** Drive sometimes sends headers and then stalls the body indefinitely. Without a deadline that read never
@@ -56,58 +77,104 @@ async function sizeOf(fileId: string): Promise<number> {
 	const known = sizes.get(fileId);
 	if (known) return known;
 	const f = path.join(cacheDir(), fileId, 'size');
-	if (fs.existsSync(f)) { const n = Number(fs.readFileSync(f, 'utf8')); sizes.set(fileId, n); return n; }
+	if (cacheOn()) {
+		try {
+			const n = Number(await io(fsp.readFile(f, 'utf8'), 'reading a cached size'));
+			if (n > 0) { sizes.set(fileId, n); return n; }
+		} catch { /* not cached, or the volume is slow: ask Drive */ }
+	}
 	const res = await driveFetch(fileId, 0, 1);
 	await res.arrayBuffer();
 	const total = Number(/\/(\d+)$/.exec(res.headers.get('content-range') || '')?.[1]);
 	if (!total) throw new Error(`Drive gave no size for ${fileId}`);
-	fs.mkdirSync(path.dirname(f), { recursive: true });
-	fs.writeFileSync(f, String(total));
 	sizes.set(fileId, total);
+	if (cacheOn()) {
+		void io(fsp.mkdir(path.dirname(f), { recursive: true }).then(() => fsp.writeFile(f, String(total))), 'caching a size')
+			.catch(() => { /* best effort */ });
+	}
 	return total;
 }
 
-function trim(limit = LIMIT): void {
-	const root = cacheDir();
-	const files: Array<{ p: string; size: number; t: number }> = [];
-	for (const id of fs.readdirSync(root)) {
-		const d = path.join(root, id);
-		if (!fs.statSync(d).isDirectory()) continue;
-		for (const f of fs.readdirSync(d)) {
-			// Half-written chunks from a failed write are never read again.
-			if (f.endsWith('.part')) { try { fs.unlinkSync(path.join(d, f)); } catch { /* gone */ } continue; }
-			if (!f.endsWith('.bin')) continue;
-			const st = fs.statSync(path.join(d, f));
-			files.push({ p: path.join(d, f), size: st.size, t: st.atimeMs });
+let trimming: Promise<void> | null = null;
+
+/** Delete the least recently used chunks until the cache is under `limit`. One trim runs at a time. */
+function trim(limit = LIMIT): Promise<void> {
+	if (trimming) return trimming;
+	trimming = io((async () => {
+		const root = cacheDir();
+		const files: Array<{ p: string; size: number; t: number }> = [];
+		for (const id of await fsp.readdir(root).catch(() => [] as string[])) {
+			const d = path.join(root, id);
+			const names = await fsp.readdir(d).catch(() => null);   // null: not a directory (or gone)
+			if (!names) continue;
+			for (const f of names) {
+				// Half-written chunks from a failed write are never read again.
+				if (f.endsWith('.part')) { await fsp.unlink(path.join(d, f)).catch(() => {}); continue; }
+				if (!f.endsWith('.bin')) continue;
+				const st = await fsp.stat(path.join(d, f)).catch(() => null);
+				if (st) files.push({ p: path.join(d, f), size: st.size, t: st.atimeMs });
+			}
 		}
+		let total = files.reduce((s, f) => s + f.size, 0);
+		files.sort((x, y) => x.t - y.t);
+		for (const f of files) {
+			if (total <= limit) break;
+			await fsp.unlink(f.p).then(() => { total -= f.size; }, () => {});
+		}
+	})(), 'trimming the cache')
+		.catch(e => console.error('[drive-cache] trim failed:', (e as Error).message.slice(0, 120)))
+		.finally(() => { trimming = null; });
+	return trimming;
+}
+
+/** A chunk from the volume, or null if it is not there, is short, or the volume is not answering. */
+async function cachedChunk(f: string, want: number, fileId: string, idx: number): Promise<Buffer | null> {
+	if (!cacheOn()) return null;
+	let cached: Buffer;
+	try { cached = await io(fsp.readFile(f), 'reading a cached chunk'); }
+	catch { return null; }   // missing (ENOENT) or the volume timed out
+	// A short chunk shifts every byte after it, so ffmpeg sees broken NAL units at that spot on every
+	// read until the chunk ages out. Drop it and fetch it again.
+	if (cached.length !== want) {
+		console.error('[drive-cache] dropping short cached chunk', fileId, idx, cached.length, 'of', want);
+		void fsp.unlink(f).catch(() => {});
+		return null;
 	}
-	let total = files.reduce((s, f) => s + f.size, 0);
-	files.sort((a, b) => a.t - b.t);
-	for (const f of files) {
-		if (total <= limit) break;
-		try { fs.unlinkSync(f.p); total -= f.size; } catch { /* already gone */ }
-	}
+	const now = new Date();
+	void fsp.utimes(f, now, now).catch(() => { /* best effort: keeps it from being trimmed first */ });
+	return cached;
+}
+
+/** Caching is an optimisation and never delays a response: written in the background, and if the volume is
+ * full it trims to half and tries once more. (Trimming only after successful writes meant a full volume was
+ * never trimmed, and every request touching an uncached chunk failed with ENOSPC.) */
+function saveChunk(f: string, buf: Buffer): void {
+	if (!cacheOn()) return;
+	const save = async () => {
+		await fsp.mkdir(path.dirname(f), { recursive: true });
+		await fsp.writeFile(f + '.part', buf);
+		await fsp.rename(f + '.part', f);
+	};
+	void io(save(), 'writing a chunk')
+		.catch(async e => {
+			await fsp.unlink(f + '.part').catch(() => {});
+			if (e instanceof IoTimeout || !cacheOn()) return;
+			console.error('[drive-cache] cache write failed, trimming:', (e as Error).message.slice(0, 120));
+			await trim(LIMIT / 2);
+			await io(save(), 'writing a chunk').catch(() => fsp.unlink(f + '.part').catch(() => {}));
+		})
+		.then(() => { if (Math.random() < 0.05) void trim(); });
 }
 
 async function chunk(fileId: string, idx: number, total: number): Promise<Buffer> {
 	const f = path.join(cacheDir(), fileId, `${idx}.bin`);
 	const want = Math.min(total, (idx + 1) * CHUNK) - idx * CHUNK;
-	if (fs.existsSync(f)) {
-		const cached = fs.readFileSync(f);
-		// A short chunk shifts every byte after it, so ffmpeg sees broken NAL units at that spot on every
-		// read until the chunk ages out. Drop it and fetch it again.
-		if (cached.length === want) {
-			const now = new Date();
-			try { fs.utimesSync(f, now, now); } catch { /* best effort */ }
-			return cached;
-		}
-		console.error('[drive-cache] dropping short cached chunk', fileId, idx, cached.length, 'of', want);
-		try { fs.unlinkSync(f); } catch { /* gone */ }
-	}
 	const key = `${fileId}:${idx}`;
 	const running = inflight.get(key);
 	if (running) return running;
 	const p = (async () => {
+		const hit = await cachedChunk(f, want, fileId, idx);
+		if (hit) return hit;
 		const a = idx * CHUNK, b = Math.min(total, a + CHUNK) - 1;
 		let buf: Buffer | null = null;
 		for (let attempt = 1; !buf; attempt++) {
@@ -124,22 +191,7 @@ async function chunk(fileId: string, idx: number, total: number): Promise<Buffer
 				await new Promise(ok => setTimeout(ok, 2000 * attempt));
 			}
 		}
-		// Caching is an optimisation: if the volume is full, free space and try once more, and if that
-		// fails too, still serve the bytes. (Trimming only after successful writes meant a full volume
-		// was never trimmed, and every request touching an uncached chunk failed with ENOSPC.)
-		const save = () => {
-			fs.mkdirSync(path.dirname(f), { recursive: true });
-			fs.writeFileSync(f + '.part', buf!);
-			fs.renameSync(f + '.part', f);
-		};
-		try { save(); }
-		catch (e) {
-			try { fs.unlinkSync(f + '.part'); } catch { /* not written */ }
-			console.error('[drive-cache] cache write failed, trimming:', (e as Error).message.slice(0, 120));
-			try { trim(LIMIT / 2); save(); }
-			catch { try { fs.unlinkSync(f + '.part'); } catch { /* not written */ } }
-		}
-		if (Math.random() < 0.05) trim();
+		saveChunk(f, buf);
 		return buf;
 	})();
 	inflight.set(key, p);

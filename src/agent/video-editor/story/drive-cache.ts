@@ -91,10 +91,18 @@ function trim(limit = LIMIT): void {
 
 async function chunk(fileId: string, idx: number, total: number): Promise<Buffer> {
 	const f = path.join(cacheDir(), fileId, `${idx}.bin`);
+	const want = Math.min(total, (idx + 1) * CHUNK) - idx * CHUNK;
 	if (fs.existsSync(f)) {
-		const now = new Date();
-		try { fs.utimesSync(f, now, now); } catch { /* best effort */ }
-		return fs.readFileSync(f);
+		const cached = fs.readFileSync(f);
+		// A short chunk shifts every byte after it, so ffmpeg sees broken NAL units at that spot on every
+		// read until the chunk ages out. Drop it and fetch it again.
+		if (cached.length === want) {
+			const now = new Date();
+			try { fs.utimesSync(f, now, now); } catch { /* best effort */ }
+			return cached;
+		}
+		console.error('[drive-cache] dropping short cached chunk', fileId, idx, cached.length, 'of', want);
+		try { fs.unlinkSync(f); } catch { /* gone */ }
 	}
 	const key = `${fileId}:${idx}`;
 	const running = inflight.get(key);
@@ -106,7 +114,10 @@ async function chunk(fileId: string, idx: number, total: number): Promise<Buffer
 			try {
 				// One signal covers headers and body, so a stalled body read is aborted too.
 				const res = await driveFetch(fileId, a, b, AbortSignal.timeout(FETCH_TIMEOUT_MS));
-				buf = Buffer.from(await res.arrayBuffer());
+				const got = Buffer.from(await res.arrayBuffer());
+				// Drive can end a ranged body early without an error; never serve or cache a short chunk.
+				if (got.length !== want) throw new Error(`short body ${got.length} of ${want}`);
+				buf = got;
 			} catch (e) {
 				if (attempt >= 3) throw e;
 				console.error('[drive-cache] retry', attempt, fileId, idx, (e as Error).message.slice(0, 120));
@@ -158,7 +169,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 			const a = Math.max(start - idx * CHUNK, 0), b = Math.min(end - idx * CHUNK + 1, buf.length);
 			// Wait for drain, or for the socket to close: ffmpeg killed by its timeout never drains,
 			// and waiting on drain alone would hold this handler and its chunk buffers forever.
-			if (!res.write(buf.subarray(a, b))) await new Promise<void>(ok => { res.once('drain', () => ok()); res.once('close', () => ok()); });
+			if (!res.write(buf.subarray(a, b))) await new Promise<void>(ok => {
+				const done = () => { res.off('drain', done); res.off('close', done); ok(); };
+				res.on('drain', done); res.on('close', done);
+			});
 		}
 		res.end();
 	} catch (e) {

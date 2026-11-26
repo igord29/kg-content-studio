@@ -24,6 +24,56 @@ These are standing instructions from the UnitedSets owner (Nov 2026). They overr
 - **Sound design:** keep the real court sound, add whooshes on transitions, a pop on contact and a boom on the payoff. Duck under the voice.
 - **The track points the camera at the player** (person detection), and every crop follows them. Never let a static crop lose the subject.
 
+## 0b. Rally Shorts: the bar is Short 05 ("In or out?", Nov 2026)
+
+The client loved Short 05 and called it the new bar: every new rally Short must be **better** than it. "Clean, the cuts were correct, and the tracking at the end asking if it was in or out made the viewer want to comment." Builder: `tools/rally-short/build_short05.py`. Sound effects: `make_sfx.py`. Thumbnails: `thumbs_short05.py`. Tracking: `track.py` + `paths.py`.
+
+**Keep these qualities. Don't copy the structure** (section 0: every video gets its own concept, hook, question and payoff).
+
+**Game first.** No countdown or "this point lasts 39 seconds" graphics, and no rally timer. The play is the show.
+
+**Cold open (about 2.4 s).** Open on the best moment of the point at real speed, with a question line. Example: Jessica's "Wait. How did maroon get THAT back?!" plus a record scratch. Then a white flash into the serve.
+
+**The point, start to finish, at real speed.**
+- A steady wide frame holds both players, with hard cuts to whoever is hitting, about 1.5–2 s per shot.
+- The near player gets a tight shot (zoom 1.32, or 1.12 when sliding or running).
+- The far player gets a medium shot. When they are at the top edge of the frame, extend it upwards with a mirrored, blurred and darkened copy of the back wall (`headroom()`) so they sit centred. Never blur the real frame.
+- No zoom pumping, and never only the near player.
+
+**The finish must be visible.**
+- From the last hit, play **one unbroken wide shot** until the ball lands and both players stop. Never cut to a tight framing or away before the result shows.
+- Check the outcome frame by frame in the source first. If the footage can't prove who won, don't claim it: make it the question.
+- When the winner is known, the winner gets the final highlight.
+
+**The payoff replay (the comment driver).**
+1. A slow-motion replay (0.25–0.3×) of the deciding ball, with the **ball circled by a glowing lime ring**. Track the ball frame by frame by reading it off a grid sheet, because it blurs too much for automatic colour detection.
+2. A **freeze on the deciding frame** (camera-shutter sound and sub-bass hit), then a push-in until the ball fills the screen, with a big question title (Anton or Montserrat 130 px, lime keyword) at the top.
+3. Play on slowly under a "COMMENT YOUR CALL · @UNITEDSETS" pill, and end on a frame that loops into the cold open.
+
+**Voices: two friends watching together, not narration.**
+- Brian (play-by-play) and Jessica react to each other ("Did you SEE that slide?!" / "I saw it! I'm still not over it.").
+- About 12–15 short lines, each placed on its shot. Shirt colours only.
+- Record on Sume eleven-v4. Pad each line (`adelay` 40 ms + `apad` 0.12 s) for the clipped-line QC check.
+
+**Captions: big and word by word.**
+- Get word timings with faster-whisper `base.en` on each line, mapped onto the script words.
+- Montserrat ExtraBold 92 px, centred, 2–3 words at a time, with the spoken word highlighted and scaled to 112%.
+- Brian is lime and Jessica is coral, with a small name label above.
+- One position per line, chosen to stay clear of the players, the ball and titles.
+
+**Sound design.**
+- Real court sound, ducked under the voices.
+- Accents: a scratch on the hook, whooshes on transitions, a riser into the big moment with a sub-bass drop on it, a riser into the last ball, light applause when the point ends, a heartbeat under the slow-mo, a shutter and drop on the freeze, and a pop on the title.
+
+**Logo.** A small bug top-right all the way through (no full-screen end card needed when the replay carries the comment prompt).
+
+**Deliver with every video:**
+- the MP4, which must pass QC (Short 05 scored 100);
+- a **title, description and tags**, plus a suggested pinned comment;
+- **two 1080×1920 thumbnails**. Keep the key content inside the centre 1080×1350 so grid crops still read. Use huge condensed text (Anton) with one lime word, a person mid-action or the circled ball, a red arrow, and one emoji.
+
+**Rotate the payoff across videos:** in or out, "rate it 1–10", "count the shots", "who wins this?", "watch the feet", or a winner's victory replay. Never the same twice in a row.
+
 The UnitedSets Thanksgiving all-ages 30s ad (Nov 2026) is the **floor**. Nothing ships below it.
 Reference build: `tools/ad-builder/build_ad.py`. Quality gate: `tools/video-qc/qc.py`.
 
@@ -111,3 +161,7 @@ Reference build: `tools/ad-builder/build_ad.py`. Quality gate: `tools/video-qc/q
 - **Saying who won a point you can't see:** commentary only claims what the footage proves. Celebrate the effort and describe players by shirt colour, with no names and no he/she.
 - **Highlight cuts and full recordings are framed differently** (the camera's own auto-framing), so frame matching misses many points. Match by sound (the onset envelope cross-correlated against the highlight's sound) instead, then confirm by eye.
 - **Building from a template made ten look-alike videos.** See section 0: pilot one, then give each video its own concept.
+- **Cutting away before the result** (the highlight split the rally, or the edit ended on a player's ready position) left the client unsure the point was over. Run the wide shot through the ball dying.
+- **Tightening the ending made it harder to read.** A tight crop with a lot of blurred fill hid the context. Show the live result wide; save the tight framing for the replay.
+- **Countdown and "this point lasts N seconds" graphics** pulled attention away from the play. The client asked for gameplay first.
+- **Thumbnails:** the system PIL in `python3` is broken here, so run thumbnail scripts with `python3.13`. Fetch Anton from the google/fonts GitHub repo.

@@ -5,6 +5,25 @@ description: Make a professional short-form ad or social video (Reels/TikTok/Sho
 
 # Pro ad video: the floor and the loop
 
+## 0. How this client wants to work (read first, every time)
+
+These are standing instructions from the UnitedSets owner (Nov 2026). They override any habit of batching.
+
+- **Pilot first, then the batch.** Send ONE finished video. Make it the best you can, QC'd and reviewed with your own eyes. Wait for approval before building the rest. Never render a whole set from an unapproved concept.
+- **Every video is its own idea.** Don't run a set through one template. Shape each video around its specific moment: what happens in it, who is in it, why it's interesting. Vary the hook, the structure, the rhythm, the graphics, the transitions and the payoff from video to video. If two videos in a set could swap footage without anything else changing, one of them needs a new concept.
+- **You are the editor.** The client relies on your editing judgment. Make cuts crisp, tight and eventful, and aim every choice at holding attention and earning replays and shares (virality), not at filling a format.
+- **Viral social content is not an ad.** Unless asked, engagement videos don't promote an event. No tournament card and no sign-up line; end on a short brand beat that loops.
+
+### Editor's toolbox for one-camera sports footage (pick per moment; never all at once)
+- **Cold open on the best moment** (slow motion, glitch-in or freeze), then rewind into the full play.
+- **Cut on action:** wide view for the opponent's shot, tight punch-in (with slight shake) on the near player's swing. A whip pan or flash between framings.
+- **Speed ramps** around contact (0.3–0.5x with pitched-down sound), and fast-forward through dead time.
+- **Freeze-frame** at the peak, with a slam word or sticker. A ⏪ rewind with scanlines into the replay.
+- **Live graphics:** rally timer, slow-mo tag, "rate this 1–10" prompt, point-of-view text. Put graphics where the eye already is.
+- **Alternative structures:** countdown ("3 shots that…"), split-screen comparison, a "watch the near player's feet" focus guide, a reaction-style caption track, "POV" framing, or a loop where the last frame matches the first.
+- **Sound design:** keep the real court sound, add whooshes on transitions, a pop on contact and a boom on the payoff. Duck under the voice.
+- **The track points the camera at the player** (person detection), and every crop follows them. Never let a static crop lose the subject.
+
 The UnitedSets Thanksgiving all-ages 30s ad (Nov 2026) is the **floor**. Nothing ships below it.
 Reference build: `tools/ad-builder/build_ad.py`. Quality gate: `tools/video-qc/qc.py`.
 
@@ -89,3 +108,6 @@ Reference build: `tools/ad-builder/build_ad.py`. Quality gate: `tools/video-qc/q
 - **Too many Drive downloads at once:** Drive answers 403s. Fetch a few full-quality cuts with `/api/story/clip` and work locally.
 - **Parallel renders writing the same file:** keep one writer per output.
 - **Frame grabs with `-ss` on joined files** can be a frame or two off. Check exact cuts with `select='eq(n,N)'`.
+- **Saying who won a point you can't see:** commentary only claims what the footage proves. Celebrate the effort and describe players by shirt colour, with no names and no he/she.
+- **Highlight cuts and full recordings are framed differently** (the camera's own auto-framing), so frame matching misses many points. Match by sound (the onset envelope cross-correlated against the highlight's sound) instead, then confirm by eye.
+- **Building from a template made ten look-alike videos.** See section 0: pilot one, then give each video its own concept.

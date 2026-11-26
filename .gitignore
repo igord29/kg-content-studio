@@ -67,5 +67,10 @@ src/agent/translate.js
 .ffmpeg-cache/
 
 .deploy-stamps/
-demo-output/
+demo-output/**
+!demo-output/**/
+# keep the small deliverable text and thumbnails in git; videos and renders stay out
+!demo-output/**/*post-kit*.md
+!demo-output/**/*post-copy*.md
+!demo-output/**/thumbnails/*.jpg
 __pycache__/

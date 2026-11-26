@@ -198,7 +198,7 @@ VO = {}
 for f in os.listdir('r59/vo'):
     if f.endswith('.wav'): VO[f[:-4]] = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f'r59/vo/{f}'], capture_output=True, text=True).stdout)
 WORDS = json.load(open('r59/vo/words.json'))
-TXT = {'jc': "Oh no… they're DOWN!", 'b0': "Rewind. Navy to serve.", 'b1': "Big forehand from navy!",
+TXT = {'jc': "Oh no… they're DOWN!", 'b0': "Rewind. Navy to serve.", 'b1': "Big backhand from navy!",
        'j2': "Navy's covering everything.", 'j3': "Light blue is making navy run!", 'b3': "Wide ball… stretching…",
        'b4': "And right back UP!", 'j5': "Still swinging?!", 'j6': "Doesn't even matter who won that point.",
        'bd': "Down…", 'bu': "Up…", 'bw': "Still swinging!", 'j7': "Rate the hustle. One to ten."}

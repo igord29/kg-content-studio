@@ -161,6 +161,10 @@ Reference build: `tools/ad-builder/build_ad.py`. Quality gate: `tools/video-qc/q
 - **Saying who won a point you can't see:** commentary only claims what the footage proves. Celebrate the effort and describe players by shirt colour, with no names and no he/she.
 - **Highlight cuts and full recordings are framed differently** (the camera's own auto-framing), so frame matching misses many points. Match by sound (the onset envelope cross-correlated against the highlight's sound) instead, then confirm by eye.
 - **Building from a template made ten look-alike videos.** See section 0: pilot one, then give each video its own concept.
+- **Wrong stroke calls.** Short 06 said "Big forehand" on a two-handed backhand, and Short 04 called two backhands forehands. The client: "the audience will eat us alive by messing up the basics." Before any commentary line names a stroke (forehand, backhand, volley, slice, overhead, serve):
+  1. Settle each player's **handing** from a serve or a clear one-handed forehand. The camera is behind the near player, so the image's right side is the player's right.
+  2. Check the actual contact frames, 6–8 frames around the hit. Two hands on the racquet, or racquet taken back on the non-dominant side and finishing over the dominant shoulder, means a backhand.
+  3. Write the stroke and frame time into the shot-list comment. If it can't be proven, use a stroke-neutral line ("What a get!", "Big swing!").
 - **Cutting away before the result** (the highlight split the rally, or the edit ended on a player's ready position) left the client unsure the point was over. Run the wide shot through the ball dying.
 - **Tightening the ending made it harder to read.** A tight crop with a lot of blurred fill hid the context. Show the live result wide; save the tight framing for the replay.
 - **Countdown and "this point lasts N seconds" graphics** pulled attention away from the play. The client asked for gameplay first.

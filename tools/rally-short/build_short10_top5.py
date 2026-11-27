@@ -1,4 +1,4 @@
-# Source: session scratchpad hl/t5/top5.py. Run from the folder that holds r10/ r20/ r24/ r59/ r64/ t5/.
+# Source: session scratchpad hl/t5/top5.py. Run from the folder that holds r10/ r20/ r24/ r47/ r59/ t5/.
 """Short 10: TOP 5 GETS. Compilation of the best defensive moments from Shorts 05-09. 9:16, 30 fps.
   hook   #1 teaser in slow motion + TOP 5 GETS title (Brian: "Top five gets of the tournament. Let's go.")
   items  #5 -> #1: real speed, then slow-mo of the get with a big rank badge and a label; Brian counts, Jessica reacts
@@ -37,10 +37,10 @@ class Clip:
         o = cv2.resize(img[y0:y0 + ch, x0:x0 + cw], (OW, OH), interpolation=cv2.INTER_LANCZOS4)
         b = cv2.GaussianBlur(o, (0, 0), 1.6); return cv2.addWeighted(o, 1.3, b, -0.3, 0)
 
-C = {d: Clip(d) for d in ('r64', 'r10', 'r59', 'r24', 'r20')}
+C = {d: Clip(d) for d in ('r47', 'r10', 'r59', 'r24', 'r20')}
 ZOOM = {'r24': 1.7}                                   # black sits at the bottom edge of that camera: crop tighter
 #        rank, clip,  real window,   slow window,   rate, contact, label
-ITEMS = [(5, 'r64', (13.6, 15.4), (14.3, 15.3), 0.4, 14.85, 'FULL SPLIT'),
+ITEMS = [(5, 'r47', (25.2, 27.6), (26.1, 27.1), 0.4, 26.8, 'ON THE RUN'),
          (4, 'r10', (12.2, 14.0), (12.9, 13.7), 0.4, 13.30, 'THE SLIDE'),
          (3, 'r59', (11.3, 14.6), (11.7, 12.7), 0.4, 11.86, 'DOWN & BACK UP'),
          (2, 'r24', (19.4, 21.0), (20.0, 20.8), 0.4, 20.39, 'FULL STRETCH'),
@@ -84,7 +84,7 @@ VO = {f[:-4]: float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', '
       for f in os.listdir('t5/vo') if f.endswith('.wav')}
 WORDS = json.load(open('t5/vo/words.json'))
 TXT = {'b0': "Top five gets of the tournament. Let's go.", 'b5': "Number five.", 'b4': "Number four.", 'b3': "Number three.", 'b2': "Number two.",
-       'b1': "And number one.", 'j5': "Full split!", 'j4': "The slide!", 'j3': "Down… and right back UP!", 'j2': "Full stretch!",
+       'b1': "And number one.", 'j5': "On the run!", 'j4': "The slide!", 'j3': "Down… and right back UP!", 'j2': "Full stretch!",
        'j1': "Sprint, lunge, still swinging!", 'je': "Which one's YOUR number one? Comment one to five."}
 VO_AT = [('b0', 0.05)]
 for s in L:

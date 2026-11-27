@@ -1,6 +1,6 @@
 # Short 10: "Top 5 gets" post copy
 
-**Video:** `UnitedSets-Short-10-top-5-gets.mp4` (9:16, 29 s)
+**Video:** `UnitedSets-Short-10-top-5-gets.mp4` (9:16, 30 s)
 **Thumbnails:** `thumbnails/short10_thumb_A_top-5-gets.jpg` (YouTube and TikTok cover), `thumbnails/short10_thumb_B_grid.jpg` (Instagram and Facebook cover)
 
 ## Title (pick one)
@@ -11,7 +11,7 @@
 ## Description
 The 5 best gets from the UnitedSets tournament 🔥🎾
 
-#5 Full split
+#5 On the run
 #4 The slide
 #3 Down… and right back up
 #2 Full stretch

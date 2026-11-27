@@ -50,21 +50,23 @@ def base_cx(t): return float(np.interp(t, TT, BX))
 # ---- shot list (source seconds in r59) --------------------------------------------------------------
 COLD = (19.0, 21.4)                       # full-stretch get (20.39)
 SHOTS = [(0.75, 2.6, 'mid'),    # black's first big hit (2.0)
-         (2.6, 7.6, 'base'),    # black at the bottom edge of this camera here: stay wide
-         (7.6, 9.4, 'mid'),
-         (9.4, 10.6, 'base'),
+         (2.6, 6.2, 'wide'),    # both players + the court
+         (6.2, 7.6, 'wide2'),
+         (7.6, 9.4, 'wide'),
+         (9.4, 10.6, 'wide2'),
          (10.6, 12.3, 'near'),  # big swing (11.53)
-         (12.3, 14.0, 'base'),
-         (14.0, 15.4, 'mid'),
-         (15.4, 19.6, 'base'),  # into the corner and back (17.2): bottom edge again, stay wide
+         (12.3, 15.4, 'wide'),
+         (15.4, 18.4, 'wide2'), # into the corner and back (17.2)
+         (18.4, 19.6, 'wide'),
          (19.6, 21.1, 'mid'),   # full stretch (20.39)
-         (21.1, 27.2, 'base')]  # one more (23.89), then the wide finish: black recovers and walks off
+         (21.1, 24.4, 'wide'),
+         (24.4, 27.2, 'wide2')] # wide finish: black recovers and walks off
 PICKS = [(1.6, 2.5), (11.1, 12.0), (19.95, 20.85)]   # source windows for replays 1, 2, 3
 PICK_RATE, END_S0, END_RATE, END_D = 0.4, 24.9, 0.35, 4.6
 L = [dict(kind='mid', s0=COLD[0], rate=1.0, dur=COLD[1] - COLD[0], cold=True)]
 for s0, s1, k in SHOTS: L.append(dict(kind=k, s0=s0, rate=1.0, dur=s1 - s0))
 for n, (a, b) in enumerate(PICKS): L.append(dict(kind='mid', s0=a, rate=PICK_RATE, dur=(b - a) / PICK_RATE, replay=True, pick=n + 1))
-L.append(dict(kind='base', s0=END_S0, rate=END_RATE, dur=END_D, endcard=True))
+L.append(dict(kind='wide', s0=END_S0, rate=END_RATE, dur=END_D, endcard=True))
 t = 0
 for s in L: s['t0'] = t; t += s['dur']
 TOTAL = t; COLD_D = L[0]['dur']; T_P = [x['t0'] for x in L if x.get('pick')]; T_REP = T_P[0]; T_END = L[-1]['t0']
@@ -148,6 +150,7 @@ def panel(st, k=1.55):
     p = cv2.resize(f[y0:y0 + h, x0:x0 + w], (OW, PANEL_H), interpolation=cv2.INTER_LANCZOS4)
     b = cv2.GaussianBlur(p, (0, 0), 1.4); return cv2.addWeighted(p, 1.35, b, -0.35, 0)
 def boxes_out(kind, st):
+    if kind in ('wide', 'wide2'): return []
     x0, y0, cw, ch = window(kind, st); s = OW / cw; out = []
     nx, ny, nh = near(st); fx, fy, fh = far(st)
     for (px, py, ph) in ((nx, ny, nh), (fx, fy, fh)):
@@ -157,6 +160,18 @@ def boxes_out(kind, st):
         if X1 > 0 and X0 < OW and Y1 > 0 and Y0 < OH: out.append((X0, Y0, X1, Y1))
     return out
 
+WY, WS = 200, 1080                                      # wide box: top y and size in the output
+def render_wide(img, st, kind):
+    # square full-height window: the whole near court and the far player, boxed on a blurred fill
+    img = soften(img, st); nx, ny, nh = near(st)
+    ch = SH; cw = SH if kind == 'wide' else int(SH * 1.12)
+    cx = 0.55 * nx * SW + 0.45 * SW / 2; x0 = int(round(min(max(cx - cw / 2, 0), SW - cw)))
+    crop = img[0:ch, x0:x0 + cw]; box = cv2.resize(crop, (WS, int(WS * ch / cw)), interpolation=cv2.INTER_AREA)
+    bg = cv2.resize(cv2.GaussianBlur(cv2.resize(crop, (cw // 10, ch // 10)), (0, 0), 4), (OW, OH))
+    bg = (bg * 0.45).astype(np.uint8); y0 = WY + (WS - box.shape[0]) // 2
+    bg[y0:y0 + box.shape[0], :] = box
+    cv2.line(bg, (0, y0 - 3), (OW, y0 - 3), (60, 240, 212), 4); cv2.line(bg, (0, y0 + box.shape[0] + 2), (OW, y0 + box.shape[0] + 2), (60, 240, 212), 4)
+    b = cv2.GaussianBlur(bg, (0, 0), 1.2); return cv2.addWeighted(bg, 1.2, b, -0.2, 0)
 # ---- graphics ---------------------------------------------------------------------------------------
 def load_rgba(p, size):
     im = cv2.imread(p, cv2.IMREAD_UNCHANGED); return cv2.resize(im, (size, int(im.shape[0] * size / im.shape[1])), interpolation=cv2.INTER_AREA)
@@ -206,7 +221,9 @@ for i in range(int(round(TOTAL * FPS))):
     t = i / FPS; S = seg_at(t); u = t - S['t0']
     st = min(max(src_t(S, u), 0), SDUR - 0.05); _in_rep[0] = bool(S.get('replay'))
     src = at(st) if S.get('replay') or S['kind'] == 'win' else frame(round(st * FPS))
-    if S['kind'] == 'win':
+    if S['kind'] in ('wide', 'wide2'):
+        img = render_wide(src, st, S['kind'])
+    elif S['kind'] == 'win':
         img, wv = render_win(src, st, S['win'](u)); img = ring(img, st, wv, u, pulse=S.get('freeze', False))
         if S.get('freeze') and u < 0.1: img = cv2.addWeighted(img, 0.4, np.full_like(img, 255), 0.6, 0)
     else:
@@ -233,6 +250,7 @@ def overlap(t0, t1, y, hgt=120):
     n = 0
     for q in np.arange(t0, t1, 0.1):
         S = seg_at(q)
+        if S['kind'] in ('wide', 'wide2'): n += 0 if y >= 1430 else 9; continue
         if S.get('endcard'): n += 9 if y < 1100 else 0
         if S.get('pick'): n += 9 if y < 700 else 0
         if q >= T_REP: n += 9 if y < 1400 else 0

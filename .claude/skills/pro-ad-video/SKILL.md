@@ -170,3 +170,25 @@ Reference build: `tools/ad-builder/build_ad.py`. Quality gate: `tools/video-qc/q
 - **Tightening the ending made it harder to read.** A tight crop with a lot of blurred fill hid the context. Show the live result wide; save the tight framing for the replay.
 - **Countdown and "this point lasts N seconds" graphics** pulled attention away from the play. The client asked for gameplay first.
 - **Thumbnails:** the system PIL in `python3` is broken here, so run thumbnail scripts with `python3.13`. Fetch Anton from the google/fonts GitHub repo.
+
+## 5. Thumbnails: the house standard (client-approved, Nov 2026)
+
+Every video ships with a 9:16 thumbnail (Shorts, Reels and TikTok covers) and a 16:9 one (YouTube and Facebook). There are two types, and only two. Pick by purpose.
+
+**Type 1: engagement Shorts** (rally Shorts, viral clips). Examples: Short 05 "IN OR OUT?", Short 06 "DOWN… THEN THIS".
+- One action frame from the video: the deciding ball, the fall, the full stretch.
+- Huge condensed text (Anton, 200 px+ on 9:16), 2–4 words, one lime word, black stroke. Make it a question or a reaction.
+- One hook element: a red arrow, a circled ball, or one emoji.
+- An optional comment pill ("COMMENT 1–10 👇"). Nothing else.
+
+**Type 2: event ads** (tournament promos such as Dec 19). Reference: `demo-output/unitedsets/ads-dec19/thumbnails/UnitedSets-U12-dec19-thumb-*.jpg`.
+- **One player, close up, smiling, with the trophy visible.** Pick a player of the division's age: U12 ads use young kids.
+- Use a photo **not already used across the marketing**. Check every `specs/*.json` for photos already used, and ask the client about outside use. Fetch full-size originals through `/api/story/frame?fileId=…&t=0&w=1800`, because local copies are 640 px.
+- A 3–4 word hook ("FIRST TROPHY?") above the head, plus a **big date block** (SAT · DEC / 19) and the logo. Nothing else: details go in the caption and the video.
+- 16:9: the hook and date on a teal panel at the left, the player on the right.
+
+**Rules for both types**
+- Text and graphics never cover a face, a player or the trophy.
+- Don't put the same player on a second thumbnail in the same campaign.
+- No names and no price. Read every thumbnail at phone size (about 400 px wide) before sending.
+- Run thumbnail scripts with `python3.13` (the system PIL is broken here).

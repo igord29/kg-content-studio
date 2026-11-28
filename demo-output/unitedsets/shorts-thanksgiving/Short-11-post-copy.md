@@ -1,5 +1,7 @@
 # Short 11: "Count the shots" post copy
 
+> **SHELVED (Nov 28). Do not post.** The client rejected the count concept.
+
 **Video:** `UnitedSets-Short-11-count-the-shots.mp4` (9:16, 41 s)
 **Thumbnails:** `thumbnails/short11_thumb_A_how-many-shots.jpg` (YouTube and TikTok cover), `thumbnails/short11_thumb_B_count-every-shot.jpg` (Instagram and Facebook cover)
 

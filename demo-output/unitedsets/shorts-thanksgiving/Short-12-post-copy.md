@@ -1,5 +1,7 @@
 # Short 12: "The trap" (coach breakdown) post copy
 
+> **OUTDATED: waiting on video approval.** Grey's last ball was OUT (maroon won the point). This copy and the thumbnails get rewritten once the client approves the fixed video.
+
 **Video:** `UnitedSets-Short-12-the-trap.mp4` (9:16, 37 s)
 **Thumbnails:** `thumbnails/short12_thumb_A_the-trap.jpg` (YouTube and TikTok cover), `thumbnails/short12_thumb_B_how-grey-won.jpg` (Instagram and Facebook cover)
 

@@ -1,11 +1,11 @@
 # Short 11: "Count the shots" post copy
 
-> **SHELVED (Nov 28). Do not post.** The client rejected the count concept.
+> **Posted Nov 28.** The client doesn't want any more count videos.
 
 **Video:** `UnitedSets-Short-11-count-the-shots.mp4` (9:16, 41 s)
 **Thumbnails:** `thumbnails/short11_thumb_A_how-many-shots.jpg` (YouTube and TikTok cover), `thumbnails/short11_thumb_B_count-every-shot.jpg` (Instagram and Facebook cover)
 
-**The answer is 14 shots, counting the serve.** Maroon hits 7, including the serve, and grey hits 7. Each hit was checked frame by frame and against its sound. On grey's 7th shot, the ball gets past maroon's lunge. If a commenter argues for 13, they're leaving out the serve: reply "14 with the serve 🎾".
+**The answer is 14 shots, counting the serve.** Maroon hits 7, including the serve, and grey hits 7. Each hit was checked frame by frame and against its sound. Grey's 7th shot gets past maroon's lunge and goes **out**, so maroon wins the point. If a commenter argues for 13, they're leaving out the serve: reply "14 with the serve 🎾". If someone asks who won: "Grey's last ball was out, so the point goes to maroon 👀".
 
 ## Title (pick one)
 1. Count the Shots 👀 How Many Did You Get? 🎾
@@ -22,7 +22,7 @@ How many did YOU count? Drop your number 👇
 #UnitedSets #JuniorTennis #Tennis #TennisRally #CountTheShots #TennisHighlights #TennisChallenge #Shorts
 
 ## Tags (YouTube)
-count the shots, tennis rally, long rally, tennis challenge, junior tennis, youth tennis, tennis highlights, girls tennis, tennis point, tennis shorts, how many shots, tennis quiz, unitedsets
+count the shots, tennis rally, long rally, tennis challenge, junior tennis, youth tennis, tennis highlights, tennis point, tennis shorts, how many shots, tennis quiz, unitedsets
 
 ## Pinned comment
 Be honest: did you get 14? 👀 Comment your number BEFORE you check the end 👇

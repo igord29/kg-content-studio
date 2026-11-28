@@ -181,6 +181,12 @@ Every video ships with a 9:16 thumbnail (Shorts, Reels and TikTok covers) and a 
 - Huge condensed text (Anton, 200 px+ on 9:16), 2–4 words, one lime word, black stroke. Make it a question or a reaction.
 - One hook element: a red arrow, a circled ball, or one emoji.
 - An optional comment pill ("COMMENT 1–10 👇"). Nothing else.
+- **Upgrade (client references, Nov 28: big-channel thumbnails such as "5× CHAMPION PAID LESS.", "STOP TALKING TO IT.", "YOUR JOB IS NEXT").** Make the player the hero:
+  1. Crop tight so the player fills about 60% of the frame.
+  2. **Cut the player out**: GrabCut seeded by colour works, since the court is plain blue and green. Then darken, desaturate and blur everything else, and add a soft rim light and a colour glow behind the player.
+  3. Text is two huge lines: either italic Anton with a drop shadow, or boxed (white box with black text over a lime box with black text).
+  4. Draw the ball as a clean glowing graphic inside a lime ring, with a big red arrow pointing at it.
+  Example: `short11_thumb_A/B`. `pip install` is blocked here, so rembg isn't available; use the GrabCut recipe in `hl/` / `thumb11`.
 
 **Type 2: event ads** (tournament promos such as Dec 19). Reference: `demo-output/unitedsets/ads-dec19/thumbnails/UnitedSets-U12-dec19-thumb-*.jpg`.
 - **One player, close up, smiling, with the trophy visible.** Pick a player of the division's age: U12 ads use young kids.
